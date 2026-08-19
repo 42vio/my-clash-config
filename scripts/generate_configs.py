@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -97,3 +99,38 @@ def generate_configs(
     for output_path, content in rendered:
         atomic_write(output_path, content)
     return [output_path for output_path, _ in rendered]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Generate personal Clash configurations from templates.")
+    parser.add_argument("--source-url", required=True, help="3x-ui subscription URL; never stored in this repository")
+    parser.add_argument("--converter-base-url", required=True, help="Public base URL of subconverter without /sub")
+    parser.add_argument("--output-dir", type=Path, default=Path("generated"))
+    parser.add_argument("--private-dir", type=Path, default=Path("private"))
+    parser.add_argument("--private", action="store_true", help="Require and inject all private YAML fragments")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        outputs = generate_configs(
+            Path(__file__).resolve().parents[1] / "templates",
+            args.output_dir,
+            args.converter_base_url,
+            args.source_url,
+            args.private_dir if args.private else None,
+            args.private,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        print(f"generation failed: {error}", file=sys.stderr)
+        return 1
+    if not args.private:
+        print("notice: 未注入私有节点 (private nodes not injected; add --private after filling private/*.yaml)")
+    for output in outputs:
+        print(f"generated {output.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

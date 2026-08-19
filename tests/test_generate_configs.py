@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -240,3 +242,69 @@ class ComposeSecurityTests(unittest.TestCase):
         self.assertIn('"127.0.0.1:${SUBCONVERTER_PORT:-25500}:25500"', content)
         self.assertIn('"127.0.0.1:${SUBWEB_PORT:-58080}:80"', content)
         self.assertNotIn("0.0.0.0:", content)
+
+
+class CliTests(unittest.TestCase):
+    def test_cli_requires_source_url_and_converter_base_url(self):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "generate_configs.py")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--source-url", result.stderr)
+
+    def test_cli_generates_public_configs_without_printing_source_url(self):
+        with TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [
+                    sys.executable, str(ROOT / "scripts" / "generate_configs.py"),
+                    "--source-url", "https://panel.example/sub?token=private-value",
+                    "--converter-base-url", "https://convert.example.com",
+                    "--output-dir", directory,
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("private-value", result.stdout)
+            self.assertNotIn("private-value", result.stderr)
+            self.assertTrue((Path(directory) / "My-Clash_Balanced.yaml").is_file())
+
+    def test_cli_private_mode_missing_fragments_fails_without_output(self):
+        with TemporaryDirectory() as private_dir, TemporaryDirectory() as output_dir:
+            result = subprocess.run(
+                [
+                    sys.executable, str(ROOT / "scripts" / "generate_configs.py"),
+                    "--source-url", "https://panel.example/sub?token=private-value",
+                    "--converter-base-url", "https://convert.example.com",
+                    "--output-dir", output_dir,
+                    "--private-dir", private_dir,
+                    "--private",
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("generation failed", result.stderr)
+            self.assertNotIn("private-value", result.stderr)
+            self.assertEqual(list(Path(output_dir).glob("*.yaml")), [])
+
+    def test_cli_public_mode_prints_private_notice(self):
+        with TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [
+                    sys.executable, str(ROOT / "scripts" / "generate_configs.py"),
+                    "--source-url", "https://panel.example/sub?token=private-value",
+                    "--converter-base-url", "https://convert.example.com",
+                    "--output-dir", directory,
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("未注入私有节点", result.stdout)
