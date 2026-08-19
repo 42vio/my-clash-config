@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from scripts.generate_configs import (
+    TEMPLATES,
     atomic_write,
     build_provider_url,
     generate_configs,
@@ -144,11 +145,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = ROOT / "templates"
 PRIVATE_EXAMPLE_DIR = ROOT / "private"
 
-TEMPLATE_NAMES = (
-    "My-Clash_Balanced.yaml.tmpl",
-    "My-Clash_Balanced_Win.yaml.tmpl",
-    "My-Clash_Privacy.yaml.tmpl",
-)
+TEMPLATE_NAMES = tuple(spec.template_name for spec in TEMPLATES)
 
 PRIVATE_EXAMPLE_NAMES = (
     "proxies.yaml.example",
@@ -168,12 +165,18 @@ FORBIDDEN_SUBSTRINGS = (
     "172.28.30",
     "192.168.2",
     "AmyTelecom",
-    "uuid: 99d8bd45",
-    "uuid: ce8346e6",
+    "99d8bd45",
+    "ce8346e6",
     "aaq_AIa3r",
     "48b3db40",
     "password:",
     "viokeo",
+    "HomeServer",
+    "ProxyServer",
+    "AliyunSS",
+    "HomeVLESS",
+    "HomeSS@Debian",
+    "自建节点",
 )
 
 
@@ -185,6 +188,32 @@ class TemplateStructureTests(unittest.TestCase):
             self.assertIn("{{ PRIVATE_PROXIES }}", content)
             self.assertIn("{{ PRIVATE_PROXY_GROUPS }}", content)
             self.assertIn("{{ PRIVATE_RULES }}", content)
+
+    def test_private_rules_marker_precedes_lan_ruleset(self):
+        for name in TEMPLATE_NAMES:
+            content = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+            self.assertLess(
+                content.index("{{ PRIVATE_RULES }}"),
+                content.index("- RULE-SET,Lan,🎯 Direct,no-resolve"),
+                f"{name} must place private rules before the Lan ruleset",
+            )
+
+    def test_real_templates_render_without_leftover_markers(self):
+        fragments = {
+            "proxies": "- name: dummy",
+            "proxy_groups": "- name: DummyGroup",
+            "rules": "- MATCH,DummyGroup",
+        }
+
+        for name in TEMPLATE_NAMES:
+            template = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+
+            result = render_template(
+                template, "https://convert.example.com/sub?target=clash", fragments
+            )
+
+            self.assertNotIn("{{", result, f"{name} still contains an unreplaced marker")
+            self.assertIn("- MATCH,DummyGroup", result)
 
     def test_dns_variant_rules_remain_distinct(self):
         balanced = (TEMPLATE_DIR / "My-Clash_Balanced.yaml.tmpl").read_text(encoding="utf-8")

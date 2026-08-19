@@ -1,5 +1,6 @@
 # Private node fragments — copy to proxies.yaml / proxy-groups.yaml / rules.yaml and fill real values.
 # These files are gitignored; never commit real credentials.
+# Fragment list items must start at column 0 (no leading spaces).
 - name: Example Private Node
   type: vless
   server: private.example.com
