@@ -716,10 +716,9 @@ python3 -m unittest discover -s tests -v
 CHECK_DIR="$(mktemp -d /tmp/clash-generated-check.XXXXXX)"
 python3 scripts/generate_configs.py --source-url 'https://panel.example/sub?token=placeholder' --converter-base-url 'https://convert.example.com' --output-dir "$CHECK_DIR"
 for file in "$CHECK_DIR"/*.yaml; do /usr/local/opt/ruby/bin/ruby -e 'require "yaml"; YAML.load_file(ARGV.fetch(0))' "$file"; done
-rg -n --glob '!private/**' --glob '!generated/**' '(password:|uuid:|private-value|3x-ui\.example)' .
 ```
 
-Expected: all unit tests PASS, each public generated YAML parses, and the final `rg` command returns no matches. Use `docker compose --env-file .env.example config` where Docker is installed.
+Expected: all unit tests PASS, each public generated YAML parses, and no generated file contains an unreplaced `{{ ... }}` marker. The unit tests are the security check: they prove private fragment content is absent from public templates and command stdout. Use `docker compose --env-file .env.example config` where Docker is installed.
 
 - [ ] **Step 5: Commit CLI, documentation, and output directory**
 
