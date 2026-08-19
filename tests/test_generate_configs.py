@@ -2,7 +2,13 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from scripts.generate_configs import build_provider_url, generate_configs, render_template
+from scripts.generate_configs import (
+    atomic_write,
+    build_provider_url,
+    generate_configs,
+    load_private_fragments,
+    render_template,
+)
 
 
 class RenderingTests(unittest.TestCase):
@@ -104,3 +110,31 @@ class GenerationTests(unittest.TestCase):
                 generate_configs(templates, root / "output", "https://convert.example.com", "https://panel.example/sub", private, True)
 
             self.assertFalse((root / "output").exists())
+
+
+class AtomicWriteTests(unittest.TestCase):
+    def test_atomic_write_cleans_up_temporary_file_when_replace_fails(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            output.mkdir()
+            target = output / "My-Clash_Balanced.yaml"
+            target.mkdir()
+
+            with self.assertRaises(OSError):
+                atomic_write(target, "proxies: []\n")
+
+            self.assertEqual(list(output.glob("tmp*")), [])
+
+
+class LoadPrivateFragmentsTests(unittest.TestCase):
+    def test_partial_fragments_with_optional_private_returns_empty_dict(self):
+        with TemporaryDirectory() as directory:
+            private = Path(directory) / "private"
+            private.mkdir()
+            (private / "proxies.yaml").write_text("  - name: private-node\n", encoding="utf-8")
+
+            self.assertEqual(load_private_fragments(private, False), {})
+
+    def test_missing_private_dir_with_optional_private_returns_empty_dict(self):
+        with TemporaryDirectory() as directory:
+            self.assertEqual(load_private_fragments(Path(directory) / "private", False), {})

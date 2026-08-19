@@ -64,10 +64,16 @@ def load_private_fragments(private_dir: Path | None, require_private: bool) -> d
 
 def atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
-        temporary.write(content)
-        temporary_path = Path(temporary.name)
-    temporary_path.replace(path)
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as temporary:
+            temporary.write(content)
+            temporary_path = Path(temporary.name)
+        temporary_path.replace(path)
+    except BaseException:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def generate_configs(
