@@ -1,0 +1,31 @@
+services:
+  subconverter:
+    image: tindy2013/subconverter:latest
+    restart: unless-stopped
+    volumes:
+      - ./docker/subconverter/pref.ini:/base/pref.ini:ro
+    ports:
+      - "127.0.0.1:${SUBCONVERTER_PORT:-25500}:25500"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:25500/version >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - conversion
+
+  subweb:
+    image: careywong/subweb:latest
+    restart: unless-stopped
+    depends_on:
+      subconverter:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SUBWEB_PORT:-58080}:80"
+    networks:
+      - conversion
+
+networks:
+  conversion:
+    driver: bridge

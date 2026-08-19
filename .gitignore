@@ -1,1 +1,8 @@
 .worktrees/
+.env
+private/proxies.yaml
+private/proxy-groups.yaml
+private/rules.yaml
+generated/*.yaml
+__pycache__/
+*.py[cod]

@@ -232,3 +232,11 @@ class TemplateStructureTests(unittest.TestCase):
                 lowered = (directory / name).read_text(encoding="utf-8").lower()
                 for forbidden in FORBIDDEN_SUBSTRINGS:
                     self.assertNotIn(forbidden.lower(), lowered, f"{name} leaks {forbidden!r}")
+
+
+class ComposeSecurityTests(unittest.TestCase):
+    def test_compose_binds_both_services_only_to_loopback(self):
+        content = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+        self.assertIn('"127.0.0.1:${SUBCONVERTER_PORT:-25500}:25500"', content)
+        self.assertIn('"127.0.0.1:${SUBWEB_PORT:-58080}:80"', content)
+        self.assertNotIn("0.0.0.0:", content)
