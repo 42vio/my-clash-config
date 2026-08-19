@@ -1,0 +1,8 @@
+# Private node fragments — copy to proxies.yaml / proxy-groups.yaml / rules.yaml and fill real values.
+# These files are gitignored; never commit real credentials.
+- name: Example Private Node
+  type: vless
+  server: private.example.com
+  port: 443
+  uuid: REPLACE_WITH_PRIVATE_UUID
+  tls: true

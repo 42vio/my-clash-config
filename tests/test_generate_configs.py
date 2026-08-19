@@ -138,3 +138,68 @@ class LoadPrivateFragmentsTests(unittest.TestCase):
     def test_missing_private_dir_with_optional_private_returns_empty_dict(self):
         with TemporaryDirectory() as directory:
             self.assertEqual(load_private_fragments(Path(directory) / "private", False), {})
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TEMPLATE_DIR = ROOT / "templates"
+PRIVATE_EXAMPLE_DIR = ROOT / "private"
+
+TEMPLATE_NAMES = (
+    "My-Clash_Balanced.yaml.tmpl",
+    "My-Clash_Balanced_Win.yaml.tmpl",
+    "My-Clash_Privacy.yaml.tmpl",
+)
+
+PRIVATE_EXAMPLE_NAMES = (
+    "proxies.yaml.example",
+    "proxy-groups.yaml.example",
+    "rules.yaml.example",
+)
+
+FORBIDDEN_SUBSTRINGS = (
+    "kfcv50",
+    "420615",
+    "hitrontech",
+    "BWG",
+    "182616",
+    "161.129",
+    "106.15.121",
+    "199.19.110",
+    "172.28.30",
+    "192.168.2",
+    "AmyTelecom",
+    "uuid: 99d8bd45",
+    "uuid: ce8346e6",
+    "aaq_AIa3r",
+    "48b3db40",
+    "password:",
+    "viokeo",
+)
+
+
+class TemplateStructureTests(unittest.TestCase):
+    def test_all_templates_have_required_provider_and_private_markers(self):
+        for name in TEMPLATE_NAMES:
+            content = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+            self.assertIn("url: '{{ SUBSCRIPTION_PROVIDER_URL }}'", content)
+            self.assertIn("{{ PRIVATE_PROXIES }}", content)
+            self.assertIn("{{ PRIVATE_PROXY_GROUPS }}", content)
+            self.assertIn("{{ PRIVATE_RULES }}", content)
+
+    def test_dns_variant_rules_remain_distinct(self):
+        balanced = (TEMPLATE_DIR / "My-Clash_Balanced.yaml.tmpl").read_text(encoding="utf-8")
+        windows = (TEMPLATE_DIR / "My-Clash_Balanced_Win.yaml.tmpl").read_text(encoding="utf-8")
+        privacy = (TEMPLATE_DIR / "My-Clash_Privacy.yaml.tmpl").read_text(encoding="utf-8")
+        self.assertIn("respect-rules: true", balanced)
+        self.assertIn("respect-rules: true", windows)
+        self.assertNotIn("respect-rules:", privacy)
+        self.assertIn("- GEOIP,CN,🎯 Direct", balanced)
+        self.assertIn("- GEOIP,CN,🎯 Direct", windows)
+        self.assertIn("- GEOIP,CN,🎯 Direct,no-resolve", privacy)
+
+    def test_public_templates_and_examples_contain_no_private_data(self):
+        for directory, names in ((TEMPLATE_DIR, TEMPLATE_NAMES), (PRIVATE_EXAMPLE_DIR, PRIVATE_EXAMPLE_NAMES)):
+            for name in names:
+                lowered = (directory / name).read_text(encoding="utf-8").lower()
+                for forbidden in FORBIDDEN_SUBSTRINGS:
+                    self.assertNotIn(forbidden.lower(), lowered, f"{name} leaks {forbidden!r}")
