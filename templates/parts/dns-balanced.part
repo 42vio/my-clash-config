@@ -1,0 +1,25 @@
+  # 海外dns需要开启，DNS 请求自身遵循 Clash 分流规则
+  respect-rules: true
+
+  # 未命中 policy 的域名
+  nameserver:  # 默认 DNS 服务
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
+  # 特定域名 DNS 分流
+  nameserver-policy:
+    "geosite:private,cn":
+      - https://223.5.5.5/dns-query #阿里DoH
+      - https://doh.pub/dns-query   #腾讯DoH，因腾讯云即将关闭免费版IP访问，故用域名
+
+  # 代理节点域名
+  proxy-server-nameserver:
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
+
+  # 最终走 DIRECT 的域名重新使用国内 DNS
+  direct-nameserver:
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
+
+  direct-nameserver-follow-policy: true

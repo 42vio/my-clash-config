@@ -28,21 +28,31 @@ class RenderingTests(unittest.TestCase):
         self.assertNotIn("测试", result)
 
     def test_render_template_replaces_all_markers_without_private_fragments(self):
-        template = """url: '{{ SUBSCRIPTION_PROVIDER_URL }}'\n{{ PRIVATE_PROXIES }}
+        template = """url: '{{ SUBSCRIPTION_PROVIDER_URL }}'
+{{ PRIVATE_PROXIES }}
 {{ PRIVATE_PROXY_GROUPS }}
 {{ PRIVATE_RULES }}
+{{ DNS_VARIANT }}
+{{ GEOIP_VARIANT }}
 """
 
-        result = render_template(template, "https://convert.example.com/sub?target=clash", {})
+        result = render_template(
+            template,
+            "https://convert.example.com/sub?target=clash",
+            {},
+            {"dns": "  respect-rules: true", "geoip": "- GEOIP,CN,🎯 Direct"},
+        )
 
         self.assertNotIn("{{", result)
         self.assertIn("url: 'https://convert.example.com/sub?target=clash'", result)
+        self.assertIn("  respect-rules: true", result)
+        self.assertIn("- GEOIP,CN,🎯 Direct", result)
 
     def test_render_template_error_names_the_offending_marker_snippet(self):
         template = "rules:\n{{ PRIVATE_RULE }}\n"
 
         with self.assertRaises(ValueError) as context:
-            render_template(template, "https://convert.example.com/sub?target=clash", {})
+            render_template(template, "https://convert.example.com/sub?target=clash", {}, {})
 
         self.assertIn("{{ PRIVATE_RULE }}", str(context.exception))
 
@@ -50,15 +60,15 @@ class RenderingTests(unittest.TestCase):
         template = "proxies:\n{{ PRIVATE_PROXIES }}\nrules:\n{{ PRIVATE_RULES }}\n"
         fragments = {"proxies": "  - {name: node, password: pass}}word}\n", "rules": "  - MATCH,DIRECT"}
 
-        result = render_template(template, "https://convert.example.com/sub?target=clash", fragments)
+        result = render_template(template, "https://convert.example.com/sub?target=clash", fragments, {})
 
         self.assertIn("pass}}word}", result)
 
         with self.assertRaises(ValueError):
-            render_template("value: {{ UNKNOWN_MARKER }}\n", "https://convert.example.com/sub?target=clash", fragments)
+            render_template("value: {{ UNKNOWN_MARKER }}\n", "https://convert.example.com/sub?target=clash", fragments, {})
 
 
-def write_fixture_template(path: Path) -> None:
+def write_fixture_base_template(path: Path) -> None:
     path.write_text(
         "proxy-providers:\n"
         "  Subscribe:\n"
@@ -66,9 +76,25 @@ def write_fixture_template(path: Path) -> None:
         "    url: '{{ SUBSCRIPTION_PROVIDER_URL }}'\n"
         "proxies:\n{{ PRIVATE_PROXIES }}\n"
         "proxy-groups:\n{{ PRIVATE_PROXY_GROUPS }}\n"
-        "rules:\n{{ PRIVATE_RULES }}\n",
+        "rules:\n{{ PRIVATE_RULES }}\n"
+        "dns:\n{{ DNS_VARIANT }}\n"
+        "final:\n{{ GEOIP_VARIANT }}\n",
         encoding="utf-8",
     )
+
+
+def write_fixture_parts(directory: Path) -> None:
+    directory.mkdir()
+    (directory / "dns-balanced.part").write_text("  respect-rules: true\n", encoding="utf-8")
+    (directory / "dns-privacy.part").write_text("  nameserver:\n    - https://223.5.5.5/dns-query\n", encoding="utf-8")
+    (directory / "geoip-resolve.part").write_text("- GEOIP,CN,🎯 Direct\n", encoding="utf-8")
+    (directory / "geoip-no-resolve.part").write_text("- GEOIP,CN,🎯 Direct,no-resolve\n", encoding="utf-8")
+
+
+def write_private_fragments(private: Path) -> None:
+    (private / "proxies.yaml").write_text("  - name: private-node\n", encoding="utf-8")
+    (private / "proxy-groups.yaml").write_text("  - name: Private\n", encoding="utf-8")
+    (private / "rules.yaml").write_text("  - MATCH,Private\n", encoding="utf-8")
 
 
 class GenerationTests(unittest.TestCase):
@@ -80,11 +106,9 @@ class GenerationTests(unittest.TestCase):
             output = root / "output"
             templates.mkdir()
             private.mkdir()
-            for name in ("My-Clash_Balanced", "My-Clash_Balanced_Win", "My-Clash_Privacy"):
-                write_fixture_template(templates / f"{name}.yaml.tmpl")
-            (private / "proxies.yaml").write_text("  - name: private-node\n", encoding="utf-8")
-            (private / "proxy-groups.yaml").write_text("  - name: Private\n", encoding="utf-8")
-            (private / "rules.yaml").write_text("  - MATCH,Private\n", encoding="utf-8")
+            write_fixture_base_template(templates / "_base.yaml.tmpl")
+            write_fixture_parts(templates / "parts")
+            write_private_fragments(private)
 
             outputs = generate_configs(
                 templates, output, "https://convert.example.com", "https://panel.example/sub", private, True
@@ -96,7 +120,7 @@ class GenerationTests(unittest.TestCase):
                 "My-Clash_Privacy.yaml",
             ])
             self.assertIn("private-node", outputs[0].read_text(encoding="utf-8"))
-            self.assertNotIn("private-node", (templates / "My-Clash_Balanced.yaml.tmpl").read_text(encoding="utf-8"))
+            self.assertNotIn("private-node", (templates / "_base.yaml.tmpl").read_text(encoding="utf-8"))
 
     def test_generate_configs_requires_every_private_fragment_before_writing(self):
         with TemporaryDirectory() as directory:
@@ -105,11 +129,28 @@ class GenerationTests(unittest.TestCase):
             private = root / "private"
             templates.mkdir()
             private.mkdir()
-            for name in ("My-Clash_Balanced", "My-Clash_Balanced_Win", "My-Clash_Privacy"):
-                write_fixture_template(templates / f"{name}.yaml.tmpl")
+            write_fixture_base_template(templates / "_base.yaml.tmpl")
+            write_fixture_parts(templates / "parts")
             (private / "proxies.yaml").write_text("  - name: private-node\n", encoding="utf-8")
 
             with self.assertRaisesRegex(FileNotFoundError, "proxy-groups.yaml"):
+                generate_configs(templates, root / "output", "https://convert.example.com", "https://panel.example/sub", private, True)
+
+            self.assertFalse((root / "output").exists())
+
+    def test_generate_configs_missing_part_file_fails_without_output(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            templates = root / "templates"
+            private = root / "private"
+            templates.mkdir()
+            private.mkdir()
+            write_fixture_base_template(templates / "_base.yaml.tmpl")
+            write_fixture_parts(templates / "parts")
+            write_private_fragments(private)
+            (templates / "parts" / "dns-privacy.part").unlink()
+
+            with self.assertRaisesRegex(FileNotFoundError, "dns-privacy.part"):
                 generate_configs(templates, root / "output", "https://convert.example.com", "https://panel.example/sub", private, True)
 
             self.assertFalse((root / "output").exists())
@@ -145,9 +186,17 @@ class LoadPrivateFragmentsTests(unittest.TestCase):
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = ROOT / "templates"
+PART_DIR = TEMPLATE_DIR / "parts"
 PRIVATE_EXAMPLE_DIR = ROOT / "private"
 
-TEMPLATE_NAMES = tuple(spec.template_name for spec in TEMPLATES)
+BASE_TEMPLATE_NAME = "_base.yaml.tmpl"
+
+PART_NAMES = (
+    "dns-balanced.part",
+    "dns-privacy.part",
+    "geoip-resolve.part",
+    "geoip-no-resolve.part",
+)
 
 PRIVATE_EXAMPLE_NAMES = (
     "proxies.yaml.example",
@@ -182,23 +231,30 @@ FORBIDDEN_SUBSTRINGS = (
 )
 
 
+def load_real_variants(spec) -> dict:
+    return {
+        "dns": (PART_DIR / spec.dns_part).read_text(encoding="utf-8").rstrip("\n"),
+        "geoip": (PART_DIR / spec.geoip_part).read_text(encoding="utf-8").rstrip("\n"),
+    }
+
+
 class TemplateStructureTests(unittest.TestCase):
-    def test_all_templates_have_required_provider_and_private_markers(self):
-        for name in TEMPLATE_NAMES:
-            content = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
-            self.assertIn("url: '{{ SUBSCRIPTION_PROVIDER_URL }}'", content)
-            self.assertIn("{{ PRIVATE_PROXIES }}", content)
-            self.assertIn("{{ PRIVATE_PROXY_GROUPS }}", content)
-            self.assertIn("{{ PRIVATE_RULES }}", content)
+    def test_base_template_has_required_provider_private_and_variant_markers(self):
+        content = (TEMPLATE_DIR / BASE_TEMPLATE_NAME).read_text(encoding="utf-8")
+        self.assertIn("url: '{{ SUBSCRIPTION_PROVIDER_URL }}'", content)
+        self.assertIn("{{ PRIVATE_PROXIES }}", content)
+        self.assertIn("{{ PRIVATE_PROXY_GROUPS }}", content)
+        self.assertIn("{{ PRIVATE_RULES }}", content)
+        self.assertIn("{{ DNS_VARIANT }}", content)
+        self.assertIn("{{ GEOIP_VARIANT }}", content)
 
     def test_private_rules_marker_precedes_lan_ruleset(self):
-        for name in TEMPLATE_NAMES:
-            content = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
-            self.assertLess(
-                content.index("{{ PRIVATE_RULES }}"),
-                content.index("- RULE-SET,Lan,🎯 Direct,no-resolve"),
-                f"{name} must place private rules before the Lan ruleset",
-            )
+        content = (TEMPLATE_DIR / BASE_TEMPLATE_NAME).read_text(encoding="utf-8")
+        self.assertLess(
+            content.index("{{ PRIVATE_RULES }}"),
+            content.index("- RULE-SET,Lan,🎯 Direct,no-resolve"),
+            "base template must place private rules before the Lan ruleset",
+        )
 
     def test_real_templates_render_without_leftover_markers(self):
         fragments = {
@@ -206,30 +262,62 @@ class TemplateStructureTests(unittest.TestCase):
             "proxy_groups": "- name: DummyGroup",
             "rules": "- MATCH,DummyGroup",
         }
+        base = (TEMPLATE_DIR / BASE_TEMPLATE_NAME).read_text(encoding="utf-8")
 
-        for name in TEMPLATE_NAMES:
-            template = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
+        for spec in TEMPLATES:
+            variants = load_real_variants(spec)
 
             result = render_template(
-                template, "https://convert.example.com/sub?target=clash", fragments
+                base, "https://convert.example.com/sub?target=clash", fragments, variants
             )
 
-            self.assertNotIn("{{", result, f"{name} still contains an unreplaced marker")
+            self.assertNotIn("{{", result, f"{spec.output_name} still contains an unreplaced marker")
             self.assertIn("- MATCH,DummyGroup", result)
+            self.assertIn(
+                f"{variants['geoip']}\n", result, f"{spec.output_name} does not inject its geoip variant"
+            )
 
-    def test_dns_variant_rules_remain_distinct(self):
-        balanced = (TEMPLATE_DIR / "My-Clash_Balanced.yaml.tmpl").read_text(encoding="utf-8")
-        windows = (TEMPLATE_DIR / "My-Clash_Balanced_Win.yaml.tmpl").read_text(encoding="utf-8")
-        privacy = (TEMPLATE_DIR / "My-Clash_Privacy.yaml.tmpl").read_text(encoding="utf-8")
-        self.assertIn("respect-rules: true", balanced)
-        self.assertIn("respect-rules: true", windows)
-        self.assertNotIn("respect-rules:", privacy)
-        self.assertIn("- GEOIP,CN,🎯 Direct", balanced)
-        self.assertIn("- GEOIP,CN,🎯 Direct", windows)
-        self.assertIn("- GEOIP,CN,🎯 Direct,no-resolve", privacy)
+    def test_variant_parts_declare_expected_differences(self):
+        balanced_dns = (PART_DIR / "dns-balanced.part").read_text(encoding="utf-8")
+        privacy_dns = (PART_DIR / "dns-privacy.part").read_text(encoding="utf-8")
+        self.assertIn("respect-rules: true", balanced_dns)
+        self.assertNotIn("respect-rules:", privacy_dns)
+        self.assertIn("https://223.5.5.5/dns-query", privacy_dns)
+        self.assertEqual((PART_DIR / "geoip-resolve.part").read_text(encoding="utf-8").strip(), "- GEOIP,CN,🎯 Direct")
+        self.assertEqual(
+            (PART_DIR / "geoip-no-resolve.part").read_text(encoding="utf-8").strip(), "- GEOIP,CN,🎯 Direct,no-resolve"
+        )
+
+    def test_balanced_and_windows_outputs_are_identical_privacy_differs(self):
+        fragments = {
+            "proxies": "- name: dummy",
+            "proxy_groups": "- name: DummyGroup",
+            "rules": "- MATCH,DummyGroup",
+        }
+        base = (TEMPLATE_DIR / BASE_TEMPLATE_NAME).read_text(encoding="utf-8")
+        rendered = {}
+        for spec in TEMPLATES:
+            rendered[spec.output_name] = render_template(
+                base, "https://convert.example.com/sub?target=clash", fragments, load_real_variants(spec)
+            )
+
+        self.assertEqual(
+            rendered["My-Clash_Balanced.yaml"],
+            rendered["My-Clash_Balanced_Win.yaml"],
+            "Balanced and Win must render identical outputs",
+        )
+        self.assertNotEqual(
+            rendered["My-Clash_Balanced.yaml"],
+            rendered["My-Clash_Privacy.yaml"],
+            "Privacy must differ from Balanced",
+        )
 
     def test_public_templates_and_examples_contain_no_private_data(self):
-        for directory, names in ((TEMPLATE_DIR, TEMPLATE_NAMES), (PRIVATE_EXAMPLE_DIR, PRIVATE_EXAMPLE_NAMES)):
+        for directory, names in (
+            (TEMPLATE_DIR, (BASE_TEMPLATE_NAME,)),
+            (PART_DIR, PART_NAMES),
+            (PRIVATE_EXAMPLE_DIR, PRIVATE_EXAMPLE_NAMES),
+        ):
             for name in names:
                 lowered = (directory / name).read_text(encoding="utf-8").lower()
                 for forbidden in FORBIDDEN_SUBSTRINGS:

@@ -8,22 +8,29 @@ from tempfile import NamedTemporaryFile
 from urllib.parse import urlencode
 
 
+BASE_TEMPLATE_NAME = "_base.yaml.tmpl"
+PARTS_DIR_NAME = "parts"
+
+
 @dataclass(frozen=True)
 class TemplateSpec:
-    template_name: str
     output_name: str
+    dns_part: str
+    geoip_part: str
 
 
 MARKERS = {
     "proxies": "{{ PRIVATE_PROXIES }}",
     "proxy_groups": "{{ PRIVATE_PROXY_GROUPS }}",
     "rules": "{{ PRIVATE_RULES }}",
+    "dns": "{{ DNS_VARIANT }}",
+    "geoip": "{{ GEOIP_VARIANT }}",
 }
 
 TEMPLATES = (
-    TemplateSpec("My-Clash_Balanced.yaml.tmpl", "My-Clash_Balanced.yaml"),
-    TemplateSpec("My-Clash_Balanced_Win.yaml.tmpl", "My-Clash_Balanced_Win.yaml"),
-    TemplateSpec("My-Clash_Privacy.yaml.tmpl", "My-Clash_Privacy.yaml"),
+    TemplateSpec(output_name="My-Clash_Balanced.yaml", dns_part="dns-balanced.part", geoip_part="geoip-resolve.part"),
+    TemplateSpec(output_name="My-Clash_Balanced_Win.yaml", dns_part="dns-balanced.part", geoip_part="geoip-resolve.part"),
+    TemplateSpec(output_name="My-Clash_Privacy.yaml", dns_part="dns-privacy.part", geoip_part="geoip-no-resolve.part"),
 )
 
 
@@ -34,10 +41,13 @@ def build_provider_url(converter_base_url: str, source_url: str) -> str:
     return f"{base}/sub?{urlencode({'target': 'clash', 'list': 'true', 'url': source_url.strip()})}"
 
 
-def render_template(template: str, provider_url: str, fragments: dict[str, str]) -> str:
+def render_template(
+    template: str, provider_url: str, fragments: dict[str, str], variants: dict[str, str]
+) -> str:
     result = template.replace("{{ SUBSCRIPTION_PROVIDER_URL }}", provider_url)
+    values = {**fragments, **variants}
     for key, marker in MARKERS.items():
-        result = result.replace(marker, fragments.get(key, ""))
+        result = result.replace(marker, values.get(key, ""))
     start = result.find("{{")
     if start != -1:
         snippet = result[start : start + 40]
@@ -78,6 +88,12 @@ def atomic_write(path: Path, content: str) -> None:
         raise
 
 
+def load_part(path: Path) -> str:
+    if not path.is_file():
+        raise FileNotFoundError(path.name)
+    return path.read_text(encoding="utf-8").rstrip("\n")
+
+
 def generate_configs(
     template_dir: Path,
     output_dir: Path,
@@ -88,13 +104,19 @@ def generate_configs(
 ) -> list[Path]:
     provider_url = build_provider_url(converter_base_url, source_url)
     fragments = load_private_fragments(private_dir, require_private)
+    base_path = template_dir / BASE_TEMPLATE_NAME
+    if not base_path.is_file():
+        raise FileNotFoundError(base_path.name)
+    base_template = base_path.read_text(encoding="utf-8")
+    parts_dir = template_dir / PARTS_DIR_NAME
     rendered = []
     for spec in TEMPLATES:
-        template_path = template_dir / spec.template_name
-        if not template_path.is_file():
-            raise FileNotFoundError(template_path.name)
+        variants = {
+            "dns": load_part(parts_dir / spec.dns_part),
+            "geoip": load_part(parts_dir / spec.geoip_part),
+        }
         rendered.append(
-            (output_dir / spec.output_name, render_template(template_path.read_text(encoding="utf-8"), provider_url, fragments))
+            (output_dir / spec.output_name, render_template(base_template, provider_url, fragments, variants))
         )
     for output_path, content in rendered:
         atomic_write(output_path, content)
