@@ -61,11 +61,6 @@ dns:
     # - "+.push.apple.com"
     # - "+.market.xiaomi.com"
 
-  # 用于解析 DNS 服务器自身域名
-  default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-
 # ↓ 由 parts/ 注入（dns-balanced / dns-privacy）
 {{ DNS_VARIANT }}
 
@@ -134,7 +129,7 @@ rule-providers:
   Privacy:        {<<: *c, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Privacy/Privacy_Classical.yaml,              path: ./rule/Privacy_Classical.yaml}
   PT:             {<<: *c, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/PrivateTracker/PrivateTracker.yaml,          path: ./rule/PrivateTracker.yaml}
   SteamCN:        {<<: *c, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/SteamCN/SteamCN.yaml,                        path: ./rule/SteamCN.yaml}
-  SteamCDN:       {<<: *c, url: https://testingcf.jsdelivr.net/gh/Aethersailor/Custom_OpenClash_Rules/refs/heads/main/rule/Steam_CDN_Classical.yaml,    path: ./rule/Steam_CDN_Classical.yaml}
+  SteamCDN:       {<<: *c, url: https://testingcf.jsdelivr.net/gh/Aethersailor/Custom_OpenClash_Rules@main/rule/Steam_CDN_Classical.yaml,               path: ./rule/Steam_CDN_Classical.yaml}
   Steam:          {<<: *c, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Steam/Steam.yaml,                            path: ./rule/Steam.yaml}
   BiliBili:       {<<: *c, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/BiliBili/BiliBili.yaml,                      path: ./rule/BiliBili.yaml}
   ChinaMedia:     {<<: *c, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMedia/ChinaMedia.yaml,                  path: ./rule/ChinaMedia.yaml}
