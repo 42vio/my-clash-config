@@ -331,6 +331,13 @@ class ComposeSecurityTests(unittest.TestCase):
         self.assertIn('"127.0.0.1:${SUBWEB_PORT:-58080}:80"', content)
         self.assertNotIn("0.0.0.0:", content)
 
+    def test_pref_ini_listens_on_all_interfaces_inside_the_container(self):
+        content = (ROOT / "docker" / "subconverter" / "pref.ini").read_text(encoding="utf-8")
+        self.assertIn("listen=0.0.0.0", content)
+        self.assertIn("api_mode=true", content)
+        self.assertEqual(content.count("default_url"), 1)
+        self.assertIn("default_url=\n", content)
+
 
 class CliTests(unittest.TestCase):
     def test_cli_requires_source_url_and_converter_base_url(self):
