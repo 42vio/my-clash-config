@@ -1,5 +1,7 @@
 schema-version: 1
-private-root: /data/private
+# /app/private is the container path the compose stack binds to the host's
+# ignored ./private directory (manager read-write, validator read-only).
+private-root: /app/private
 converter-base-url: http://127.0.0.1:25500
 publication:
   mode: domain

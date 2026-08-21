@@ -32,6 +32,7 @@ from clash_sub.releases import (
     _require_user_releases_root,
     _validate_manifest,
 )
+from clash_sub.settings import load_settings
 from clash_sub.traffic import TrafficClient
 from clash_sub.validation import sha256_bytes
 
@@ -526,3 +527,28 @@ def create_publication_server(
         {"service": service},
     )
     return ThreadingHTTPServer((listen, port), handler)
+
+
+def _main() -> int:
+    """Serve verified releases on loopback from container-mounted settings."""
+    private_root = Path(os.environ.get("PRIVATE_ROOT", "/app/private"))
+    service_path = private_root / "config" / "service.yaml"
+    users_path = private_root / "config" / "users.yaml"
+    settings_paths = (service_path, users_path)
+    port = load_settings(service_path, users_path).service.publication.publisher_port
+    service = PublicationService(
+        settings_loader=lambda: load_settings(service_path, users_path),
+        traffic_client=TrafficClient(),
+        settings_revision=lambda: settings_file_revision(settings_paths),
+    )
+    listen = os.environ.get("PUBLISHER_LISTEN", LOOPBACK_LISTEN)
+    server = create_publication_server(listen, port, service)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())
