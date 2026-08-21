@@ -1,0 +1,27 @@
+schema-version: 1
+private-root: /data/private
+converter-base-url: http://127.0.0.1:25500
+publication:
+  mode: domain
+  subscription-authority: sub.example.com:8443
+  panel-authority: panel.example.com:8443
+  publisher-listen: 127.0.0.1
+  publisher-port: 25501
+reality:
+  public-address: 192.0.2.10
+  public-port: 443
+  required-flow: xtls-rprx-vision
+xui:
+  panel-listen: 127.0.0.1
+  panel-port: 2053
+  panel-base-path: /example-random-panel-path/
+  subscription-listen: 127.0.0.1
+  subscription-port: 2096
+  xray-config-path: /usr/local/x-ui/bin/config.json
+  xray-binary-path: /usr/local/x-ui/bin/xray-linux-amd64
+  expected-panel-version: 3.6.0
+  expected-xray-version: 26.6.27
+certificate:
+  fullchain-path: /etc/letsencrypt/live/panel.example.com/fullchain.pem
+  alert-before-seconds: 1209600
+  alert-command: []

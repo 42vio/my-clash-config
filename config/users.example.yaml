@@ -1,0 +1,16 @@
+schema-version: 1
+users:
+  owner:
+    role: owner
+    token-sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    variants: [balanced, balanced-win, privacy]
+    xui-subscription-url: http://127.0.0.1:2096/sub/example-owner-sub-id
+    local-sources:
+      airport: sources/owner/airport.yaml
+      home: sources/owner/home.yaml
+  friend:
+    role: member
+    token-sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    variants: [balanced]
+    xui-subscription-url: http://127.0.0.1:2096/sub/example-friend-sub-id
+    local-sources: {}
