@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
 
@@ -124,3 +124,27 @@ class Release:
     user_id: str
     path: Path
     files: Mapping[str, Path]
+
+
+@dataclass(frozen=True)
+class Request:
+    """Raw HTTP request as seen by the publisher.
+
+    ``path`` and ``headers`` stay out of the representation: tokenized
+    subscription paths must never leak through tracebacks or debug logs.
+    """
+
+    method: str
+    path: str = field(repr=False)
+    client_ip: str
+    peer_ip: str
+    headers: Mapping[str, str] = field(repr=False)
+
+
+@dataclass(frozen=True)
+class Response:
+    """Immutable HTTP response; the body may carry proxy credentials."""
+
+    status: int
+    headers: Mapping[str, str]
+    body: bytes = field(repr=False)
