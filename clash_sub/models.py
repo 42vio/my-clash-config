@@ -107,3 +107,20 @@ class SubscriptionUserinfo:
             "upload=%d; download=%d; total=%d; expire=%d"
             % (self.upload, self.download, self.total, self.expire)
         )
+
+
+@dataclass(frozen=True)
+class Candidate:
+    operation_id: str
+    user_id: str
+    path: Path
+    files: Mapping[str, Path]
+    manifest_path: Path
+
+
+@dataclass(frozen=True)
+class Release:
+    release_id: str
+    user_id: str
+    path: Path
+    files: Mapping[str, Path]
