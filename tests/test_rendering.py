@@ -108,6 +108,37 @@ def load_private_snapshot(path: Path) -> dict[str, object]:
     return snapshot
 
 
+def approved_balanced_win_reference_document(extra_path: bool = False) -> dict[str, object]:
+    stale_target = "Unavailable Home"
+    proxy_groups = [
+        {"name": "Selector", "type": "select", "proxies": ["DIRECT", "Owner XUI"]},
+        {"name": "Group1", "type": "select", "proxies": ["Selector"]},
+        {"name": "Group2", "type": "select", "proxies": ["Group1"]},
+        {"name": "Group3", "type": "select", "proxies": ["Group2"]},
+        {"name": "Group4", "type": "select", "proxies": ["Group3"]},
+        {"name": "HomeServer1", "type": "select", "proxies": ["DIRECT", "Selector", stale_target]},
+        {"name": "HomeServer2", "type": "select", "proxies": ["DIRECT", "Selector", stale_target]},
+        {"name": "HomeServer3", "type": "select", "proxies": ["DIRECT", "Selector", stale_target]},
+    ]
+    if extra_path:
+        proxy_groups.append(
+            {"name": "UnexpectedExtra", "type": "select", "proxies": ["DIRECT", "Selector", stale_target]}
+        )
+    return {
+        "dns": {"enable": True},
+        "proxies": private_proxy_snapshot("Owner XUI")["proxies"],
+        "proxy-providers": {
+            "Subscribe": {
+                "type": "http",
+                "url": "https://subscription.example/provider",
+                "path": "./providers/subscribe.yaml",
+            }
+        },
+        "proxy-groups": proxy_groups,
+        "rules": ["MATCH,Selector"],
+    }
+
+
 def run_python_script(script_name: str, *args: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(ROOT / "scripts" / script_name), *[str(argument) for argument in args]],
@@ -368,26 +399,7 @@ class RenderingTests(unittest.TestCase):
                 ],
                 "rules": ["MATCH,Selector"],
             }
-            balanced_win_document = {
-                "dns": {"enable": True},
-                "proxies": private_proxy_snapshot("Owner XUI")["proxies"],
-                "proxy-providers": {
-                    "Subscribe": {
-                        "type": "http",
-                        "url": "https://subscription.example/provider",
-                        "path": "./providers/subscribe.yaml",
-                    }
-                },
-                "proxy-groups": [
-                    {"name": "Selector", "type": "select", "proxies": ["DIRECT", "Owner XUI"]},
-                    {"name": "Group1", "type": "select", "proxies": ["Selector"]},
-                    {"name": "Group2", "type": "select", "proxies": ["Group1"]},
-                    {"name": "Group3", "type": "select", "proxies": ["Group2"]},
-                    {"name": "Group4", "type": "select", "proxies": ["Group3"]},
-                    {"name": "HomeServer", "type": "select", "proxies": ["DIRECT", "Selector", "Unavailable Home"]},
-                ],
-                "rules": ["MATCH,Selector"],
-            }
+            balanced_win_document = approved_balanced_win_reference_document()
             privacy_document = {
                 "dns": {"enable": True},
                 "proxies": private_proxy_snapshot("Owner XUI", "Owner Home")["proxies"],
@@ -419,7 +431,14 @@ class RenderingTests(unittest.TestCase):
                 unresolved_paths[variant] = migration.validate_reference_document(document, variant=variant)
 
             self.assertEqual(unresolved_paths["balanced"], [])
-            self.assertEqual(unresolved_paths["balanced-win"], ["proxy-groups[5].proxies[2]"])
+            self.assertEqual(
+                unresolved_paths["balanced-win"],
+                [
+                    "proxy-groups[5].proxies[2]",
+                    "proxy-groups[6].proxies[2]",
+                    "proxy-groups[7].proxies[2]",
+                ],
+            )
             self.assertEqual(unresolved_paths["privacy"], [])
 
             orders = [list(document.keys()) for document in references.values()]
@@ -443,11 +462,21 @@ class RenderingTests(unittest.TestCase):
                 path_only_changes[variant] = removed_paths
                 injections[variant] = injection_groups
 
-            self.assertEqual(path_only_changes["balanced-win"], ["proxy-groups[0].proxies", "proxy-groups[5].proxies[2]"])
+            self.assertEqual(
+                path_only_changes["balanced-win"],
+                [
+                    "proxy-groups[0].proxies",
+                    "proxy-groups[5].proxies[2]",
+                    "proxy-groups[6].proxies[2]",
+                    "proxy-groups[7].proxies[2]",
+                ],
+            )
             self.assertNotIn(
                 "Unavailable Home",
                 transformed["balanced-win"]["proxy-groups"][5]["proxies"],
             )
+            self.assertNotIn("Unavailable Home", transformed["balanced-win"]["proxy-groups"][6]["proxies"])
+            self.assertNotIn("Unavailable Home", transformed["balanced-win"]["proxy-groups"][7]["proxies"])
 
             migration.write_variants(template_dir, orders[0], transformed, injections)
 
@@ -576,23 +605,29 @@ class RenderingTests(unittest.TestCase):
 
         self.assertNotIn("Unknown Target", str(context.exception))
 
-    def test_balanced_win_rejects_distinct_unresolved_proxy_targets(self):
+    def test_balanced_win_rejects_extra_unresolved_proxy_path_even_with_same_stale_value(self):
         migration = load_script_module(
             "migrate_reference_templates",
             ROOT / "scripts" / "migrate_reference_templates.py",
         )
-        document = {
-            "proxies": [{"name": "Owner XUI", "type": "vless", "server": "node.example.com", "port": 443}],
-            "proxy-groups": [
-                {"name": "Selector", "type": "select", "proxies": ["DIRECT", "Unknown Target A", "Unknown Target B"]}
-            ],
-        }
+        document = approved_balanced_win_reference_document(extra_path=True)
 
-        with self.assertRaisesRegex(ValueError, r"proxy-groups\[0\]\.proxies\[2\]") as context:
+        with self.assertRaisesRegex(ValueError, r"proxy-groups\[8\]\.proxies\[2\]") as context:
             migration.validate_reference_document(document, variant="balanced-win")
 
-        self.assertNotIn("Unknown Target A", str(context.exception))
-        self.assertNotIn("Unknown Target B", str(context.exception))
+        self.assertNotIn("Unavailable Home", str(context.exception))
+
+    def test_compare_normalize_reference_rejects_extra_balanced_win_unresolved_proxy_path(self):
+        compare = load_script_module(
+            "compare_reference_configs",
+            ROOT / "scripts" / "compare_reference_configs.py",
+        )
+        document = approved_balanced_win_reference_document(extra_path=True)
+
+        with self.assertRaisesRegex(ValueError, r"proxy-groups\[8\]\.proxies\[2\]") as context:
+            compare.normalize_reference(document, ("Selector",), "balanced-win")
+
+        self.assertNotIn("Unavailable Home", str(context.exception))
 
     def test_private_proxy_dir_guard_accepts_only_primary_checkout_owner_directory(self):
         migration = load_script_module(

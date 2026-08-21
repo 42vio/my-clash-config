@@ -13,6 +13,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from clash_sub.rendering import load_variant, render_variant
+from clash_sub.reference_rules import (
+    is_approved_balanced_win_unresolved_proxy_path,
+    safe_path,
+)
 
 
 REFERENCE_FILENAMES = {
@@ -92,7 +96,7 @@ def normalize_reference(document: Mapping[str, object], inject_groups: tuple[str
     groups = normalized.get("proxy-groups")
     if not isinstance(groups, list):
         raise ValueError("reference proxy-groups must be a list")
-    for group in groups:
+    for group_index, group in enumerate(groups):
         if not isinstance(group, dict):
             raise ValueError("reference proxy-groups entries must be mappings")
         use = group.get("use")
@@ -104,17 +108,25 @@ def normalize_reference(document: Mapping[str, object], inject_groups: tuple[str
                 group.pop("use", None)
         proxies = group.get("proxies")
         if isinstance(proxies, list) and variant == "balanced-win":
-            proxies = [
-                item
-                for item in proxies
-                if not (
-                    isinstance(item, str)
-                    and item.strip() not in BUILTIN_PROXY_TARGETS
-                    and item.strip() not in inline_names
-                    and item.strip() not in group_name_set
-                    and item.strip() not in provider_name_set
-                )
-            ]
+            filtered_proxies = []
+            for proxy_index, item in enumerate(proxies):
+                normalized_item = item.strip() if isinstance(item, str) else item
+                if (
+                    isinstance(normalized_item, str)
+                    and normalized_item not in BUILTIN_PROXY_TARGETS
+                    and normalized_item not in inline_names
+                    and normalized_item not in group_name_set
+                    and normalized_item not in provider_name_set
+                ):
+                    path_tuple = ("proxy-groups", group_index, "proxies", proxy_index)
+                    if not is_approved_balanced_win_unresolved_proxy_path(path_tuple):
+                        raise ValueError(
+                            "reference contains an unresolved proxy target at %s"
+                            % safe_path(path_tuple)
+                        )
+                    continue
+                filtered_proxies.append(item)
+            proxies = filtered_proxies
             group["proxies"] = proxies
         if group.get("name") not in inject_groups:
             continue

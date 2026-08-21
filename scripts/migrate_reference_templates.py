@@ -17,6 +17,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from clash_sub.rendering import dump_root_yaml, variant_root_marker
+from clash_sub.reference_rules import (
+    is_approved_balanced_win_unresolved_proxy_path,
+    safe_path,
+)
 
 
 REFERENCE_FILENAMES = {
@@ -34,20 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--template-dir", type=Path, required=True)
     parser.add_argument("--private-proxy-dir", type=Path, required=True)
     return parser.parse_args()
-
-
-def safe_path(path: tuple[object, ...]) -> str:
-    if not path:
-        return "<root>"
-    rendered = ""
-    for item in path:
-        if isinstance(item, int):
-            rendered += "[%d]" % item
-        else:
-            if rendered:
-                rendered += "."
-            rendered += str(item)
-    return rendered
 
 
 def iter_scalars(value: object, path: tuple[object, ...] = ()) -> Iterable[tuple[tuple[object, ...], object]]:
@@ -209,7 +199,6 @@ def validate_reference_document(document: Mapping[str, object], *, variant: str 
     providers_names = provider_names(document)
     unresolved_proxy_paths: list[str] = []
     allow_unresolved_proxy_targets = variant == "balanced-win"
-    unresolved_proxy_target: str | None = None
     for group_index, group in enumerate(document.get("proxy-groups", [])):
         if not isinstance(group, dict):
             raise ValueError("proxy-groups entries must be mappings")
@@ -227,17 +216,12 @@ def validate_reference_document(document: Mapping[str, object], *, variant: str 
             ):
                 continue
             if normalized_target not in providers_names:
-                path = safe_path(("proxy-groups", group_index, "proxies", proxy_index))
+                path_tuple = ("proxy-groups", group_index, "proxies", proxy_index)
+                path = safe_path(path_tuple)
                 if allow_unresolved_proxy_targets:
-                    if unresolved_proxy_target is None:
-                        unresolved_proxy_target = normalized_target
-                    elif normalized_target != unresolved_proxy_target:
-                        raise ValueError(
-                            "balanced-win unresolved proxy targets must refer to one repeated stale target; additional path: %s"
-                            % path
-                        )
-                    unresolved_proxy_paths.append(path)
-                    continue
+                    if is_approved_balanced_win_unresolved_proxy_path(path_tuple):
+                        unresolved_proxy_paths.append(path)
+                        continue
                 raise ValueError(
                     "reference contains an unresolved proxy target at %s"
                     % path
