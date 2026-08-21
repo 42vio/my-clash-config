@@ -9,5 +9,5 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/opt/certbot/bin/certbot renew --quiet
-ExecStartPost=/opt/clash-sub/scripts/check_certificate.py --mark-renewal ok
+ExecStartPost=/usr/bin/python3 /opt/clash-sub/scripts/check_certificate.py --mark-renewal ok
 OnFailure=clash-sub-cert-renew-failed.service

@@ -433,15 +433,21 @@ class InstallerTests(unittest.TestCase):
             self.arguments("--apply"), root=root, runner=FakeRunner(root=root)
         )
         after_first = snapshot_without_backups(root)
+        second_runner = FakeRunner(root=root)
         second = run_installer(
-            self.arguments("--apply"), root=root, runner=FakeRunner(root=root)
+            self.arguments("--apply"), root=root, runner=second_runner
         )
 
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(snapshot_without_backups(root), after_first)
-        second_runner_commands = FakeRunner(root=root).commands
-        self.assertEqual(second_runner_commands, [])
+        # The existing certificate must not be re-issued on a repeat run.
+        reissued = [
+            command
+            for command in second_runner.commands
+            if "certonly" in command
+        ]
+        self.assertEqual(reissued, [])
 
     # ------------------------------------------------------------------
     # content and placement
@@ -571,6 +577,59 @@ class InstallerTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("repo_path_mismatch", result.stderr)
+
+    def test_active_ufw_with_exact_approved_rules_proceeds_without_reset(self):
+        root = self.empty_root()
+        runner = FakeRunner(root=root, ufw_status=UFW_ACTIVE_APPROVED)
+        result = run_installer(self.arguments("--apply"), root=root, runner=runner)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(("ufw", "--force", "reset"), runner.commands)
+        self.assertIn(("ufw", "allow", "%d/tcp" % SSH_PORT), runner.commands)
+        self.assertIn(("ufw", "default", "deny", "incoming"), runner.commands)
+        self.assertIn(("ufw", "--force", "enable"), runner.commands)
+
+
+class SystemdUnitTests(unittest.TestCase):
+    def test_service_units_exec_only_interpreter_or_certbot_binaries(self):
+        # A 644 project script without a shebang would fail with
+        # systemd 203/EXEC; worse, a failed ExecStartPost marks the
+        # whole renew oneshot failed, so OnFailure would record a
+        # failed renewal even when certbot renew succeeded.
+        allowed = ("/usr/bin/python3", "/opt/certbot/bin/certbot")
+        checker_seen = False
+        services = sorted((ROOT / "deploy" / "systemd").glob("*.service"))
+        self.assertGreaterEqual(len(services), 3)
+        for path in services:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped.startswith(("ExecStart=", "ExecStartPost=")):
+                    continue
+                executable = stripped.split("=", 1)[1].split()[0]
+                self.assertTrue(
+                    executable.startswith(allowed), (path.name, executable)
+                )
+                if executable == "/usr/bin/python3":
+                    self.assertIn("check_certificate.py", stripped, path.name)
+                    checker_seen = True
+                else:
+                    self.assertEqual(
+                        executable, "/opt/certbot/bin/certbot", path.name
+                    )
+        self.assertTrue(checker_seen)
+
+    def test_units_never_refresh_subscriptions_or_run_containers(self):
+        exec_lines = []
+        for path in sorted((ROOT / "deploy" / "systemd").iterdir()):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith(("ExecStart=", "ExecStartPost=")):
+                    exec_lines.append(stripped)
+        self.assertTrue(exec_lines)
+        combined = "\n".join(exec_lines)
+        self.assertNotIn("docker", combined)
+        self.assertNotIn("bin/clash-sub", combined)
+        self.assertNotIn("refresh", combined)
 
 
 class WrapperTests(unittest.TestCase):

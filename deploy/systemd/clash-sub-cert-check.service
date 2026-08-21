@@ -5,4 +5,4 @@ Description=Check certificate health and send alerts
 
 [Service]
 Type=oneshot
-ExecStart=/opt/clash-sub/scripts/check_certificate.py
+ExecStart=/usr/bin/python3 /opt/clash-sub/scripts/check_certificate.py
