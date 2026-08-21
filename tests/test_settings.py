@@ -1,51 +1,16 @@
+import builtins
+import importlib.util
 import stat
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import yaml
+
 from clash_sub.models import SourceSpec
 from clash_sub.settings import SettingsError, hash_token, load_settings, rotate_user_token
-
-
-def dump_yaml(value, indent=0):
-    prefix = " " * indent
-    if isinstance(value, dict):
-        lines = []
-        for key, item in value.items():
-            if isinstance(item, (dict, list)):
-                if not item:
-                    lines.append(f"{prefix}{key}: {'{}' if isinstance(item, dict) else '[]'}")
-                elif isinstance(item, list) and all(not isinstance(entry, (dict, list)) for entry in item):
-                    lines.append(
-                        f"{prefix}{key}: [{', '.join(dump_scalar(entry) for entry in item)}]"
-                    )
-                else:
-                    lines.append(f"{prefix}{key}:")
-                    lines.append(dump_yaml(item, indent + 2))
-            else:
-                lines.append(f"{prefix}{key}: {dump_scalar(item)}")
-        return "\n".join(lines)
-    if isinstance(value, list):
-        if all(not isinstance(item, (dict, list)) for item in value):
-            return f"{prefix}[{', '.join(dump_scalar(item) for item in value)}]"
-        lines = []
-        for item in value:
-            if isinstance(item, (dict, list)):
-                lines.append(f"{prefix}-")
-                lines.append(dump_yaml(item, indent + 2))
-            else:
-                lines.append(f"{prefix}- {dump_scalar(item)}")
-        return "\n".join(lines)
-    return f"{prefix}{dump_scalar(value)}"
-
-
-def dump_scalar(value):
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    return str(value)
 
 
 class SettingsTests(unittest.TestCase):
@@ -85,8 +50,14 @@ class SettingsTests(unittest.TestCase):
 
         service_path = self.private_root / "config" / "service.yaml"
         users_path = self.private_root / "config" / "users.yaml"
-        service_path.write_text(dump_yaml(service_data) + "\n", encoding="utf-8")
-        users_path.write_text(dump_yaml(users_data) + "\n", encoding="utf-8")
+        service_path.write_text(
+            yaml.safe_dump(service_data, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
+        users_path.write_text(
+            yaml.safe_dump(users_data, sort_keys=False, default_flow_style=False),
+            encoding="utf-8",
+        )
         service_path.chmod(service_mode)
         users_path.chmod(users_mode)
         return service_path, users_path
@@ -175,6 +146,38 @@ class SettingsTests(unittest.TestCase):
         settings = load_settings(service_path, users_path)
 
         self.assertEqual(settings.service.publication.subscription_authority, "198.51.100.10:8443")
+
+    def test_write_settings_uses_pyyaml_block_lists_for_variants_and_alert_command(self):
+        service = self.valid_service()
+        service["certificate"]["alert-command"] = ["echo", "warn"]
+        service_path, users_path = self.write_settings(service=service)
+
+        service_text = service_path.read_text(encoding="utf-8")
+        users_text = users_path.read_text(encoding="utf-8")
+        settings = load_settings(service_path, users_path)
+
+        self.assertIn("alert-command:\n  - echo\n  - warn\n", service_text)
+        self.assertIn("variants:\n    - balanced\n    - balanced-win\n    - privacy\n", users_text)
+        self.assertEqual(settings.service.certificate.alert_command, ("echo", "warn"))
+        self.assertEqual(
+            settings.users["owner"].variants,
+            ("balanced", "balanced-win", "privacy"),
+        )
+
+    def test_settings_module_requires_pyyaml_import(self):
+        settings_path = Path(__file__).resolve().parents[1] / "clash_sub" / "settings.py"
+        spec = importlib.util.spec_from_file_location("clash_sub_settings_without_yaml", settings_path)
+        module = importlib.util.module_from_spec(spec)
+        real_import = builtins.__import__
+
+        def raising_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "yaml":
+                raise ModuleNotFoundError("No module named 'yaml'")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=raising_import):
+            with self.assertRaises(ModuleNotFoundError):
+                spec.loader.exec_module(module)
 
     def test_member_cannot_declare_owner_local_sources(self):
         service_path, users_path = self.write_settings(

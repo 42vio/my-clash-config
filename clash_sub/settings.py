@@ -7,6 +7,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import yaml
+
 from clash_sub.models import (
     LOCAL_SOURCE_KINDS,
     VARIANTS,
@@ -20,130 +22,6 @@ from clash_sub.models import (
     UserSpec,
     XuiSettings,
 )
-
-try:
-    import yaml  # type: ignore
-except ModuleNotFoundError:  # pragma: no cover - exercised by sandbox runtime
-    class _FallbackYamlError(ValueError):
-        pass
-
-    def _parse_scalar(value):
-        if value == "[]":
-            return []
-        if value == "{}":
-            return {}
-        if value.startswith("["):
-            if not value.endswith("]"):
-                raise _FallbackYamlError("malformed inline list")
-            inner = value[1:-1].strip()
-            if not inner:
-                return []
-            return [_parse_scalar(item.strip()) for item in inner.split(",")]
-        if value in ("true", "false"):
-            return value == "true"
-        if re.fullmatch(r"-?\d+", value):
-            return int(value)
-        return value
-
-    def _fallback_safe_load(text):
-        root = {}
-        stack = [(-1, root)]
-        for lineno, raw_line in enumerate(text.splitlines(), 1):
-            if not raw_line.strip():
-                continue
-            indent = len(raw_line) - len(raw_line.lstrip(" "))
-            if indent % 2:
-                raise _FallbackYamlError("indentation must use 2 spaces")
-            stripped = raw_line.strip()
-            if stripped.startswith("- "):
-                raise _FallbackYamlError("block lists are unsupported")
-            if ":" not in stripped:
-                raise _FallbackYamlError("expected key/value mapping")
-            while indent <= stack[-1][0]:
-                stack.pop()
-            if not isinstance(stack[-1][1], dict):
-                raise _FallbackYamlError("nested container must be a mapping")
-            key, rest = stripped.split(":", 1)
-            key = key.strip()
-            rest = rest.lstrip()
-            if not key:
-                raise _FallbackYamlError("empty key")
-            if rest == "":
-                child = {}
-                stack[-1][1][key] = child
-                stack.append((indent, child))
-                continue
-            try:
-                stack[-1][1][key] = _parse_scalar(rest)
-            except _FallbackYamlError as exc:
-                raise _FallbackYamlError("line %s: %s" % (lineno, exc))
-        return root
-
-    def _format_scalar(value):
-        if isinstance(value, bool):
-            return "true" if value else "false"
-        if isinstance(value, int):
-            return str(value)
-        return str(value)
-
-    def _fallback_safe_dump(value, indent=0):
-        prefix = " " * indent
-        if isinstance(value, dict):
-            lines = []
-            for key, item in value.items():
-                if isinstance(item, (dict, list)):
-                    if not item:
-                        lines.append(
-                            "%s%s: %s"
-                            % (prefix, key, "{}" if isinstance(item, dict) else "[]")
-                        )
-                    elif isinstance(item, list) and all(
-                        not isinstance(entry, (dict, list)) for entry in item
-                    ):
-                        lines.append(
-                            "%s%s: [%s]"
-                            % (
-                                prefix,
-                                key,
-                                ", ".join(_format_scalar(entry) for entry in item),
-                            )
-                        )
-                    else:
-                        lines.append("%s%s:" % (prefix, key))
-                        lines.append(_fallback_safe_dump(item, indent + 2))
-                else:
-                    lines.append("%s%s: %s" % (prefix, key, _format_scalar(item)))
-            return "\n".join(lines)
-        if isinstance(value, list):
-            if all(not isinstance(item, (dict, list)) for item in value):
-                return "%s[%s]" % (
-                    prefix,
-                    ", ".join(_format_scalar(item) for item in value),
-                )
-            lines = []
-            for item in value:
-                if isinstance(item, (dict, list)):
-                    lines.append("%s-" % prefix)
-                    lines.append(_fallback_safe_dump(item, indent + 2))
-                else:
-                    lines.append("%s- %s" % (prefix, _format_scalar(item)))
-            return "\n".join(lines)
-        return "%s%s" % (prefix, _format_scalar(value))
-
-    class _FallbackYamlModule:
-        YAMLError = _FallbackYamlError
-
-        @staticmethod
-        def safe_load(text):
-            return _fallback_safe_load(text)
-
-        @staticmethod
-        def safe_dump(data, sort_keys=False):
-            if sort_keys:
-                raise _FallbackYamlError("sort_keys is unsupported")
-            return _fallback_safe_dump(data) + "\n"
-
-    yaml = _FallbackYamlModule()
 
 
 class SettingsError(ValueError):
