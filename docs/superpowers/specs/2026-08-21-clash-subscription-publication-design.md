@@ -1,7 +1,7 @@
 # Clash 私有订阅生成与发布服务设计
 
 **日期：** 2026-08-21
-**状态：** 方案已确认，文档待用户复审
+**状态：** 设计已通过
 **目标仓库名：** `my-clash-config`
 **取代：** 2026-08-19 版设计及实施计划，以及本设计复审前形成的 2026-08-21 旧实施计划
 
@@ -56,8 +56,8 @@ flowchart LR
 
 部署包含两个常驻容器：
 
-- `subconverter`：仅在 Compose 网络内提供规范化转换，不映射公网端口。
-- `publisher`：只读取成功发布的静态文件，通过宿主机回环端口交给 Nginx。
+- `subconverter`：使用 Linux host network 访问 3x-ui 回环订阅，自身只监听宿主机回环地址，不映射公网端口。
+- `publisher`：只读取成功发布的静态文件，使用 Linux host network 访问 3x-ui 回环订阅，并且自身只监听宿主机回环地址交给 Nginx。
 
 生成器和 Mihomo 校验器按命令临时运行，不常驻、不提供公网接口。
 
@@ -346,7 +346,7 @@ clash-sub refresh
 clash-sub refresh <user-id>
 clash-sub airport
 clash-sub history <user-id>
-clash-sub rollback <user-id>
+clash-sub rollback <user-id> <release-id>
 clash-sub rotate-link <user-id>
 clash-sub logs
 ```
@@ -357,7 +357,7 @@ clash-sub logs
 - `refresh` 默认生成全部用户；带用户 ID 时仅生成该用户。
 - `airport` 完成安全导入并自动刷新 owner。
 - `history` 只列成功版本。
-- `rollback` 原子切换到已有成功版本。
+- `rollback` 原子切换到指定的已有成功版本。
 - `rotate-link` 生成新令牌、只保存哈希并将完整新 URL 显示一次。
 - `logs` 默认对 URL、令牌和节点凭据脱敏。
 
@@ -400,12 +400,12 @@ Nginx 和原生 3x-ui/Xray 是宿主机服务，不进入本项目 Compose。3x-
 
 Compose 至少包含：
 
-- `subconverter`：仅 `expose` 容器端口，供生成器访问。
-- `publisher`：映射一个 `127.0.0.1:<port>` 端口供宿主 Nginx 反代。
-- `generator`：通过 Compose profile 或 `run --rm` 按需执行。
+- `subconverter`：使用 Linux host network，但进程强制只监听 `127.0.0.1:<port>`，不得绑定公网地址。
+- `publisher`：使用 Linux host network，但应用强制只监听 `127.0.0.1:<port>` 供宿主 Nginx 反代。
+- `generator`：通过 Compose profile 或 `run --rm` 按需执行，并使用 Linux host network 访问 3x-ui 与 subconverter 的回环入口。
 - `validator`：固定版本 Mihomo 镜像，按需执行配置检查。
 
-`subconverter` 与 `publisher` 不共享写权限。publisher 不需要访问源订阅文件；流量元数据读取通过最小化的用户映射和只读凭据完成。
+普通 bridge 容器无法访问宿主机 `127.0.0.1`，而 subconverter 本身也需要抓取该回环订阅，因此 subconverter、publisher 和 generator 的 host network 是访问 3x-ui 回环服务所必需的实现约束，不代表增加公网监听。三者各自强制使用回环监听或不监听 HTTP。`subconverter` 与 `publisher` 不共享写权限。publisher 不需要访问源订阅文件；流量元数据读取通过最小化的用户映射和只读凭据完成。
 
 ## 16. 验收标准
 
