@@ -667,6 +667,27 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue((release.path / "manifest.json").is_symlink())
         self.assertTrue(external_manifest.exists())
 
+    def test_symlinked_user_release_root_does_not_traverse_external_history_or_rollback(self):
+        older = self.publish_valid_owner_release("op-owner-older")
+        self.clock_value = self.clock_value + timedelta(minutes=1)
+        current_release = self.publish_valid_owner_release("op-owner-current")
+        releases_root = self.private_root / "releases"
+        owner_root = releases_root / "owner"
+        external_root = Path(self.directory.name) / "outside-owner-releases"
+        current_link = self.private_root / "current" / "owner"
+        current_before = current_link.readlink()
+        self.replace_path_with_symlink(owner_root, external_root, target_is_directory=True)
+
+        history = list_history(self.private_root, "owner")
+
+        self.assertEqual(history, ())
+        with self.assertRaises(BuildError):
+            rollback(self.private_root, "owner", older.release_id)
+        self.assertTrue(owner_root.is_symlink())
+        self.assertTrue(external_root.exists())
+        self.assertEqual(current_link.readlink(), current_before)
+        self.assertEqual(current_link.resolve(), current_release.path.resolve())
+
     def test_list_history_rejects_unsafe_user_id(self):
         with self.assertRaises(BuildError):
             list_history(self.private_root, "../owner")

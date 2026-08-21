@@ -194,11 +194,11 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
     manifest_variants = _validate_manifest(manifest, candidate.operation_id, candidate.user_id)
     _verify_release_hashes(candidate.path, manifest_variants, manifest, candidate.user_id)
 
-    releases_root = private_root / "releases" / candidate.user_id
+    releases_root, canonical_releases_root = _require_user_releases_root(
+        private_root, candidate.user_id, create=True
+    )
     current_root = private_root / "current"
     _ensure_private_dir(private_root)
-    _ensure_private_dir(private_root / "releases")
-    _ensure_private_dir(releases_root)
     _ensure_private_dir(current_root)
 
     release_id = candidate.operation_id
@@ -207,9 +207,9 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
         raise BuildError("release already exists")
     try:
         candidate.path.rename(release_path)
-        release = _release_from_manifest(release_path, manifest_variants, candidate.user_id)
+        release = _load_release(release_path, candidate.user_id, releases_root, canonical_releases_root)
         _switch_current_link(private_root, candidate.user_id, release_path)
-        _prune_old_releases(releases_root, keep)
+        _prune_old_releases(private_root, candidate.user_id, keep)
         return release
     except OSError:
         raise BuildError("failed to publish release")
@@ -217,12 +217,16 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
 
 def list_history(private_root: Path, user_id: str) -> Tuple[Release, ...]:
     _validate_slug(user_id, "user id")
-    releases_root = private_root / "releases" / user_id
-    if not releases_root.exists():
+    try:
+        release_roots = _require_user_releases_root(private_root, user_id)
+    except BuildError:
         return ()
+    if release_roots is None:
+        return ()
+    releases_root, canonical_releases_root = release_roots
     releases = []
     for child in releases_root.iterdir():
-        release = _try_load_release(child, user_id)
+        release = _try_load_release(child, user_id, releases_root, canonical_releases_root)
         if release is not None:
             releases.append(release)
     releases.sort(reverse=True)
@@ -232,9 +236,12 @@ def list_history(private_root: Path, user_id: str) -> Tuple[Release, ...]:
 def rollback(private_root: Path, user_id: str, release_id: str) -> Release:
     _validate_slug(user_id, "user id")
     _validate_release_id(release_id)
-    releases_root = private_root / "releases" / user_id
+    release_roots = _require_user_releases_root(private_root, user_id)
+    if release_roots is None:
+        raise BuildError("release path is invalid")
+    releases_root, canonical_releases_root = release_roots
     release_path = releases_root / release_id
-    release = _load_release(release_path, user_id)
+    release = _load_release(release_path, user_id, releases_root, canonical_releases_root)
     _switch_current_link(private_root, user_id, release.path)
     return release
 
@@ -391,16 +398,17 @@ def _validate_release_id(release_id: str) -> None:
     _validate_slug(release_id, "release id")
 
 
-def _load_release(release_path: Path, user_id: str) -> Release:
+def _load_release(
+    release_path: Path,
+    user_id: str,
+    releases_root: Path,
+    canonical_releases_root: Path,
+) -> Release:
     _validate_slug(release_path.name, "release id")
-    _require_real_directory(release_path, "release path")
-    releases_root = release_path.parent
-    resolved_root = releases_root.resolve()
-    try:
-        resolved_release = release_path.resolve()
-        resolved_release.relative_to(resolved_root)
-    except (OSError, ValueError):
+    if release_path.parent != releases_root:
         raise BuildError("release path escapes release root")
+    _require_real_directory(release_path, "release path")
+    _require_exact_resolved_path(canonical_releases_root / release_path.name, release_path, "release path")
     manifest_path = release_path / MANIFEST_NAME
     _require_manifest_identity(release_path, manifest_path, "release manifest path")
     manifest = _load_manifest(manifest_path)
@@ -422,21 +430,48 @@ def _switch_current_link(private_root: Path, user_id: str, release_path: Path) -
     os.replace(temp_link, current_link)
 
 
-def _prune_old_releases(releases_root: Path, keep: int) -> None:
-    history = list_history(releases_root.parent.parent, releases_root.name)
+def _prune_old_releases(private_root: Path, user_id: str, keep: int) -> None:
+    release_roots = _require_user_releases_root(private_root, user_id)
+    if release_roots is None:
+        return
+    releases_root, _canonical_releases_root = release_roots
+    history = list_history(private_root, user_id)
     for release in history[keep:]:
         _remove_private_path(releases_root, release.path)
 
 
-def _try_load_release(path: Path, user_id: str):
+def _try_load_release(path: Path, user_id: str, releases_root: Path, canonical_releases_root: Path):
     if not path.is_dir():
         return None
     try:
-        release = _load_release(path, user_id)
+        release = _load_release(path, user_id, releases_root, canonical_releases_root)
     except BuildError:
         return None
     stat_result = path.stat()
     return stat_result.st_mtime_ns, release.release_id, release
+
+
+def _require_user_releases_root(
+    private_root: Path,
+    user_id: str,
+    *,
+    create: bool = False,
+):
+    releases_root = private_root / "releases"
+    if create:
+        _ensure_private_dir(private_root)
+    canonical_root = _require_managed_release_root(releases_root, "releases root", create=create)
+    if canonical_root is None:
+        return None
+    user_root = releases_root / user_id
+    canonical_user_root = _require_managed_release_root(
+        user_root, "user releases root", create=create
+    )
+    if canonical_user_root is None:
+        return None
+    if canonical_user_root != canonical_root / user_id:
+        raise BuildError("user releases root is invalid")
+    return user_root, canonical_user_root
 
 
 def _validate_slug(value: str, label: str) -> None:
@@ -566,6 +601,21 @@ def _require_exact_resolved_path(expected: Path, actual: Path, label: str) -> Pa
 
 def _require_real_directory(path: Path, label: str) -> None:
     if path.is_symlink() or not path.is_dir():
+        raise BuildError("%s is invalid" % label)
+
+
+def _require_managed_release_root(path: Path, label: str, *, create: bool = False):
+    if create:
+        if path.exists() or path.is_symlink():
+            _require_real_directory(path, label)
+        else:
+            _ensure_private_dir(path)
+    elif not path.exists() and not path.is_symlink():
+        return None
+    _require_real_directory(path, label)
+    try:
+        return path.resolve(strict=True)
+    except (FileNotFoundError, OSError):
         raise BuildError("%s is invalid" % label)
 
 
