@@ -189,11 +189,7 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
     _require_real_directory(expected_candidate_path, "candidate path")
     _require_real_directory(candidate.path, "candidate path")
     _require_exact_resolved_path(expected_candidate_path, candidate.path, "candidate path")
-    _require_exact_resolved_path(
-        expected_candidate_path / MANIFEST_NAME,
-        candidate.manifest_path,
-        "candidate manifest path",
-    )
+    _require_manifest_identity(candidate.path, candidate.manifest_path, "candidate manifest path")
     manifest = _load_manifest(candidate.manifest_path)
     manifest_variants = _validate_manifest(manifest, candidate.operation_id, candidate.user_id)
     _verify_release_hashes(candidate.path, manifest_variants, manifest, candidate.user_id)
@@ -397,6 +393,7 @@ def _validate_release_id(release_id: str) -> None:
 
 def _load_release(release_path: Path, user_id: str) -> Release:
     _validate_slug(release_path.name, "release id")
+    _require_real_directory(release_path, "release path")
     releases_root = release_path.parent
     resolved_root = releases_root.resolve()
     try:
@@ -404,7 +401,9 @@ def _load_release(release_path: Path, user_id: str) -> Release:
         resolved_release.relative_to(resolved_root)
     except (OSError, ValueError):
         raise BuildError("release path escapes release root")
-    manifest = _load_manifest(release_path / MANIFEST_NAME)
+    manifest_path = release_path / MANIFEST_NAME
+    _require_manifest_identity(release_path, manifest_path, "release manifest path")
+    manifest = _load_manifest(manifest_path)
     manifest_variants = _validate_manifest(manifest, release_path.name, user_id)
     _verify_release_hashes(release_path, manifest_variants, manifest, user_id)
     return _release_from_manifest(release_path, manifest_variants, user_id)
@@ -568,6 +567,23 @@ def _require_exact_resolved_path(expected: Path, actual: Path, label: str) -> Pa
 def _require_real_directory(path: Path, label: str) -> None:
     if path.is_symlink() or not path.is_dir():
         raise BuildError("%s is invalid" % label)
+
+
+def _require_manifest_identity(container_path: Path, manifest_path: Path, label: str) -> Path:
+    expected_manifest_path = container_path / MANIFEST_NAME
+    if manifest_path != expected_manifest_path:
+        raise BuildError("%s is invalid" % label)
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise BuildError("%s is invalid" % label)
+    try:
+        resolved_container = container_path.resolve(strict=True)
+        resolved_manifest = manifest_path.resolve(strict=True)
+        resolved_manifest.relative_to(resolved_container)
+    except (FileNotFoundError, OSError, ValueError):
+        raise BuildError("%s is invalid" % label)
+    if resolved_manifest != resolved_container / MANIFEST_NAME:
+        raise BuildError("%s is invalid" % label)
+    return resolved_manifest
 
 
 def _discover_release_variants(release_path: Path, suffix: str) -> set:

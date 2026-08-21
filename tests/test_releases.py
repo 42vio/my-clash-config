@@ -303,6 +303,11 @@ class ReleaseTests(unittest.TestCase):
         manifest_bytes = manifest_path.read_bytes()
         digest_path.write_text(hashlib.sha256(manifest_bytes).hexdigest() + "\n", encoding="utf-8")
 
+    def replace_path_with_symlink(self, original_path: Path, external_path: Path, *, target_is_directory: bool) -> Path:
+        original_path.rename(external_path)
+        original_path.symlink_to(external_path, target_is_directory=target_is_directory)
+        return external_path
+
     def test_member_candidate_contains_only_its_own_xui_nodes(self):
         candidate = self.builder.build_candidate("friend", "op-friend")
 
@@ -510,11 +515,38 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(moved_path.exists())
         self.assertFalse((self.private_root / "staging" / "op-owner" / "owner").exists())
 
+    def test_publish_candidate_rejects_symlinked_staging_root(self):
+        candidate = self.builder.build_candidate("owner", "op-owner")
+        staging_root = self.private_root / "staging"
+        external_root = Path(self.directory.name) / "outside-staging"
+        self.replace_path_with_symlink(staging_root, external_root, target_is_directory=True)
+
+        with self.assertRaises(BuildError):
+            publish_candidate(candidate, self.private_root, keep=5)
+
+        self.assertTrue(staging_root.is_symlink())
+        self.assertTrue(external_root.exists())
+        self.assertFalse((self.private_root / "releases" / "owner" / "op-owner").exists())
+        self.assertFalse((self.private_root / "current" / "owner").exists())
+
+    def test_publish_candidate_rejects_symlinked_operation_root(self):
+        candidate = self.builder.build_candidate("owner", "op-owner")
+        operation_root = self.private_root / "staging" / "op-owner"
+        external_root = Path(self.directory.name) / "outside-operation"
+        self.replace_path_with_symlink(operation_root, external_root, target_is_directory=True)
+
+        with self.assertRaises(BuildError):
+            publish_candidate(candidate, self.private_root, keep=5)
+
+        self.assertTrue(operation_root.is_symlink())
+        self.assertTrue(external_root.exists())
+        self.assertFalse((self.private_root / "releases" / "owner" / "op-owner").exists())
+        self.assertFalse((self.private_root / "current" / "owner").exists())
+
     def test_publish_candidate_rejects_symlinked_expected_staging_user_path(self):
         candidate = self.builder.build_candidate("owner", "op-owner")
         external_root = Path(self.directory.name) / "outside-candidate"
-        candidate.path.rename(external_root)
-        candidate.path.symlink_to(external_root, target_is_directory=True)
+        self.replace_path_with_symlink(candidate.path, external_root, target_is_directory=True)
 
         with self.assertRaises(BuildError):
             publish_candidate(candidate, self.private_root, keep=5)
@@ -522,6 +554,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(candidate.path.is_symlink())
         self.assertTrue(external_root.exists())
         self.assertFalse((self.private_root / "releases" / "owner" / "op-owner").exists())
+        self.assertFalse((self.private_root / "current" / "owner").exists())
+
+    def test_publish_candidate_rejects_symlinked_manifest_entry(self):
+        candidate = self.builder.build_candidate("owner", "op-owner")
+        external_manifest = Path(self.directory.name) / "outside-manifest.json"
+        self.replace_path_with_symlink(candidate.manifest_path, external_manifest, target_is_directory=False)
+
+        with self.assertRaises(BuildError):
+            publish_candidate(candidate, self.private_root, keep=5)
+
+        self.assertTrue(candidate.manifest_path.is_symlink())
+        self.assertTrue(external_manifest.exists())
+        self.assertFalse((self.private_root / "releases" / "owner" / "op-owner").exists())
+        self.assertFalse((self.private_root / "current" / "owner").exists())
 
     def test_publish_rejects_candidate_if_manifest_changes_after_write(self):
         candidate = self.builder.build_candidate("owner", "op-owner")
@@ -599,6 +645,28 @@ class ReleaseTests(unittest.TestCase):
 
         self.assertEqual([item.release_id for item in history], [newer.release_id])
 
+    def test_list_history_ignores_symlinked_release_directory(self):
+        release = self.publish_valid_owner_release("op-owner-release")
+        external_root = Path(self.directory.name) / "outside-release"
+        self.replace_path_with_symlink(release.path, external_root, target_is_directory=True)
+
+        history = list_history(self.private_root, "owner")
+
+        self.assertEqual(history, ())
+        self.assertTrue(release.path.is_symlink())
+        self.assertTrue(external_root.exists())
+
+    def test_list_history_ignores_symlinked_manifest_entry(self):
+        release = self.publish_valid_owner_release("op-owner-release")
+        external_manifest = Path(self.directory.name) / "outside-release-manifest.json"
+        self.replace_path_with_symlink(release.path / "manifest.json", external_manifest, target_is_directory=False)
+
+        history = list_history(self.private_root, "owner")
+
+        self.assertEqual(history, ())
+        self.assertTrue((release.path / "manifest.json").is_symlink())
+        self.assertTrue(external_manifest.exists())
+
     def test_list_history_rejects_unsafe_user_id(self):
         with self.assertRaises(BuildError):
             list_history(self.private_root, "../owner")
@@ -630,6 +698,35 @@ class ReleaseTests(unittest.TestCase):
 
         with self.assertRaises(BuildError):
             rollback(self.private_root, "owner", "op-owner-first")
+
+    def test_rollback_rejects_symlinked_release_directory(self):
+        release = self.publish_valid_owner_release("op-owner-release")
+        self.clock_value = self.clock_value + timedelta(minutes=1)
+        current_release = self.publish_valid_owner_release("op-owner-current")
+        current_before = (self.private_root / "current" / "owner").resolve()
+        external_root = Path(self.directory.name) / "outside-release"
+        self.replace_path_with_symlink(release.path, external_root, target_is_directory=True)
+
+        with self.assertRaises(BuildError):
+            rollback(self.private_root, "owner", "op-owner-release")
+
+        self.assertTrue(release.path.is_symlink())
+        self.assertTrue(external_root.exists())
+        self.assertEqual(current_before, current_release.path.resolve())
+        self.assertEqual((self.private_root / "current" / "owner").resolve(), current_before)
+
+    def test_rollback_rejects_symlinked_manifest_entry(self):
+        release = self.publish_valid_owner_release("op-owner-release")
+        current_before = (self.private_root / "current" / "owner").resolve()
+        external_manifest = Path(self.directory.name) / "outside-release-manifest.json"
+        self.replace_path_with_symlink(release.path / "manifest.json", external_manifest, target_is_directory=False)
+
+        with self.assertRaises(BuildError):
+            rollback(self.private_root, "owner", "op-owner-release")
+
+        self.assertTrue((release.path / "manifest.json").is_symlink())
+        self.assertTrue(external_manifest.exists())
+        self.assertEqual((self.private_root / "current" / "owner").resolve(), current_before)
 
     def test_validator_receives_exact_private_source_locations(self):
         self.builder.build_candidate("owner", "op-owner")

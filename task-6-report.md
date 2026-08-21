@@ -12,8 +12,9 @@ Implemented the Task 6 review fixes on top of the atomic per-user release pipeli
 - Added manifest integrity verification with a sanitized `manifest.sha256` sidecar, plus strict manifest schema and hash/count shape validation.
 - Tightened candidate publish identity checks so `candidate.path` must resolve exactly to `private_root/staging/<operation_id>/<user_id>`, `candidate.manifest_path` must resolve to that directory's `manifest.json`, and safe-slug validation still gates every path-sensitive identifier.
 - Hardened publish against staging symlink forgery by requiring every managed path component from `private_root/staging` through `<operation_id>/<user_id>` to be a real directory, not a symlink, before any rename or switch. `candidate.path` itself must also be a real directory, so a forged staging symlink can no longer be published into releases.
+- Hardened manifest identity checks so publish/history/rollback only accept a `manifest.json` entry when the entry itself exists as a regular non-symlink file and resolves to the exact managed directory's `manifest.json`. A release directory alias must also be a real directory, so history and rollback no longer trust symlinked release roots.
 - Changed manifest and release validation to honor each candidate's declared variant subset as a non-empty subset of supported variants, while still requiring exact YAML, sidecar, and output-hash key matching. Owner candidates continue to publish all three variants atomically.
-- Added focused synthetic tests for member isolation, one-variant member publish, nested staging forgery rejection, staging symlink forgery rejection, owner-only snapshots, traversal rejection, sanitized manifests and sidecars, file permissions, retention, tamper detection, and rollback safety.
+- Added focused synthetic tests for member isolation, one-variant member publish, nested staging forgery rejection, staging-root/operation-root/user-dir/manifest symlink rejection, release-dir and release-manifest symlink rejection for history/rollback, owner-only snapshots, traversal rejection, sanitized manifests and sidecars, file permissions, retention, tamper detection, and rollback safety.
 
 ## Verification
 
@@ -23,7 +24,7 @@ Executed:
 .venv/bin/python -m unittest tests.test_releases tests.test_validation tests.test_rendering tests.test_converter tests.test_repository_safety tests.test_traffic -v
 ```
 
-Result: all 118 tests passed.
+Result: all 125 tests passed.
 
 ## Concerns
 
