@@ -102,16 +102,17 @@ def _validate_groups(groups):
             raise ValidationError("duplicate proxy group name: %s" % name)
         indexes[normalized_name] = index
         proxies = mapping.get("proxies")
-        if proxies is None:
-            raise ValidationError("%s must define proxies" % path)
-        _require_list(proxies, "%s.proxies" % path)
+        if proxies is None and mapping.get("include-all") is not True:
+            raise ValidationError("%s must define proxies or include-all" % path)
+        if proxies is not None:
+            _require_list(proxies, "%s.proxies" % path)
     return indexes
 
 
 def _validate_group_targets(groups, all_targets, group_indexes) -> None:
     group_references = {index: [] for index in range(len(groups))}
     for index, group in enumerate(groups):
-        proxies = group["proxies"]
+        proxies = group.get("proxies", [])
         for target_index, target in enumerate(proxies):
             if not isinstance(target, str) or not _normalized_value(target):
                 raise ValidationError(

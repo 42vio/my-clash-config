@@ -299,6 +299,13 @@ def strip_private_provider_values(
                 removed_paths.append(safe_path(("proxy-groups", index, "use")))
             if filtered_use:
                 group["use"] = filtered_use
+            elif use:
+                # The group drew every member from removed proxy
+                # providers; include-all over the inline proxies (plus
+                # the surviving filter/exclude-filter) restores that
+                # membership without proxy-providers.
+                group.pop("use", None)
+                group["include-all"] = True
             else:
                 group.pop("use", None)
         if removed_inline_proxies:

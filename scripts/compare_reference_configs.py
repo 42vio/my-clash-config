@@ -104,6 +104,11 @@ def normalize_reference(document: Mapping[str, object], inject_groups: tuple[str
             filtered = [item for item in use if item not in provider_name_set]
             if filtered:
                 group["use"] = filtered
+            elif use:
+                # Every member came from removed proxy providers, so the
+                # rendered replacement is include-all over inline proxies.
+                group.pop("use", None)
+                group["include-all"] = True
             else:
                 group.pop("use", None)
         proxies = group.get("proxies")

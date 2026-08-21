@@ -10,12 +10,27 @@ from tempfile import TemporaryDirectory
 import yaml
 from jinja2 import UndefinedError
 
+from clash_sub.models import RealitySettings
 from clash_sub.rendering import load_variant, render_text, render_variant
+from clash_sub.validation import validate_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = ROOT / "templates"
 VARIANTS = ("balanced", "balanced-win", "privacy")
+
+# Groups whose membership came from a removed proxy provider in the
+# reference migration; they must keep a node-membership mechanism that
+# survives without proxy-providers.  Values are the surviving key each
+# group must still carry next to ``include-all``.
+PROVIDER_BACKED_GROUPS = {
+    "自动选择": "exclude-filter",
+    "🇭🇰 香港节点": "filter",
+    "🇯🇵 日本节点": "filter",
+    "🇺🇲 美国节点": "filter",
+    "🇨🇳 台湾节点": "filter",
+    "🇸🇬 新加坡节点": "filter",
+}
 
 SYNTHETIC_PROXIES = (
     {
@@ -183,6 +198,24 @@ class RenderingTests(unittest.TestCase):
         for group_name, group in groups.items():
             if group_name not in variant.inject_node_groups:
                 self.assertNotIn("Synthetic Node", group.get("proxies", []))
+
+    def test_real_templates_pass_structural_validation_for_every_variant(self):
+        reality = RealitySettings("203.0.113.99", 443, "xtls-rprx-vision")
+        source_urls = ("https://secret.example/subscription",)
+        for variant in VARIANTS:
+            rendered = render_variant(TEMPLATE_DIR, variant, SYNTHETIC_PROXIES)
+            document = validate_config(rendered, source_urls, reality)
+            include_all_groups = {
+                group["name"]
+                for group in document["proxy-groups"]
+                if group.get("include-all") is True
+            }
+            self.assertEqual(include_all_groups, set(PROVIDER_BACKED_GROUPS), variant)
+            groups = {group["name"]: group for group in document["proxy-groups"]}
+            for group_name, mechanism_key in PROVIDER_BACKED_GROUPS.items():
+                self.assertTrue(
+                    groups[group_name].get(mechanism_key), "%s lost its %s" % (group_name, mechanism_key)
+                )
 
     def test_strict_undefined_rejects_unknown_template_marker(self):
         with self.assertRaises(UndefinedError):

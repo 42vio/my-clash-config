@@ -56,6 +56,7 @@ proxy-groups:
   name: 自动选择
   exclude-filter: 流量|到期|剩余|官网|过期
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png
+  include-all: true
 - type: fallback
   name: HomeServer
   proxies:
@@ -147,6 +148,7 @@ proxy-groups:
   name: 🇭🇰 香港节点
   filter: 港|HK|(?i)Hong
   hidden: true
+  include-all: true
 - type: url-test
   url: http://www.google.com/generate_204
   interval: 1800
@@ -154,6 +156,7 @@ proxy-groups:
   name: 🇯🇵 日本节点
   filter: 日|东京|JP|(?i)Japan
   hidden: true
+  include-all: true
 - type: url-test
   url: http://www.google.com/generate_204
   interval: 1800
@@ -161,6 +164,7 @@ proxy-groups:
   name: 🇺🇲 美国节点
   filter: 美|US|(?i)States|American
   hidden: true
+  include-all: true
 - type: url-test
   url: http://www.google.com/generate_204
   interval: 1800
@@ -168,6 +172,7 @@ proxy-groups:
   name: 🇨🇳 台湾节点
   filter: 台|湾|TW|(?i)Taiwan
   hidden: true
+  include-all: true
 - type: url-test
   url: http://www.google.com/generate_204
   interval: 1800
@@ -175,6 +180,7 @@ proxy-groups:
   name: 🇸🇬 新加坡节点
   filter: 新|坡|SG|(?i)Singapore
   hidden: true
+  include-all: true
 rules:
 - IP-CIDR,192.168.2.0/24,HomeServer,no-resolve
 - IP-CIDR,199.19.110.145/32,🎯 Direct,no-resolve
