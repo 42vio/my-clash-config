@@ -1,0 +1,197 @@
+mixed-port: 7890
+
+allow-lan: true
+
+bind-address: '*'
+
+mode: rule
+
+log-level: info
+
+ipv6: false
+
+external-controller: 127.0.0.1:9090
+
+profile:
+  store-selected: true
+  store-fake-ip: true
+
+{{ VARIANT_DNS_ROOT_YAML }}
+
+p:
+  type: http
+  interval: 86400
+  health-check:
+    enable: true
+    url: http://www.gstatic.com/generate_204
+    interval: 1800
+
+auto:
+  type: url-test
+  url: http://www.google.com/generate_204
+  interval: 1800
+  tolerance: 50
+  use:
+  - Subscribe
+
+sel:
+  type: select
+
+fall:
+  type: fallback
+
+usel:
+  type: select
+  use:
+  - Subscribe
+
+a3:
+  type: select
+  proxies:
+  - 自动选择
+  - 🏴‍☠️ 自建节点
+  - 🇭🇰 香港节点
+  - 🇯🇵 日本节点
+  - 🇺🇲 美国节点
+  - 🇨🇳 台湾节点
+  - 🇸🇬 新加坡节点
+
+g1:
+  type: select
+  proxies:
+  - 🎯 Direct
+  - 加速线路
+
+g2:
+  type: select
+  proxies:
+  - 🎯 Direct
+  - 加速线路
+  - ProxyServer
+
+g3:
+  type: select
+  proxies:
+  - 加速线路
+  - 🎯 Direct
+
+c:
+  type: http
+  behavior: classical
+  interval: 86400
+
+{{ PROXIES_ROOT_YAML }}
+
+{{ VARIANT_PROXY_GROUPS_ROOT_YAML }}
+
+rule-providers:
+  Direct:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Direct/Direct.yaml
+    path: ./rule/Direct.yaml
+  Lan:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Lan/Lan.yaml
+    path: ./rule/Lan.yaml
+  Download:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Download/Download.yaml
+    path: ./rule/Download.yaml
+  Advertising:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Advertising/Advertising_Classical.yaml
+    path: ./rule/Advertising_Classical.yaml
+  Hijacking:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Hijacking/Hijacking.yaml
+    path: ./rule/Hijacking.yaml
+  Privacy:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Privacy/Privacy_Classical.yaml
+    path: ./rule/Privacy_Classical.yaml
+  PT:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/PrivateTracker/PrivateTracker.yaml
+    path: ./rule/PrivateTracker.yaml
+  SteamCN:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/SteamCN/SteamCN.yaml
+    path: ./rule/SteamCN.yaml
+  SteamCDN:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://testingcf.jsdelivr.net/gh/Aethersailor/Custom_OpenClash_Rules@main/rule/Steam_CDN_Classical.yaml
+    path: ./rule/Steam_CDN_Classical.yaml
+  Steam:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Steam/Steam.yaml
+    path: ./rule/Steam.yaml
+  BiliBili:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/BiliBili/BiliBili.yaml
+    path: ./rule/BiliBili.yaml
+  ChinaMedia:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMedia/ChinaMedia.yaml
+    path: ./rule/ChinaMedia.yaml
+  GlobalMedia:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/GlobalMedia/GlobalMedia_Classical.yaml
+    path: ./rule/GlobalMedia_Classical.yaml
+  Apple:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Apple/Apple_Classical.yaml
+    path: ./rule/Apple_Classical.yaml
+  Microsoft:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Microsoft/Microsoft.yaml
+    path: ./rule/Microsoft.yaml
+  AI:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://gist.githubusercontent.com/ddgksf2013/cb4121e8b5c5d865cc949cb8120320c4/raw/Ai.yaml
+    path: ./rule/OpenAI.yaml
+  Global:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Global/Global_Classical.yaml
+    path: ./rule/Global_Classical.yaml
+  China:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/China/China_Classical.yaml
+    path: ./rule/China_Classical.yaml
+
+{{ VARIANT_RULES_ROOT_YAML }}

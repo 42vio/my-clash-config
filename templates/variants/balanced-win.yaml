@@ -1,0 +1,209 @@
+_generator:
+  inject-node-groups:
+  - 加速线路
+  - AI服务
+dns:
+  enable: true
+  ipv6: false
+  prefer-h3: false
+  listen: 0.0.0.0:53
+  enhanced-mode: fake-ip
+  use-system-hosts: false
+  cache-algorithm: arc
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+  - geosite:private
+  - +.lan
+  - +.local
+  - +.msftconnecttest.com
+  - +.msftncsi.com
+  - localhost.ptlogin2.qq.com
+  - localhost.sec.qq.com
+  - localhost.work.weixin.qq.com
+  - +.srv.nintendo.net
+  - +.stun.playstation.net
+  - +.xboxlive.com
+  - xbox.*.microsoft.com
+  - +.hitrontech.com
+  - +.420615.xyz
+  default-nameserver:
+  - 223.5.5.5
+  - 119.29.29.29
+  respect-rules: true
+  nameserver:
+  - https://1.1.1.1/dns-query
+  - https://8.8.8.8/dns-query
+  nameserver-policy:
+    geosite:private,cn:
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
+    +.hitrontech.com:
+    - 172.28.30.211
+    - 172.28.30.210
+  proxy-server-nameserver:
+  - https://223.5.5.5/dns-query
+  - https://doh.pub/dns-query
+  direct-nameserver:
+  - https://223.5.5.5/dns-query
+  - https://doh.pub/dns-query
+  direct-nameserver-follow-policy: true
+proxy-groups:
+- type: select
+  proxies:
+  - 自动选择
+  - 🇭🇰 香港节点
+  - 🇯🇵 日本节点
+  - 🇺🇲 美国节点
+  - 🇨🇳 台湾节点
+  - 🇸🇬 新加坡节点
+  name: 加速线路
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Proxy.png
+- type: url-test
+  url: http://www.google.com/generate_204
+  interval: 1800
+  tolerance: 50
+  name: 自动选择
+  exclude-filter: 流量|到期|剩余|官网|过期
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png
+- type: select
+  proxies: &id001
+  - 🎯 Direct
+  - 加速线路
+  name: 游戏下载
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Game.png
+- type: select
+  proxies: *id001
+  name: SteamCN
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png
+- type: select
+  proxies: *id001
+  name: Steam
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png
+- type: select
+  proxies: &id002
+  - 🎯 Direct
+  - 加速线路
+  - ProxyServer
+  name: BiliBili
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/bilibili.png
+- type: select
+  proxies: *id002
+  name: PT站加速
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Media.png
+- type: select
+  proxies: *id002
+  name: 国内流媒体
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png
+- type: select
+  proxies: &id003
+  - 加速线路
+  - 🎯 Direct
+  name: 国外流媒体
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ForeignMedia.png
+- type: select
+  proxies: *id001
+  name: 苹果服务
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Apple.png
+- type: select
+  proxies: *id001
+  name: 微软服务
+  icon: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/icon/qure/color/Microsoft.png
+- type: select
+  name: AI服务
+  proxies:
+  - 加速线路
+  - 🇭🇰 香港节点
+  icon: https://raw.githubusercontent.com/Orz-3/mini/master/Color/OpenAI.png
+- type: select
+  proxies: *id001
+  name: 测速工具
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Speedtest.png
+- type: select
+  proxies: *id003
+  name: 国外网站
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Google_Search.png
+- type: select
+  name: 隐私广告
+  proxies:
+  - DIRECT
+  - REJECT
+  - 加速线路
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Advertising.png
+- type: select
+  proxies: *id003
+  name: 🐟 Final
+  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png
+- type: select
+  name: 🎯 Direct
+  proxies:
+  - DIRECT
+  icon: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/icon/qure/color/Direct.png
+- type: url-test
+  url: http://www.google.com/generate_204
+  interval: 1800
+  tolerance: 50
+  name: 🇭🇰 香港节点
+  filter: 港|HK|(?i)Hong
+  hidden: true
+- type: url-test
+  url: http://www.google.com/generate_204
+  interval: 1800
+  tolerance: 50
+  name: 🇯🇵 日本节点
+  filter: 日|东京|JP|(?i)Japan
+  hidden: true
+- type: url-test
+  url: http://www.google.com/generate_204
+  interval: 1800
+  tolerance: 50
+  name: 🇺🇲 美国节点
+  filter: 美|US|(?i)States|American
+  hidden: true
+- type: url-test
+  url: http://www.google.com/generate_204
+  interval: 1800
+  tolerance: 50
+  name: 🇨🇳 台湾节点
+  filter: 台|湾|TW|(?i)Taiwan
+  hidden: true
+- type: url-test
+  url: http://www.google.com/generate_204
+  interval: 1800
+  tolerance: 50
+  name: 🇸🇬 新加坡节点
+  filter: 新|坡|SG|(?i)Singapore
+  hidden: true
+rules:
+- IP-CIDR,199.19.110.145/32,🎯 Direct,no-resolve
+- DOMAIN-SUFFIX,kfcv50.shop,🎯 Direct
+- DOMAIN-SUFFIX,420615.xyz,🎯 Direct
+- DOMAIN-SUFFIX,hitrontech.com,🎯 Direct
+- DOMAIN,hub5idx.v6.shub.sandai.net, REJECT
+- DOMAIN,hub5emu.v6.shub.sandai.net, REJECT
+- DOMAIN,hub5btmain.v6.shub.sandai.net, REJECT
+- RULE-SET,Direct,🎯 Direct,no-resolve
+- RULE-SET,Lan,🎯 Direct,no-resolve
+- RULE-SET,Download,🎯 Direct,no-resolve
+- RULE-SET,Advertising,隐私广告,no-resolve
+- RULE-SET,Hijacking,隐私广告,no-resolve
+- RULE-SET,Privacy,隐私广告,no-resolve
+- RULE-SET,PT,PT站加速,no-resolve
+- RULE-SET,SteamCDN,🎯 Direct,no-resolve
+- RULE-SET,SteamCN,SteamCN,no-resolve
+- RULE-SET,Steam,Steam,no-resolve
+- RULE-SET,BiliBili,BiliBili,no-resolve
+- RULE-SET,ChinaMedia,国内流媒体,no-resolve
+- RULE-SET,GlobalMedia,国外流媒体,no-resolve
+- RULE-SET,Apple,苹果服务,no-resolve
+- RULE-SET,Microsoft,微软服务,no-resolve
+- RULE-SET,AI,AI服务,no-resolve
+- GEOSITE,category-ai-!cn,AI服务
+- GEOSITE,google-cn,🎯 Direct
+- GEOSITE,category-games@cn,🎯 Direct
+- GEOSITE,category-game-platforms-download,游戏下载
+- GEOSITE,category-public-tracker,🎯 Direct
+- GEOSITE,category-speedtest,测速工具
+- RULE-SET,Global,国外网站,no-resolve
+- RULE-SET,China,🎯 Direct,no-resolve
+- GEOIP,CN,🎯 Direct
+- MATCH,🐟 Final
