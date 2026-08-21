@@ -80,22 +80,25 @@ proxy-groups:
   name: Steam
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png
 - type: select
-  proxies: &id002
+  proxies:
   - 🎯 Direct
   - 加速线路
-  - ProxyServer
   name: BiliBili
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/bilibili.png
 - type: select
-  proxies: *id002
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: PT站加速
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Media.png
 - type: select
-  proxies: *id002
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: 国内流媒体
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png
 - type: select
-  proxies: &id003
+  proxies: &id002
   - 加速线路
   - 🎯 Direct
   name: 国外流媒体
@@ -119,7 +122,7 @@ proxy-groups:
   name: 测速工具
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Speedtest.png
 - type: select
-  proxies: *id003
+  proxies: *id002
   name: 国外网站
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Google_Search.png
 - type: select
@@ -130,7 +133,7 @@ proxy-groups:
   - 加速线路
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Advertising.png
 - type: select
-  proxies: *id003
+  proxies: *id002
   name: 🐟 Final
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png
 - type: select

@@ -1,63 +1,58 @@
-Sir,
+# Task 4 Final Report
 
-# Task 4 Report
+Date: 2026-08-21
+Branch: `codex/clash-subscription`
 
-## Status
+## Scope
 
-Complete for this fix round.
+Implemented the final Task 4 migration fix in the isolated worktree:
 
-## Red / Green Evidence
+- kept `balanced` and `privacy` strict for unresolved `proxy-groups[*].proxies[*]` targets;
+- allowed `balanced-win` preflight to carry one repeated stale unresolved target shape only, still reported by path only;
+- removed the repeated stale balanced-win target during transformation so the rendered output has no unresolved target left;
+- kept built-in target handling, provider validation, and `use` validation strict;
+- preserved one tracked shared template, variant-specific ignored private proxy snapshots, the private output path guard, `0600` snapshot mode, and atomic temp-file cleanup;
+- kept logs and report output path-only, with no private scalar values.
 
-- Red renderer-interface check:
-  - Command: `./.venv/bin/python -m unittest tests.test_rendering.RenderingTests.test_render_variant_accepts_private_proxy_snapshot_mapping -v`
-  - Result before fix: failed with `ValueError("proxy entries must be mappings")`.
-- Red migration-interface check:
-  - Command: `./.venv/bin/python -m unittest tests.test_rendering.RenderingTests.test_variant_specific_private_snapshots_allow_balanced_win_to_omit_home_nodes -v`
-  - Result before fix: failed because migration still required `--home-output` and one shared proxy root.
-- Red provider-only injection check:
-  - Command: `./.venv/bin/python -m unittest tests.test_rendering.RenderingTests.test_provider_only_groups_are_not_marked_for_inline_proxy_injection -v`
-  - Result before fix: failed because `ByProvider` was incorrectly marked for injection.
-- Green focused run:
-  - Command: `./.venv/bin/python -m unittest tests.test_rendering.RenderingTests.test_provider_only_groups_are_not_marked_for_inline_proxy_injection tests.test_rendering.RenderingTests.test_render_variant_accepts_private_proxy_snapshot_mapping tests.test_rendering.RenderingTests.test_variant_specific_private_snapshots_allow_balanced_win_to_omit_home_nodes -v`
-  - Result: `3` tests passed.
-- Green broader render suite:
-  - Command: `./.venv/bin/python -m unittest tests.test_rendering -v`
-  - Result: `11` tests passed.
+## Files Changed
 
-## Migration / Compare Outcomes
-
-- Migration command:
-  - `./.venv/bin/python scripts/migrate_reference_templates.py --reference-dir /Users/42vio/Workspace/my-mihomo-config/private/reference-configs/2026-08-21 --template-dir /Users/42vio/Workspace/my-mihomo-config/.worktrees/codex/clash-subscription/templates --private-proxy-dir /Users/42vio/Workspace/my-mihomo-config/private/sources/owner`
-  - Result: exit `0`.
-  - Safe summary: wrote `3` ignored variant snapshots; `balanced` and `privacy` each recorded `5` private proxies, `balanced-win` recorded `1`; tracked template generation completed with counts/path-only output only.
-- Compare command:
-  - `./.venv/bin/python scripts/compare_reference_configs.py --reference-dir /Users/42vio/Workspace/my-mihomo-config/private/reference-configs/2026-08-21 --template-dir /Users/42vio/Workspace/my-mihomo-config/.worktrees/codex/clash-subscription/templates --private-proxy-dir /Users/42vio/Workspace/my-mihomo-config/private/sources/owner`
-  - Result: exit `0` with no path differences.
-
-## Safety Checks
-
-- Repository safety:
-  - Command: `./.venv/bin/python -m unittest tests.test_repository_safety -v`
-  - Result: `2` tests passed.
-- Tracked leak scan fallback:
-  - Command: `rg -n --pcre2 '(vless|vmess|trojan|ss)://|BEGIN [A-Z ]*PRIVATE KEY|/s/[A-Za-z0-9_-]{16,}|[A-Fa-f0-9]{8}(?:-[A-Fa-f0-9]{4}){3}-[A-Fa-f0-9]{12}' clash_sub/rendering.py scripts/migrate_reference_templates.py scripts/compare_reference_configs.py templates`
-  - Result: exit `1`, meaning no matches in tracked Task 4 artifacts.
-
-## Commit
-
-- Commit hash: pending final stage/commit after report update.
-
-## Changed Paths
-
-- `clash_sub/rendering.py`
 - `scripts/migrate_reference_templates.py`
 - `scripts/compare_reference_configs.py`
-- `templates/clash.yaml.j2`
-- `templates/variants/balanced.yaml`
-- `templates/variants/balanced-win.yaml`
-- `templates/variants/privacy.yaml`
 - `tests/test_rendering.py`
 
-## Remaining Concerns
+## Verification
 
-- The dedicated `scripts/scan_tracked_secrets.py` tool referenced in later plan steps is still not present in this worktree; this fix round used the existing repository safety test plus a no-match tracked artifact scan without exposing values.
+Focused rendering regression set:
+
+- PASS: `.venv/bin/python -m unittest tests.test_rendering.RenderingTests.test_variant_specific_private_snapshots_allow_balanced_win_to_omit_home_nodes tests.test_rendering.RenderingTests.test_balanced_win_migration_drops_stale_unresolved_home_target_and_compare_stays_clean tests.test_rendering.RenderingTests.test_balanced_win_rejects_distinct_unresolved_proxy_targets tests.test_rendering.RenderingTests.test_migration_private_snapshots_use_mode_600 tests.test_rendering.RenderingTests.test_migration_rejects_private_proxy_dir_outside_primary_checkout_before_writes tests.test_rendering.RenderingTests.test_validate_reference_document_accepts_reject_drop_builtin_target tests.test_rendering.RenderingTests.test_validate_reference_document_rejects_unresolved_proxy_target_with_path_only_error tests.test_rendering.RenderingTests.test_balanced_variant_still_rejects_unknown_proxy_target tests.test_rendering.RenderingTests.test_private_proxy_dir_guard_accepts_only_primary_checkout_owner_directory tests.test_rendering.RenderingTests.test_atomic_write_text_cleans_up_temporary_file_when_replace_fails -v`
+
+Broader suites:
+
+- PASS: `.venv/bin/python -m unittest tests.test_rendering -v`
+- PASS: `.venv/bin/python -m unittest tests.test_repository_safety -v`
+- PASS: `git diff --check`
+
+Authoritative migration:
+
+- PASS: `.venv/bin/python scripts/migrate_reference_templates.py --reference-dir /Users/42vio/Workspace/my-mihomo-config/private/reference-configs/2026-08-21 --template-dir /Users/42vio/Workspace/my-mihomo-config/.worktrees/codex/clash-subscription/templates --private-proxy-dir /Users/42vio/Workspace/my-mihomo-config/private/sources/owner`
+  - safe summary:
+    - `balanced`: `private-proxies=5`, `inject-node-groups=4`
+    - `balanced-win`: `private-proxies=1`, `inject-node-groups=2`, `dropped-unresolved-proxy-targets=3`
+    - `privacy`: `private-proxies=5`, `inject-node-groups=4`
+  - balanced-win dropped unresolved paths:
+    - `proxy-groups[5].proxies[2]`
+    - `proxy-groups[6].proxies[2]`
+    - `proxy-groups[7].proxies[2]`
+  - safe sanity check confirmed those three paths all refer to the same repeated stale target, without printing the scalar value.
+
+Authoritative compare:
+
+- PASS: `.venv/bin/python scripts/compare_reference_configs.py --reference-dir /Users/42vio/Workspace/my-mihomo-config/private/reference-configs/2026-08-21 --template-dir /Users/42vio/Workspace/my-mihomo-config/.worktrees/codex/clash-subscription/templates --private-proxy-dir /Users/42vio/Workspace/my-mihomo-config/private/sources/owner`
+
+Tracked secret scan:
+
+- NOT AVAILABLE: `scripts/scan_tracked_secrets.py` is absent in this worktree, so the existing repository safety suite was used instead.
+
+## Commit Status
+
+Ready to commit after staging the Task 4 diff.

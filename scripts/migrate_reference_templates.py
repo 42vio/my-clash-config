@@ -4,6 +4,7 @@ import argparse
 import copy
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -23,7 +24,7 @@ REFERENCE_FILENAMES = {
     "balanced-win": "My-Clash_Balanced_Win.yaml",
     "privacy": "My-Clash_Privacy.yaml",
 }
-BUILTIN_PROXY_TARGETS = {"DIRECT", "REJECT", "PASS", "GLOBAL", "COMPATIBLE"}
+BUILTIN_PROXY_TARGETS = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"}
 JINJA_TOKENS = ("{{", "}}", "{%", "%}")
 
 
@@ -66,6 +67,38 @@ def require_mapping_root(path: Path) -> dict[str, object]:
     if not isinstance(document, dict):
         raise ValueError("reference root must be a mapping")
     return copy.deepcopy(document)
+
+
+def primary_checkout_root_from_git_common_dir(common_dir: Path) -> Path:
+    resolved = common_dir.resolve()
+    if resolved.name != ".git":
+        raise ValueError("git common-dir must resolve to a .git directory")
+    return resolved.parent
+
+
+def expected_private_proxy_dir(repo_root: Path = ROOT) -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    common_dir = Path(result.stdout.strip())
+    return primary_checkout_root_from_git_common_dir(common_dir) / "private" / "sources" / "owner"
+
+
+def require_private_proxy_dir(
+    private_proxy_dir: Path,
+    *,
+    expected_dir: Path | None = None,
+    repo_root: Path = ROOT,
+) -> Path:
+    resolved = private_proxy_dir.resolve()
+    expected = (expected_dir if expected_dir is not None else expected_private_proxy_dir(repo_root)).resolve()
+    if resolved != expected:
+        raise ValueError("private proxy snapshots must resolve to private/sources/owner in the primary checkout")
+    return expected
 
 
 def atomic_write_text(path: Path, content: str, mode: int) -> None:
@@ -111,6 +144,14 @@ def provider_names(document: Mapping[str, object]) -> set[str]:
     return {name for name in providers if isinstance(name, str)}
 
 
+def group_names(document: Mapping[str, object]) -> set[str]:
+    return {
+        item.get("name").strip()
+        for item in document.get("proxy-groups", [])
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+
+
 def inline_proxy_names(document: Mapping[str, object]) -> set[str]:
     proxies = document.get("proxies")
     if not isinstance(proxies, list):
@@ -149,7 +190,7 @@ def collect_provider_source_urls(document: Mapping[str, object]) -> set[str]:
     return urls
 
 
-def validate_reference_document(document: Mapping[str, object]) -> None:
+def validate_reference_document(document: Mapping[str, object], *, variant: str | None = None) -> list[str]:
     duplicates = duplicate_names(document.get("proxy-groups"))
     if duplicates:
         raise ValueError("reference contains duplicate proxy-group names")
@@ -164,12 +205,11 @@ def validate_reference_document(document: Mapping[str, object]) -> None:
         if duplicate_provider_names:
             raise ValueError("reference contains invalid provider names")
     proxy_names = {name.strip() for name in inline_proxy_names(document)}
-    group_names = {
-        item.get("name").strip()
-        for item in document.get("proxy-groups", [])
-        if isinstance(item, dict) and isinstance(item.get("name"), str)
-    }
+    group_names_set = group_names(document)
     providers_names = provider_names(document)
+    unresolved_proxy_paths: list[str] = []
+    allow_unresolved_proxy_targets = variant == "balanced-win"
+    unresolved_proxy_target: str | None = None
     for group_index, group in enumerate(document.get("proxy-groups", [])):
         if not isinstance(group, dict):
             raise ValueError("proxy-groups entries must be mappings")
@@ -183,9 +223,25 @@ def validate_reference_document(document: Mapping[str, object]) -> None:
             if (
                 normalized_target in BUILTIN_PROXY_TARGETS
                 or normalized_target in proxy_names
-                or normalized_target in group_names
+                or normalized_target in group_names_set
             ):
                 continue
+            if normalized_target not in providers_names:
+                path = safe_path(("proxy-groups", group_index, "proxies", proxy_index))
+                if allow_unresolved_proxy_targets:
+                    if unresolved_proxy_target is None:
+                        unresolved_proxy_target = normalized_target
+                    elif normalized_target != unresolved_proxy_target:
+                        raise ValueError(
+                            "balanced-win unresolved proxy targets must refer to one repeated stale target; additional path: %s"
+                            % path
+                        )
+                    unresolved_proxy_paths.append(path)
+                    continue
+                raise ValueError(
+                    "reference contains an unresolved proxy target at %s"
+                    % path
+                )
         use_targets = group.get("use", [])
         if use_targets is not None and not isinstance(use_targets, list):
             raise ValueError("proxy-groups use must be lists")
@@ -195,18 +251,23 @@ def validate_reference_document(document: Mapping[str, object]) -> None:
                     "reference contains an unresolved provider target at %s"
                     % safe_path(("proxy-groups", group_index, "use", use_index))
                 )
+    return unresolved_proxy_paths
 
 
 def strip_private_provider_values(
     document: Mapping[str, object],
     inline_names: set[str],
     provider_names_set: set[str],
+    *,
+    allowed_unresolved_proxy_paths: list[str] | None = None,
 ) -> tuple[dict[str, object], list[str], list[str]]:
     candidate = copy.deepcopy(dict(document))
     candidate.pop("proxies", None)
     candidate.pop("proxy-providers", None)
     removed_paths: list[str] = []
     injection_groups: list[str] = []
+    remaining_unresolved_paths = set(allowed_unresolved_proxy_paths or [])
+    group_names_set = group_names(document)
     groups = candidate.get("proxy-groups")
     if not isinstance(groups, list):
         raise ValueError("proxy-groups must remain a list")
@@ -221,11 +282,30 @@ def strip_private_provider_values(
         if proxies is not None:
             if not isinstance(proxies, list):
                 raise ValueError("proxy-groups proxies must be lists")
-            filtered = [item for item in proxies if item not in inline_names]
+            filtered = []
+            for proxy_index, item in enumerate(proxies):
+                if item in inline_names:
+                    removed_inline_proxies = True
+                    continue
+                item_path = safe_path(("proxy-groups", index, "proxies", proxy_index))
+                normalized_item = item.strip() if isinstance(item, str) else item
+                if item_path in remaining_unresolved_paths:
+                    if (
+                        not isinstance(normalized_item, str)
+                        or normalized_item in BUILTIN_PROXY_TARGETS
+                        or normalized_item in inline_names
+                        or normalized_item in group_names_set
+                        or normalized_item in provider_names_set
+                    ):
+                        raise ValueError("allowed unresolved proxy target did not remain unresolved at %s" % item_path)
+                    removed_paths.append(item_path)
+                    remaining_unresolved_paths.remove(item_path)
+                    continue
+                filtered.append(item)
             if len(filtered) != len(proxies):
                 group["proxies"] = filtered
-                removed_paths.append(safe_path(("proxy-groups", index, "proxies")))
-                removed_inline_proxies = True
+                if removed_inline_proxies:
+                    removed_paths.append(safe_path(("proxy-groups", index, "proxies")))
         use = group.get("use")
         if use is not None:
             if not isinstance(use, list):
@@ -239,6 +319,9 @@ def strip_private_provider_values(
                 group.pop("use", None)
         if removed_inline_proxies:
             injection_groups.append(group_name)
+    if remaining_unresolved_paths:
+        unresolved_path = sorted(remaining_unresolved_paths)[0]
+        raise ValueError("allowed unresolved proxy target was not removed at %s" % unresolved_path)
     return candidate, removed_paths, injection_groups
 
 
@@ -357,13 +440,15 @@ def write_private_proxy_snapshots(
 
 def main() -> int:
     args = parse_args()
+    args.private_proxy_dir = require_private_proxy_dir(args.private_proxy_dir)
     references = {
         variant: require_mapping_root(args.reference_dir / filename)
         for variant, filename in REFERENCE_FILENAMES.items()
     }
-    for document in references.values():
+    unresolved_proxy_paths: dict[str, list[str]] = {}
+    for variant, document in references.items():
         require_no_jinja_scalars(document)
-        validate_reference_document(document)
+        unresolved_proxy_paths[variant] = validate_reference_document(document, variant=variant)
     orders = [list(document.keys()) for document in references.values()]
     if not all(order == orders[0] for order in orders[1:]):
         raise ValueError("reference top-level order must match")
@@ -376,7 +461,10 @@ def main() -> int:
         variant_provider_names = provider_names(document)
         provider_urls = collect_provider_source_urls(document)
         candidate, removed_paths, injection_groups = strip_private_provider_values(
-            document, variant_inline_names, variant_provider_names
+            document,
+            variant_inline_names,
+            variant_provider_names,
+            allowed_unresolved_proxy_paths=unresolved_proxy_paths[variant],
         )
         ensure_no_provider_leaks(candidate, variant_provider_names, provider_urls)
         transformed[variant] = candidate
@@ -389,6 +477,8 @@ def main() -> int:
     for variant in REFERENCE_FILENAMES:
         print("%s: private-proxies=%d" % (variant, private_proxy_counts[variant]))
         print("%s: inject-node-groups=%d" % (variant, len(injections[variant])))
+        if unresolved_proxy_paths[variant]:
+            print("%s: dropped-unresolved-proxy-targets=%d" % (variant, len(unresolved_proxy_paths[variant])))
         for change in path_only_changes[variant]:
             print("%s: %s" % (variant, change))
     return 0

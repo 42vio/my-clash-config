@@ -21,6 +21,7 @@ REFERENCE_FILENAMES = {
     "privacy": "My-Clash_Privacy.yaml",
 }
 IGNORED_ROOT_KEYS = {"proxies", "proxy-providers"}
+BUILTIN_PROXY_TARGETS = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "GLOBAL", "COMPATIBLE"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,10 +78,15 @@ def load_private_proxy_snapshot(path: Path) -> dict[str, object]:
     return copy.deepcopy(document)
 
 
-def normalize_reference(document: Mapping[str, object], inject_groups: tuple[str, ...]) -> dict[str, object]:
+def normalize_reference(document: Mapping[str, object], inject_groups: tuple[str, ...], variant: str) -> dict[str, object]:
     normalized = copy.deepcopy(dict(document))
     inline_names = proxy_names(normalized)
     provider_name_set = provider_names(normalized)
+    group_name_set = {
+        group.get("name").strip()
+        for group in normalized.get("proxy-groups", [])
+        if isinstance(group, dict) and isinstance(group.get("name"), str)
+    }
     for key in IGNORED_ROOT_KEYS:
         normalized.pop(key, None)
     groups = normalized.get("proxy-groups")
@@ -96,9 +102,22 @@ def normalize_reference(document: Mapping[str, object], inject_groups: tuple[str
                 group["use"] = filtered
             else:
                 group.pop("use", None)
+        proxies = group.get("proxies")
+        if isinstance(proxies, list) and variant == "balanced-win":
+            proxies = [
+                item
+                for item in proxies
+                if not (
+                    isinstance(item, str)
+                    and item.strip() not in BUILTIN_PROXY_TARGETS
+                    and item.strip() not in inline_names
+                    and item.strip() not in group_name_set
+                    and item.strip() not in provider_name_set
+                )
+            ]
+            group["proxies"] = proxies
         if group.get("name") not in inject_groups:
             continue
-        proxies = group.get("proxies")
         if isinstance(proxies, list):
             group["proxies"] = [item for item in proxies if item not in inline_names]
     return normalized
@@ -165,7 +184,7 @@ def main() -> int:
         rendered = yaml.safe_load(render_variant(args.template_dir, variant, private_proxy_snapshot))
         if not isinstance(rendered, dict):
             raise ValueError("rendered root must be a mapping")
-        normalized_reference = normalize_reference(reference, variant_spec.inject_node_groups)
+        normalized_reference = normalize_reference(reference, variant_spec.inject_node_groups, variant)
         normalized_rendered = normalize_rendered(rendered, variant_spec.inject_node_groups, private_proxy_snapshot)
         differences = compare_structures(normalized_reference, normalized_rendered)
         if differences:
