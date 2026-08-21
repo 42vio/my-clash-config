@@ -11,7 +11,9 @@ class RepositorySafetyTests(unittest.TestCase):
         paths = (
             "private/config/service.yaml",
             "private/config/users.yaml",
-            "private/reference-configs/2026-08-21/reference.yaml",
+            "private/reference-configs/2026-08-21/My-Clash_Balanced.yaml",
+            "private/reference-configs/2026-08-21/My-Clash_Balanced_Win.yaml",
+            "private/reference-configs/2026-08-21/My-Clash_Privacy.yaml",
             "private/sources/owner/airport.yaml",
             "private/sources/owner/home.yaml",
             "private/staging/op/user/config.yaml",
