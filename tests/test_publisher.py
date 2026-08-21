@@ -469,6 +469,12 @@ class PublisherTests(unittest.TestCase):
             self.assertEqual(response.headers["Allow"], "GET, HEAD")
             self.assertNotIn(self.fx.friend_token, response.body.decode("utf-8", "replace"))
 
+    def test_mutation_methods_on_healthz_rejected(self):
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            response = self.request(method, "/healthz", client_ip="127.0.0.1")
+            self.assertEqual(response.status, 405, method)
+            self.assertEqual(response.headers["Allow"], "GET, HEAD")
+
     def test_healthz_for_loopback_only_and_leaks_nothing(self):
         response = self.request("GET", "/healthz", client_ip="127.0.0.1")
         self.assertEqual(response.status, 200)
@@ -687,6 +693,27 @@ class PublisherTests(unittest.TestCase):
             self.fx.friend_live.header_value,
         )
 
+    def test_sidecar_traffic_is_bound_to_verified_yaml_digest(self):
+        sidecar_path = self.fx.releases["friend"].path / "balanced.meta.json"
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        sidecar["yaml_sha256"] = "0" * 64
+        sidecar["traffic"] = {
+            "upload": 777,
+            "download": 777,
+            "total": 777,
+            "expire": 777,
+        }
+        sidecar_path.write_text(
+            json.dumps(sidecar, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        service = self.fx.make_service()
+        self.traffic_client.fail = True
+        response = self.request("GET", self.friend_path(), service=service)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body, self.fx.friend_balanced_bytes)
+        self.assertNotIn("Subscription-Userinfo", response.headers)
+
     def test_traffic_omitted_when_no_safe_value_exists(self):
         sidecar_path = self.fx.releases["friend"].path / "balanced.meta.json"
         sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
@@ -820,6 +847,19 @@ class PublisherTests(unittest.TestCase):
         self.assertIn("bytes=%d" % len(self.fx.friend_balanced_bytes), self.fx.log_lines[0])
         self.assertIn("error=not_found", self.fx.log_lines[1])
         self.assertIn("route=%s" % health_route, self.fx.log_lines[2])
+
+    def test_default_log_sink_writes_sanitized_lines_to_stderr(self):
+        service = self.fx.make_service(log_sink=None)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            response = self.request("GET", self.friend_path(), service=service)
+        self.assertEqual(response.status, 200)
+        output = stderr.getvalue()
+        self.assertIn("GET 200", output)
+        self.assertIn("route=", output)
+        self.assertIn("error=ok", output)
+        self.assertNotIn(self.fx.friend_token, output)
+        self.assertNotIn("balanced", output)
 
     def test_model_representations_do_not_expose_tokens_or_bodies(self):
         request = Request(

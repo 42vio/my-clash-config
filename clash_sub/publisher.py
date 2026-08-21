@@ -2,8 +2,8 @@ import hashlib
 import hmac
 import ipaddress
 import json
-import logging
 import os
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -114,6 +114,11 @@ def settings_file_revision(paths: Iterable[Path]) -> Tuple[Tuple[int, int], ...]
     return tuple(revisions)
 
 
+def _default_log_sink(line: str) -> None:
+    """Emit the sanitized access log to stderr (no handler setup needed)."""
+    sys.stderr.write(line + "\n")
+
+
 class PublicationService:
     """Token-gated read-only publisher for verified current releases."""
 
@@ -130,7 +135,7 @@ class PublicationService:
         self._traffic_client = traffic_client
         self._clock = clock
         self._settings_revision = settings_revision
-        self._log_sink = log_sink or logging.getLogger(__name__).info
+        self._log_sink = log_sink or _default_log_sink
         self._lock = threading.Lock()
         self._settings = settings_loader()
         self._settings_revision_value = self._probe_settings_revision()
@@ -142,13 +147,13 @@ class PublicationService:
 
     def handle(self, request: Request) -> Response:
         method = request.method.upper()
-        if request.path == "/healthz":
-            return self._finish(
-                method, request, self._health_response(request), "health"
-            )
         if method not in {"GET", "HEAD"}:
             return self._finish(
                 method, request, self._method_not_allowed(), "method", "method_not_allowed"
+            )
+        if request.path == "/healthz":
+            return self._finish(
+                method, request, self._health_response(request), "health"
             )
         self._maybe_reload_settings()
         authorization = self._authorize_subscription_path(request.path)
@@ -245,10 +250,10 @@ class PublicationService:
 
     def _serve_current(self, authorization: _Authorization) -> Response:
         try:
-            release_dir, payload = self._load_verified_payload(authorization)
+            release_dir, payload, expected_hash = self._load_verified_payload(authorization)
         except (BuildError, OSError):
             return self._not_found()
-        userinfo = self._traffic_metadata(authorization, release_dir)
+        userinfo = self._traffic_metadata(authorization, release_dir, expected_hash)
         variant = authorization.variant
         headers = {
             "Content-Type": "text/yaml; charset=utf-8",
@@ -264,7 +269,7 @@ class PublicationService:
 
     def _load_verified_payload(
         self, authorization: _Authorization
-    ) -> Tuple[Path, bytes]:
+    ) -> Tuple[Path, bytes, str]:
         user = authorization.user
         release_roots = _require_user_releases_root(authorization.private_root, user.user_id)
         if release_roots is None:
@@ -297,10 +302,10 @@ class PublicationService:
             raise BuildError("release file exceeds the size limit")
         if sha256_bytes(payload) != expected_hash:
             raise BuildError("release hash mismatch")
-        return release_dir, payload
+        return release_dir, payload, expected_hash
 
     def _traffic_metadata(
-        self, authorization: _Authorization, release_dir: Path
+        self, authorization: _Authorization, release_dir: Path, expected_hash: str
     ) -> Optional[SubscriptionUserinfo]:
         user = authorization.user
         now = self._clock()
@@ -327,10 +332,10 @@ class PublicationService:
             record = self._traffic_cache.get(user.user_id)
             if record is not None and record.value is not None:
                 return record.value
-        return self._sidecar_traffic(release_dir, authorization.variant)
+        return self._sidecar_traffic(release_dir, authorization.variant, expected_hash)
 
     def _sidecar_traffic(
-        self, release_dir: Path, variant: str
+        self, release_dir: Path, variant: str, expected_hash: str
     ) -> Optional[SubscriptionUserinfo]:
         sidecar_path = release_dir / (variant + SIDECAR_SUFFIX)
         try:
@@ -338,6 +343,8 @@ class PublicationService:
         except (OSError, ValueError):
             return None
         if not isinstance(sidecar, dict):
+            return None
+        if sidecar.get("yaml_sha256") != expected_hash:
             return None
         traffic = sidecar.get("traffic")
         if not isinstance(traffic, dict):
