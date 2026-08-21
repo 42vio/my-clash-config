@@ -25,12 +25,7 @@ REQUIRED_TOP_LEVEL = {
     "rules",
 }
 
-_REALITY_HINT_KEYS = (
-    "flow",
-    "servername",
-    "client-fingerprint",
-    "reality-opts",
-)
+_TRAILING_RULE_OPTIONS = {"no-resolve"}
 
 
 class ValidationError(ValueError):
@@ -67,9 +62,9 @@ def validate_config(
     proxies = _require_list(document["proxies"], "proxies")
     proxy_names = _validate_proxies(proxies, reality)
     groups = _require_list(document["proxy-groups"], "proxy-groups")
-    group_names = _validate_groups(groups)
-    all_targets = proxy_names | group_names | BUILTIN_TARGETS
-    _validate_group_targets(groups, all_targets)
+    group_indexes = _validate_groups(groups)
+    all_targets = proxy_names | set(group_indexes) | BUILTIN_TARGETS
+    _validate_group_targets(groups, all_targets, group_indexes)
     _validate_rule_providers(document["rule-providers"])
     _validate_rules(document["rules"], all_targets)
     return document
@@ -89,7 +84,7 @@ def _validate_proxies(proxies, reality: RealitySettings):
         path = "proxies[%d]" % index
         mapping = _require_mapping(proxy, path)
         name = _require_non_empty_string(mapping.get("name"), "%s.name" % path)
-        _require_unique(name, names, "duplicate proxy name: %s" % name)
+        _require_unique(_normalized_value(name), names, "duplicate proxy name: %s" % name)
         _validate_reality_proxy(mapping, reality, path)
     return names
 
@@ -97,33 +92,43 @@ def _validate_proxies(proxies, reality: RealitySettings):
 def _validate_groups(groups):
     if not groups:
         raise ValidationError("proxy-groups must contain at least one entry")
-    names = set()
+    indexes = {}
     for index, group in enumerate(groups):
         path = "proxy-groups[%d]" % index
         mapping = _require_mapping(group, path)
         name = _require_non_empty_string(mapping.get("name"), "%s.name" % path)
-        _require_unique(name, names, "duplicate proxy group name: %s" % name)
+        normalized_name = _normalized_value(name)
+        if normalized_name in indexes:
+            raise ValidationError("duplicate proxy group name: %s" % name)
+        indexes[normalized_name] = index
         proxies = mapping.get("proxies")
         if proxies is None:
             raise ValidationError("%s must define proxies" % path)
         _require_list(proxies, "%s.proxies" % path)
-    return names
+    return indexes
 
 
-def _validate_group_targets(groups, all_targets) -> None:
+def _validate_group_targets(groups, all_targets, group_indexes) -> None:
+    group_references = {index: [] for index in range(len(groups))}
     for index, group in enumerate(groups):
         proxies = group["proxies"]
         for target_index, target in enumerate(proxies):
-            if not isinstance(target, str) or not target:
+            if not isinstance(target, str) or not _normalized_value(target):
                 raise ValidationError(
                     "proxy-groups[%d].proxies[%d] must be a non-empty string"
                     % (index, target_index)
                 )
-            if target not in all_targets:
+            normalized_target = _normalized_value(target)
+            if normalized_target not in all_targets:
                 raise ValidationError(
                     "proxy-groups[%d].proxies[%d] references unknown target %s"
                     % (index, target_index, target)
                 )
+            if normalized_target in group_indexes:
+                group_references[index].append(
+                    (group_indexes[normalized_target], "proxy-groups[%d].proxies[%d]" % (index, target_index))
+                )
+    _validate_group_cycles(group_references)
 
 
 def _validate_rule_providers(rule_providers) -> None:
@@ -142,7 +147,7 @@ def _validate_rules(rules, all_targets) -> None:
         target = _extract_rule_target(rule)
         if target is None:
             continue
-        if target not in all_targets:
+        if _normalized_value(target) not in all_targets:
             raise ValidationError("rules[%d] references unknown target %s" % (index, target))
 
 
@@ -150,12 +155,10 @@ def _extract_rule_target(rule: str):
     parts = [part.strip() for part in rule.split(",")]
     if len(parts) < 2:
         return None
-    rule_type = parts[0]
-    if rule_type == "MATCH":
-        return parts[1]
-    if len(parts) >= 3:
-        return parts[2]
-    return None
+    target_index = len(parts) - 1
+    while target_index > 1 and parts[target_index] in _TRAILING_RULE_OPTIONS:
+        target_index -= 1
+    return parts[target_index]
 
 
 def _validate_reality_proxy(proxy, reality: RealitySettings, path: str) -> None:
@@ -172,12 +175,26 @@ def _validate_reality_proxy(proxy, reality: RealitySettings, path: str) -> None:
 
 
 def _looks_like_reality_proxy(proxy, reality: RealitySettings) -> bool:
-    if proxy.get("flow") == reality.required_flow:
-        return True
-    for key in _REALITY_HINT_KEYS:
-        if key in proxy:
-            return True
-    return False
+    return proxy.get("flow") == reality.required_flow
+
+
+def _validate_group_cycles(group_references) -> None:
+    visiting = set()
+    visited = set()
+
+    def visit(group_index: int) -> None:
+        if group_index in visited:
+            return
+        visiting.add(group_index)
+        for target_group_index, path in group_references[group_index]:
+            if target_group_index in visiting:
+                raise ValidationError("%s creates a recursive proxy-group reference" % path)
+            visit(target_group_index)
+        visiting.remove(group_index)
+        visited.add(group_index)
+
+    for group_index in group_references:
+        visit(group_index)
 
 
 def _require_mapping(value, label: str):
@@ -193,9 +210,13 @@ def _require_list(value, label: str):
 
 
 def _require_non_empty_string(value, label: str) -> str:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not _normalized_value(value):
         raise ValidationError("%s must be a non-empty string" % label)
     return value
+
+
+def _normalized_value(value: str) -> str:
+    return value.strip()
 
 
 def _require_unique(name: str, seen, message: str) -> None:

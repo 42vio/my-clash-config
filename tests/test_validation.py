@@ -144,6 +144,21 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "Unknown Target"):
             validate_config(dump(document), [], REALITY)
 
+    def test_ip_asn_rule_uses_final_target_field_when_no_resolve_precedes_it(self):
+        document = valid_document()
+        document["rules"].append("IP-ASN,13335,no-resolve,Selector")
+
+        parsed = validate_config(dump(document), [], REALITY)
+
+        self.assertEqual(parsed["rules"][-1], "IP-ASN,13335,no-resolve,Selector")
+
+    def test_trailing_no_resolve_does_not_hide_unknown_rule_target(self):
+        document = valid_document()
+        document["rules"].append("RULE-SET,Apple,Unknown Target,no-resolve")
+
+        with self.assertRaisesRegex(ValidationError, "Unknown Target"):
+            validate_config(dump(document), [], REALITY)
+
     def test_rule_provider_mapping_must_be_valid(self):
         document = valid_document()
         document["rule-providers"]["Apple"] = []
@@ -201,12 +216,13 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "REALITY"):
             validate_config(dump(document), [], REALITY)
 
-    def test_self_hosted_reality_node_requires_expected_flow(self):
+    def test_vless_node_without_required_flow_is_not_treated_as_reality(self):
         document = valid_document()
         document["proxies"][0]["flow"] = "xtls-rprx-origin"
 
-        with self.assertRaisesRegex(ValidationError, "REALITY"):
-            validate_config(dump(document), [], REALITY)
+        parsed = validate_config(dump(document), [], REALITY)
+
+        self.assertEqual(parsed["proxies"][0]["flow"], "xtls-rprx-origin")
 
     def test_self_hosted_reality_node_requires_tls(self):
         document = valid_document()
@@ -251,6 +267,24 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "REALITY"):
             validate_config(dump(document), [], REALITY)
 
+    def test_vless_ws_tls_node_with_normal_servername_is_not_treated_as_reality(self):
+        document = valid_document()
+        document["proxies"][0] = {
+            "name": "Home Node",
+            "type": "vless",
+            "server": "home.example.com",
+            "port": 443,
+            "uuid": "22222222-2222-4222-8222-222222222222",
+            "network": "ws",
+            "tls": True,
+            "servername": "home.example.com",
+        }
+        document["proxy-groups"][0]["proxies"] = ["DIRECT", "Home Node", "Airport Node"]
+
+        parsed = validate_config(dump(document), [], REALITY)
+
+        self.assertEqual(parsed["proxies"][0]["servername"], "home.example.com")
+
     def test_valid_airport_home_non_reality_node_is_allowed(self):
         document = valid_document()
         document["proxies"][0] = {
@@ -267,6 +301,34 @@ class ValidationTests(unittest.TestCase):
         parsed = validate_config(dump(document), [], REALITY)
 
         self.assertEqual(parsed["proxies"][0]["name"], "Home Node")
+
+    def test_recursive_proxy_group_cycle_is_rejected(self):
+        document = valid_document()
+        document["proxy-groups"] = [
+            {"name": "A", "type": "select", "proxies": ["B"]},
+            {"name": "B", "type": "select", "proxies": ["A"]},
+        ]
+        document["rules"] = ["MATCH,A"]
+
+        with self.assertRaisesRegex(ValidationError, r"proxy-groups\[1\]\.proxies\[0\]") as context:
+            validate_config(dump(document), [], REALITY)
+
+        self.assertNotIn("A", str(context.exception))
+        self.assertNotIn("B", str(context.exception))
+
+    def test_whitespace_only_proxy_name_is_rejected(self):
+        document = valid_document()
+        document["proxies"][0]["name"] = "   "
+
+        with self.assertRaisesRegex(ValidationError, r"proxies\[0\]\.name"):
+            validate_config(dump(document), [], REALITY)
+
+    def test_whitespace_only_group_name_is_rejected(self):
+        document = valid_document()
+        document["proxy-groups"][0]["name"] = " \t "
+
+        with self.assertRaisesRegex(ValidationError, r"proxy-groups\[0\]\.name"):
+            validate_config(dump(document), [], REALITY)
 
 
 if __name__ == "__main__":
