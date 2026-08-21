@@ -86,3 +86,24 @@ class TokenRotation:
     user_id: str
     token: str
     urls: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class SubscriptionUserinfo:
+    upload: int
+    download: int
+    total: int
+    expire: int
+
+    @property
+    def remaining(self) -> Optional[int]:
+        if self.total == 0:
+            return None
+        return max(self.total - self.upload - self.download, 0)
+
+    @property
+    def header_value(self) -> str:
+        return (
+            "upload=%d; download=%d; total=%d; expire=%d"
+            % (self.upload, self.download, self.total, self.expire)
+        )
