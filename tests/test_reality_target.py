@@ -218,6 +218,35 @@ REFUSED_OUTPUT = """80D1A849F87F0000:error:8000003D:system library:BIO_connect:C
 connect:errno=61
 """
 
+# Real capture: TCP reachable but the TLS handshake fails with NO
+# peer certificate (alert 40).  OpenSSL then prints vacuous success
+# ("Verification: OK", "Verify return code: 0 (ok)") and a
+# "Protocol: TLSv1.3" line that reflects only the attempted version
+# ("New, (NONE), Cipher is (NONE)") — neither may produce a true
+# tls13 or certificate_name boolean.
+NO_CERT_OUTPUT = """80D1A849F87F0000:error:0A000410:SSL routines:ssl3_read_bytes:ssl/tls alert handshake failure:ssl/record/rec_layer_s3.c:918:SSL alert number 40
+CONNECTED(00000005)
+---
+no peer certificate available
+---
+No client certificate CA names sent
+Negotiated TLS1.3 group: <NULL>
+---
+SSL handshake has read 7 bytes and written 248 bytes
+Verification: OK
+---
+New, (NONE), Cipher is (NONE)
+Protocol: TLSv1.3
+This TLS version forbids renegotiation.
+Compression: NONE
+Expansion: NONE
+No ALPN negotiated
+Early data was not sent
+Verify return code: 0 (ok)
+---
+80D1A849F87F0000:error:0A000197:SSL routines:SSL_shutdown:shutdown while in init:ssl/ssl_lib.c:2804:
+"""
+
 # Hand adjustment: OpenSSL 3.0 (the Debian 12 target) still labels the
 # key-exchange line "Server Temp Key:"; OpenSSL >= 3.5 prints "Peer
 # Temp Key:".  The parser must accept both labels.
@@ -289,6 +318,8 @@ FALLBACK_SUBJECT_MISMATCH = FALLBACK_OUTPUT.replace(
 FALLBACK_SAN_OUTPUT = FALLBACK_OUTPUT + (
     "X509v3 Subject Alternative Name: DNS:www.example.com\n"
 )
+
+FALLBACK_WILDCARD_OUTPUT = FALLBACK_OUTPUT + "Verified peername: *.example.com\n"
 
 
 class RealityTargetTests(unittest.TestCase):
@@ -412,6 +443,18 @@ class RealityTargetTests(unittest.TestCase):
         )
         self.assertTrue(result.checks["certificate_name"])
 
+    def test_wildcard_covers_exactly_one_extra_label(self):
+        result = evaluate_target(
+            parse_s_client_output(FALLBACK_WILDCARD_OUTPUT),
+            expected_server_name="www.example.com",
+        )
+        self.assertTrue(result.checks["certificate_name"])
+        result = evaluate_target(
+            parse_s_client_output(FALLBACK_WILDCARD_OUTPUT),
+            expected_server_name="a.b.example.com",
+        )
+        self.assertFalse(result.checks["certificate_name"])
+
     def test_connection_refused_reports_a_stable_error_code(self):
         result = evaluate_target(
             parse_s_client_output(REFUSED_OUTPUT), expected_server_name="www.example.com"
@@ -419,6 +462,37 @@ class RealityTargetTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertFalse(result.checks["reachable"])
         self.assertEqual(result.error_code, "connection_refused")
+
+    def test_no_certificate_handshake_yields_no_vacuous_booleans(self):
+        result = evaluate_target(
+            parse_s_client_output(NO_CERT_OUTPUT),
+            expected_server_name="a.b.example.com",
+        )
+        self.assertTrue(result.checks["reachable"])
+        self.assertFalse(result.checks["tls13"])
+        self.assertFalse(result.checks["alpn_h2"])
+        self.assertFalse(result.checks["x25519"])
+        self.assertFalse(result.checks["certificate_name"])
+        self.assertFalse(result.ok)
+
+    def test_no_certificate_handshake_still_exits_rejected(self):
+        result = probe_target(
+            "www.example.com",
+            443,
+            "a.b.example.com",
+            executor=lambda argv, timeout: (1, NO_CERT_OUTPUT),
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(
+            result.checks,
+            {
+                "reachable": True,
+                "tls13": False,
+                "alpn_h2": False,
+                "x25519": False,
+                "certificate_name": False,
+            },
+        )
 
     def test_malformed_output_reports_a_stable_error_code(self):
         result = evaluate_target(

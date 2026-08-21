@@ -61,6 +61,7 @@ _ALPN_RE = re.compile(r"^ALPN protocol:\s*(\S+)", re.MULTILINE)
 _TEMP_KEY_RE = re.compile(r"^(?:Server|Peer) Temp Key:\s*(.+?)\s*$", re.MULTILINE)
 _VERIFY_RETURN_RE = re.compile(r"^\s*Verify return code:\s*(\d+)", re.MULTILINE)
 _VERIFIED_PEERNAME_RE = re.compile(r"^Verified peername:\s*(\S+)", re.MULTILINE)
+_NO_PEER_CERT_RE = re.compile(r"no peer certificate available", re.IGNORECASE)
 _SUBJECT_RE = re.compile(r"^subject=(.*)$", re.MULTILINE)
 _CN_RE = re.compile(r"CN\s*=\s*([^,\s/]+)")
 _SAN_DNS_RE = re.compile(r"DNS:([^,\s]+)")
@@ -94,6 +95,7 @@ class TargetObservation:
     verify_return_code: Optional[int]
     verified_peername: Optional[str]
     sans: Tuple[str, ...]
+    certificate_present: bool
     error_code: Optional[str]
 
 
@@ -192,19 +194,29 @@ def parse_s_client_output(text: str) -> TargetObservation:
         _CONNECTED_RE.search(text)
     )
     verify_code = _VERIFY_RETURN_RE.search(text)
+    subject = _capture(_SUBJECT_RE, text)
+    peer_certificate = _capture(_PEER_CERT_RE, text)
+    verified_peername = _capture(_VERIFIED_PEERNAME_RE, text)
     return TargetObservation(
         reachable=reachable,
         protocol_version=_protocol_version(text),
         alpn=_capture(_ALPN_RE, text),
         server_temp_key=_capture(_TEMP_KEY_RE, text),
-        subject=_capture(_SUBJECT_RE, text),
-        peer_certificate=_capture(_PEER_CERT_RE, text),
+        subject=subject,
+        peer_certificate=peer_certificate,
         verification_ok=bool(_VERIFIED_RE.search(text)),
         verify_return_code=(
             int(verify_code.group(1)) if verify_code is not None else None
         ),
-        verified_peername=_capture(_VERIFIED_PEERNAME_RE, text),
+        verified_peername=verified_peername,
         sans=tuple(_SAN_DNS_RE.findall(text)),
+        # A handshake that fails before the Certificate message still
+        # prints vacuous verification success; only positive evidence
+        # counts as a certificate being present.
+        certificate_present=(
+            not _NO_PEER_CERT_RE.search(text)
+            and bool(subject or peer_certificate or verified_peername)
+        ),
         error_code=None if reachable else _infer_error_code(text),
     )
 
@@ -296,17 +308,36 @@ def _run_openssl(argv: list, timeout: float) -> Tuple[int, str]:
 
 
 def _protocol_version(text: str) -> Optional[str]:
-    """Prefer explicit protocol lines over the session-summary token."""
-    for pattern in (
-        _PROTOCOL_VERSION_RE,  # -brief label
-        _PROTOCOL_RE,  # full-mode OpenSSL >= 3.5 label
-        _NEW_SESSION_RE,  # "New, TLSv1.3, Cipher is ..."
-        _SESSION_PROTOCOL_RE,  # SSL-Session block
-    ):
-        captured = _capture(pattern, text)
-        if captured and captured.startswith("TLSv"):
-            return captured
+    """Return the negotiated protocol, ignoring attempted-only versions.
+
+    A handshake that fails without a session still prints a bare
+    "Protocol: TLSv1.3" reflecting the attempt, so that form (and the
+    SSL-Session block) counts only alongside other negotiated
+    evidence such as a real "New, TLSv..." session line, an ALPN
+    result, a key-exchange line, or a received certificate.
+    """
+    new_token = _capture(_NEW_SESSION_RE, text)
+    if new_token is not None and new_token.startswith("TLSv"):
+        return new_token
+    brief = _capture(_PROTOCOL_VERSION_RE, text)
+    if brief is not None and brief.startswith("TLSv"):
+        return brief
+    if _handshake_completed_evidence(text):
+        for pattern in (_PROTOCOL_RE, _SESSION_PROTOCOL_RE):
+            captured = _capture(pattern, text)
+            if captured and captured.startswith("TLSv"):
+                return captured
     return None
+
+
+def _handshake_completed_evidence(text: str) -> bool:
+    return bool(
+        _ALPN_RE.search(text)
+        or _TEMP_KEY_RE.search(text)
+        or _SUBJECT_RE.search(text)
+        or _PEER_CERT_RE.search(text)
+        or _VERIFIED_PEERNAME_RE.search(text)
+    )
 
 
 def _capture(pattern, text):
@@ -345,9 +376,12 @@ def _name_matches(name: Optional[str], expected: str) -> bool:
     if candidate == wanted:
         return True
     if candidate.startswith("*."):
-        # A wildcard name covers exactly one extra label.
+        # A wildcard covers exactly one extra label: *.example.com
+        # matches www.example.com but not a.b.example.com.
         suffix = candidate[1:]
-        return wanted.endswith(suffix) and len(wanted) > len(suffix)
+        if not wanted.endswith(suffix) or len(wanted) <= len(suffix):
+            return False
+        return "." not in wanted[: len(wanted) - len(suffix)]
     return candidate.endswith("." + wanted)
 
 
@@ -356,9 +390,13 @@ def _certificate_name_matches(
 ) -> bool:
     """Hostname decision, strongest evidence first.
 
-    The -verify_hostname result (chain plus hostname) is authoritative;
-    the remaining signals only cover text that lacks it.
+    The -verify_hostname result (chain plus hostname) is authoritative,
+    but only when a certificate was actually received: without one,
+    openssl reports vacuous success.  The remaining signals only cover
+    text that lacks the verification result.
     """
+    if not observation.certificate_present:
+        return False
     if observation.verify_return_code is not None:
         return observation.verify_return_code == 0
     if _name_matches(observation.verified_peername, expected_server_name):
