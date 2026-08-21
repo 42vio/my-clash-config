@@ -1,16 +1,16 @@
 # Clash 私有订阅生成与发布服务设计
 
 **日期：** 2026-08-21
-**状态：** 已确认，待实施
+**状态：** 方案已确认，文档待用户复审
 **目标仓库名：** `my-clash-config`
-**取代：** 2026-08-19 版设计及实施计划
+**取代：** 2026-08-19 版设计及实施计划，以及本设计复审前形成的 2026-08-21 旧实施计划
 
 ## 1. 目标
 
 为个人和少量受信任用户提供完整的 Clash 配置订阅：
 
 1. 每位其他用户只获得自己独立的 3x-ui 客户端节点。
-2. owner 获得自己的 3x-ui、Jrohy/Trojan、机场快照和家庭节点。
+2. owner 获得自己的 3x-ui、机场快照和家庭节点。
 3. 从一份基础模板生成 `balanced`、`balanced-win`、`privacy` 三种完整配置。
 4. 对外只发布最后一次成功生成的配置，不公开转换器、上游订阅或管理接口。
 5. 保留三份现有配置的原始副本，以及每位用户最近五个成功发布版本。
@@ -24,7 +24,9 @@
 - 不把真实订阅 URL、节点凭据、公开令牌或生成结果提交到 Git。
 - 不按固定时间重复生成内容相同的配置。
 - 不实现可靠的设备绑定。Clash 订阅本质上仍是持有链接即可下载的 bearer credential。
-- 不修改现有 Trojan 服务、443 SNI 分流方式或已有网页。
+- 不在旧 Jrohy/Trojan 系统上做原地迁移；目标环境是重装后的干净服务器。
+- 不让订阅服务或 3x-ui 面板占用公网 443。
+- 不依赖自有域名提供 REALITY 节点。
 
 ## 3. 命名和兼容范围
 
@@ -41,7 +43,6 @@
 ```mermaid
 flowchart LR
     X["每人独立的 3x-ui 订阅"] --> C["MetaCubeX/subconverter\n仅容器内可访问"]
-    T["owner 的 Trojan 订阅"] --> C
     A["机场节点快照"] --> G["配置生成器"]
     H["owner 家庭节点"] --> G
     C --> G
@@ -49,7 +50,7 @@ flowchart LR
     G --> V["语法、引用及敏感信息检查"]
     V --> R["每用户最近五个成功版本"]
     R --> P["只读订阅发布服务"]
-    P --> N["现有 Nginx / HTTPS"]
+    P --> N["宿主机 Nginx / HTTPS 8443"]
     N --> U["Clash 客户端"]
 ```
 
@@ -60,66 +61,114 @@ flowchart LR
 
 生成器和 Mihomo 校验器按命令临时运行，不常驻、不提供公网接口。
 
-## 5. 现有服务器集成
+## 5. 服务器与网络架构
 
-服务器已有 Jrohy/Trojan 和 Nginx，80/443 已被现有链路使用。历史记录显示曾执行以下调整：
+目标环境是重装后的干净服务器。Jrohy/Trojan、`trojan-web`、旧 MariaDB、Portainer 和旧 Nginx 配置均不迁移；本项目也不提供在旧环境中原地删除这些组件的脚本。
 
-- 在 `/usr/local/etc/trojan/config.json` 的 `ssl` 中设置 `fallback_addr = 127.0.0.1`、`fallback_port = 1443`。
-- 将 Nginx 原 HTTP 监听端口从 80 调整为 8080。
-- 为 Nginx 增加 1443 HTTPS 监听。
+### 5.1 旧服务器只读核查结论
 
-这些改动的目的不是给普通服务直接开放 8080/1443，而是让 Trojan、伪装网页和多个 HTTPS 子域名复用公网 443。
+重装决定前已对旧服务器做过只读核查，确认历史记录对应的真实结构是：
 
-### 5.1 推定的流量结构
+- 公网 443 由 Trojan-Go 直接监听，并非 Nginx stream。
+- 公网 80 由 `trojan-web` 监听。
+- Trojan 的 `remote_addr:remote_port` 是 `127.0.0.1:80`，普通非 Trojan HTTPS 请求会进入 `trojan-web`。
+- Trojan 的 `ssl.fallback_addr:fallback_port` 是 `127.0.0.1:1443`。
+- Nginx 监听 8080 和 1443；8080 是为避开 `trojan-web` 的 80 而移动的 Debian 默认站点，并未被 Trojan 的 `remote_port` 使用。
+- Nginx 1443 仍引用已删除的旧域名证书，运行进程内保留的证书也已过期，因此 `nginx -t` 失败。
+- Nginx 二进制具备动态 stream 能力，但 stream 模块未安装或加载。
+- 主机输入策略为 accept；3x-ui、Portainer 和 MariaDB 等端口曾绑定所有网卡。
+- Docker 已安装，但 Docker Compose 插件缺失。
 
-根据历史记录和当时参考的 SNI 共用 443 方案，当前服务器很可能采用以下结构：
+这段记录只用于解释旧环境和重装原因。新安装器检测到 Trojan、`trojan-web`、旧数据库容器或冲突端口时必须停止，不得猜测或自动清理。
+
+### 5.2 目标端口拓扑
+
+重装后的固定拓扑为：
 
 ```mermaid
 flowchart TD
-    A["公网 443"] --> B["Nginx stream\nssl_preread 读取 SNI"]
-    B -->|"Trojan 域名"| C["Trojan-Go 内部监听端口\n常见为 10443"]
-    B -->|"网页或订阅子域名"| D["Nginx HTTPS 1443"]
-    C -->|"合法 Trojan"| E["代理出站"]
-    C -->|"TLS 成功但不是 Trojan"| F["remote_addr:remote_port\n推定为 Nginx HTTP 8080"]
-    C -->|"TLS 握手失败"| D
+    C["Mihomo / Clash 客户端"] -->|"VLESS + RAW/TCP + REALITY\n公网 TCP 443"| X["3x-ui 管理的 Xray"]
+    B["手机或浏览器"] -->|"HTTPS 8443"| N["宿主机 Nginx"]
+    S["Clash 订阅更新"] -->|"HTTPS 8443"| N
+    N -->|"panel.<domain> + 随机路径"| P["3x-ui 面板\n仅回环监听"]
+    N -->|"sub.<domain> /s/<token>/..."| R["publisher\n仅回环监听"]
+    G["生成器"] --> Q["3x-ui 原始订阅\n仅回环访问"]
 ```
 
-Nginx stream 只在 TLS 握手前读取 SNI 并转发原始连接，不负责解密 HTTP。由于 stream 已占用公网 443，普通 Nginx HTTPS 虚拟主机需要改在内部 1443 终止 TLS；用户对外仍访问标准 443。
+端口职责：
 
-### 5.2 `remote_port` 与 `fallback_port`
-
-Trojan-Go 有两条不同的伪装回退路径：
-
-| 配置 | 触发条件 | 转发的数据 | 后端典型协议 |
+| 端口 | 公网状态 | 服务 | 说明 |
 | --- | --- | --- | --- |
-| `remote_addr:remote_port` | TLS 成功，但内容不是合法 Trojan，或密码不正确 | 已解密的数据 | 明文 HTTP，例如 Nginx 8080 |
-| `ssl.fallback_addr:fallback_port` | TLS 握手本身失败 | 尚未解密的原始连接 | TLS/HTTPS，例如 Nginx 1443 |
+| TCP 443 | 开放 | Xray VLESS + RAW/TCP + REALITY | REALITY 独占，不经过 Nginx |
+| TCP 8443 | 开放 | Nginx HTTPS | 按子域名分流面板和订阅 |
+| TCP 80 | 开放 | Nginx ACME HTTP-01 | 只服务证书验证及通用跳转或 404 |
+| SSH 端口 | 开放 | sshd | 由服务器管理员指定，不由本项目更改 |
+| 3x-ui 面板、原始订阅、publisher、subconverter | 不开放 | 回环或 Compose 内网 | 防火墙和监听地址双重限制 |
 
-因此 `fallback_port = 1443` 的作用是让非 TLS 探测也得到类似正常 HTTPS 服务器的行为，而不是直接断开。Nginx 8080 则很可能承接 Trojan 解密后的普通 HTTP 伪装请求。
+不引入 Nginx stream、Trojan fallback 或公网 1443。8443 上的两个 HTTPS 虚拟主机使用不同 `server_name`，共享一个 Nginx 实例。
 
-“80 改为 8080”的高概率原因是 Jrohy 的 `trojan-web` 已占用 80，新安装的 Nginx 如果继续监听 80 会启动失败，因此把 Nginx 明文 HTTP/伪装网页入口移到 8080，并让 Trojan 的 `remote_port` 相应指向 8080。这个推断仍需实机确认：如果 Trojan 当前 `remote_port` 不是 8080，说明历史记录还遗漏了其他端口调整。公网 80 也可能同时承担 Jrohy 管理网页、HTTP 跳转或证书验证。
+### 5.3 REALITY 入站
 
-### 5.3 实施前只读核查
+3x-ui 管理一个或多个 VLESS 客户端，但首个部署只需要一个共享入站：
 
-一键部署不得仅凭历史记录修改端口。必须先只读确认：
+- 公网监听 TCP 443。
+- 传输为 RAW/TCP，安全层为 REALITY。
+- 每个客户端使用独立 UUID、email、配额、到期时间和 3x-ui `subId`。
+- 客户端 flow 使用 `xtls-rprx-vision`，fingerprint 使用受支持的常见浏览器指纹。
+- Target 不能照抄教程；必须从新 VPS 实测 TLS 1.3、HTTP/2、X25519、可达性和网络位置后选择，SNI 必须匹配 Target 证书。
+- short ID 不留空。私钥只在服务器保存，客户端和订阅只获得公钥。
+- 为兼容 Mihomo，明确测试 REALITY 的最低客户端版本门槛；仅在确有需要时按 3x-ui 官方说明降低门槛，并记录其允许旧指纹的权衡。
+- 3x-ui、Xray 和 Mihomo 都固定到已验证的明确版本；升级前用测试客户端验证，不自动追随 `latest`。
 
-- 80、443、8080、1443 及 Trojan 内部端口分别由哪个进程监听。
-- `nginx -T` 中的 `stream`、`ssl_preread`、SNI map、upstream 和各 HTTPS `server`。
-- Trojan 的 `local_port`、`remote_addr`、`remote_port`、`fallback_addr`、`fallback_port`，不得输出密码或完整用户数据。
-- 公网 80/443、防火墙和证书覆盖范围。
+生成给客户端的自建节点地址默认使用 VPS 公网 IP，而不是自有域名。自有域名到期不会影响已经发布的 REALITY 节点。
 
-如果实际结构与推定不符，安装器必须停止并给出差异，不得自动重写 Trojan 或现有 Nginx 主配置。
+### 5.4 域名、证书和无域名退路
 
-### 5.4 新服务接入约束
+主要入口使用长期保留的自有域名：
 
-新服务必须遵守：
+```text
+https://panel.<domain>:8443/<随机后台路径>/
+https://sub.<domain>:8443/s/<高强度随机令牌>/<variant>.yaml
+```
 
-1. Compose 不绑定 80 或 443。
-2. `publisher` 仅绑定 `127.0.0.1`。
-3. 新增订阅子域名的 Nginx HTTPS `server` 配置，并接入现有 1443 Web 入口。
-4. 证书必须覆盖订阅子域名；不修改 Trojan 当前使用的证书。
-5. 不改动现有 443 SNI 分流、Trojan fallback 和原网页配置。
-6. 部署脚本修改 Nginx 前先备份目标片段，执行配置检查成功后才 reload。
+一张 SAN 证书可同时覆盖 `panel.<domain>` 和 `sub.<domain>`；不要求通配符。Nginx 终止 8443 TLS，3x-ui 和 publisher 后端只使用回环连接。
+
+域名是稳定、易记的管理和订阅入口，不是 REALITY 的依赖。更换 VPS 时只更新 DNS，用户链接保持不变。若将来不再续费域名，则切换为同一 IP authority 下的路径路由：
+
+```text
+https://<vps-ip>:8443/<随机后台路径>/
+https://<vps-ip>:8443/s/<高强度随机令牌>/<variant>.yaml
+```
+
+无域名模式不能再依靠 `panel`/`sub` 两个 Host 分流，Nginx 必须把 `/s/` 交给 publisher、把独立随机后台路径交给 3x-ui，其余路径统一返回通用响应。它使用受信任的 IP 地址证书，不允许明文 HTTP 或要求用户关闭证书验证。IP 证书有效期短，只有在启用自动签发、自动 reload、到期检查和续期失败告警后才能作为正式入口。切换到 IP 入口时，每位用户只需更新一次订阅 URL；3x-ui UUID、REALITY 密钥和已生成配置不重建。
+
+### 5.5 3x-ui 面板保护
+
+面板为了手机访问而通过 `panel.<domain>:8443` 对外提供，但必须满足：
+
+1. 3x-ui 面板只监听回环地址，原始端口不进入公网防火墙。
+2. 使用独立面板子域名、随机且足够长的 Web Base Path、强密码和 2FA。
+3. Nginx 正确代理 WebSocket、限制登录请求频率并隐藏无必要的产品响应头。
+4. 未命中正确 Host 或路径时返回通用响应，不暴露面板端口、版本或内部路径。
+5. 3x-ui 原始订阅服务也只监听回环地址，只允许生成器和元数据读取器访问。
+6. 不依赖“随机路径”代替身份认证，也不把 3x-ui 管理员凭据交给订阅服务。
+
+### 5.6 部署与防火墙约束
+
+一键部署只负责本仓库的 Clash 服务、宿主机 Nginx、证书和防火墙，不下载或执行第三方 3x-ui 安装脚本。干净服务器必须先按文档安装固定版本的原生 3x-ui，完成管理员强密码、2FA、随机 Base Path、回环面板/原始订阅和一个可用 REALITY 客户端的人工初始化；这是部署本项目的明确前置条件。
+
+项目安装器默认只执行只读 `preflight`，只有显式 `apply` 才安装缺失的 Docker/Compose、Nginx 和证书工具，写入本项目配置并收敛防火墙。它必须：
+
+- 检查 80、443、8443 和配置的 SSH 端口冲突。
+- 检查 Docker、Compose、Nginx、3x-ui/Xray、证书工具和防火墙状态。
+- 验证已安装的 3x-ui/Xray 版本、监听地址和至少一个测试通过的 REALITY 客户端；缺少初始化时停止并给出操作清单。
+- 拒绝在检测到 Jrohy/Trojan、旧数据库容器或无法识别的 443 服务时继续。
+- 安装或生成配置前备份它将要替换的目标文件；不备份整台旧服务器，也不删除用户数据。
+- 先验证 Nginx 和 Compose 配置，再启动或 reload。
+- 将主机输入策略收敛为默认拒绝，只开放 SSH、TCP 80、TCP 443 和 TCP 8443；不默认开放 UDP 443。
+- 确认 3x-ui 面板、原始订阅端口、publisher 和数据库没有绑定公网。
+
+重装、磁盘清除、DNS 修改和实际执行 apply 都是仓库外操作，必须由用户单独确认。
 
 ## 6. 模板设计
 
@@ -159,6 +208,7 @@ templates/
 ```text
 private/
   config/
+    service.yaml
     users.yaml
   reference-configs/
     2026-08-21/
@@ -176,7 +226,9 @@ private/
     <user-id> -> ../releases/<user-id>/<release-id>
 ```
 
-仓库只提交无敏感值的 `users.example.yaml` 和示例节点结构。真实 `private/` 设置为目录权限 `0700`，文件权限 `0600`。
+仓库只提交无敏感值的 `service.example.yaml`、`users.example.yaml` 和示例节点结构。真实 `private/` 设置为目录权限 `0700`，文件权限 `0600`。
+
+`service.yaml` 保存全局私有部署值，包括 REALITY 公网 IP/端口、主订阅 authority、可选 IP authority、3x-ui 回环入口和证书状态读取位置。公开模板和提交内容只保留占位符，不写入个人域名或 IP。
 
 每位用户至少包含：
 
@@ -186,16 +238,18 @@ private/
 - 公开令牌的安全哈希，而不是可还原的明文令牌。
 - 当前发布版本和最后一次成功状态。
 
-owner 额外包含稳定的 Trojan 订阅 URL，并引用机场快照和家庭节点文件。其他用户不得声明或继承 owner 来源。
+owner 额外引用机场快照和家庭节点文件。其他用户不得声明或继承 owner 来源。
 
 ## 8. 节点来源和隔离
 
 | 用户 | 允许的节点来源 |
 | --- | --- |
 | 其他用户 | 仅该用户自己的 3x-ui 客户端 |
-| owner | owner 3x-ui + owner Trojan + 机场快照 + 家庭节点 |
+| owner | owner 3x-ui + 机场快照 + 家庭节点 |
 
-3x-ui 和 Trojan 的稳定订阅由内部 subconverter 转为统一节点结构。输出配置直接包含转换后的节点，不包含上游订阅 URL。
+3x-ui 的稳定订阅由内部 subconverter 转为统一节点结构。输出配置直接包含转换后的节点，不包含上游订阅 URL。
+
+3x-ui 原始订阅通过回环入口抓取，但转换后的自建节点必须发布为配置的 VPS 公网 IP 和 TCP 443。生成器同时验证 REALITY 的 `servername`、公钥、非空 short ID、fingerprint 和 `xtls-rprx-vision` 没有在 3x-ui 导出或 subconverter 转换中丢失；出现内部地址、内部端口或缺少 REALITY 字段时生成失败，不发布降级节点。
 
 机场更新流程：
 
@@ -206,11 +260,11 @@ owner 额外包含稳定的 Trojan 订阅 URL，并引用机场快照和家庭�
 5. 验证成功后原子替换 `private/sources/owner/airport.yaml`，立即生成 owner 的三份配置。
 6. 临时 URL 不落盘；失败时保留旧机场快照和旧配置。
 
-如果机场要求生成链接和下载链接使用同一公网出口，Quantumult X 只需把机场后台域名定向到服务器现有 Trojan 节点，无需切换手机的全局代理模式。
+如果机场要求生成链接和下载链接使用同一公网出口，Quantumult X 只需把机场后台域名定向到服务器的 owner REALITY 节点，无需切换手机的全局代理模式。
 
-家庭节点由 owner 手工维护。当前参考配置中的 Jrohy/Trojan 节点改为稳定 Trojan 订阅来源，其余内联节点归入 owner 家庭节点。
+家庭节点由 owner 手工维护。当前参考配置中的旧 Jrohy/Trojan 节点在迁移时删除，其余内联节点归入 owner 家庭节点。
 
-不同来源出现同名节点时，仅冲突节点追加 `[3x-ui]`、`[Trojan]`、`[机场]` 或 `[家庭]`。代理组同步引用最终名称。
+不同来源出现同名节点时，仅冲突节点追加 `[3x-ui]`、`[机场]` 或 `[家庭]`。代理组同步引用最终名称。
 
 ## 9. 生成和发布流程
 
@@ -221,6 +275,8 @@ owner 额外包含稳定的 Trojan 订阅 URL，并引用机场快照和家庭�
 - 成功导入机场订阅。
 - 修改模板、用户来源或家庭节点后手动 refresh。
 
+证书续期、到期检查和失败告警仍按证书有效期定时运行；它们只维护 HTTPS，不触发配置生成。
+
 一次生成执行：
 
 1. 读取指定用户允许的来源。
@@ -228,7 +284,7 @@ owner 额外包含稳定的 Trojan 订阅 URL，并引用机场快照和家庭�
 3. 合并节点并解决名称冲突。
 4. 根据基础模板和 variant 生成完整 Clash YAML 到 staging 目录。
 5. 验证 YAML 语法、必需字段、节点名称唯一性及代理组引用。
-6. 检查输出中没有上游订阅 URL、临时机场 URL或公开令牌。
+6. 检查输出中没有上游订阅 URL、临时机场 URL 或公开令牌。
 7. 使用固定版本的官方 Mihomo 内核执行真实配置检查。
 8. 写入 manifest 和流量元数据。
 9. 将该用户的 `current` 符号链接原子切换到新 release。
@@ -255,15 +311,17 @@ owner 额外包含稳定的 Trojan 订阅 URL，并引用机场快照和家庭�
 
 publisher 在响应中设置 `Subscription-Userinfo` 和兼容的订阅描述头。实时读取失败时返回最后一次成功缓存，不影响配置下载。`total=0` 按不限量处理。
 
-owner 的合并配置只展示 owner 3x-ui 的流量额度，不把机场、Trojan 和家庭节点虚构成统一配额。其他用户展示各自 3x-ui 客户端的额度。
+owner 的合并配置只展示 owner 3x-ui 的流量额度，不把机场和家庭节点虚构成统一配额。其他用户展示各自 3x-ui 客户端的额度。
 
 ## 11. 公开接口
 
 公开订阅路径格式：
 
 ```text
-https://<订阅子域名>/s/<高强度随机令牌>/<variant>.yaml
+https://sub.<domain>:8443/s/<高强度随机令牌>/<variant>.yaml
 ```
+
+无域名模式仅把 authority 替换为 `<vps-ip>:8443`，路径、令牌和授权关系不变。
 
 令牌至少使用 32 字节密码学安全随机数。publisher 对请求令牌做哈希并与保存的哈希比较，不持久化可还原的公开令牌。
 
@@ -295,7 +353,7 @@ clash-sub logs
 
 命令行为：
 
-- `status` 显示最后成功版本、生成时间、来源状态，以及输入文件哈希变化导致的“待重新生成”，但不显示 URL 或凭据。
+- `status` 显示最后成功版本、生成时间、来源状态、证书剩余时间和输入文件哈希变化导致的“待重新生成”，但不显示 URL 或凭据。
 - `refresh` 默认生成全部用户；带用户 ID 时仅生成该用户。
 - `airport` 完成安全导入并自动刷新 owner。
 - `history` 只列成功版本。
@@ -316,7 +374,7 @@ clash-sub logs
 - 同一 NAT 后多台设备可能只算一个 IP。
 - 单一设备切换 Wi-Fi 和移动网络可能算两个 IP。
 - CDN、IP Tunnel 或未正确传递真实 IP 时可能不准确。
-- 限制只约束 3x-ui 节点，不能约束机场、家庭或独立 Trojan 节点。
+- 限制只约束 3x-ui 节点，不能约束机场或家庭节点。
 
 ## 14. 安全设计
 
@@ -330,8 +388,15 @@ clash-sub logs
 8. 容器采用只读文件系统、最小权限和非 root 用户；仅生成器拥有 release 写权限。
 9. publisher 只读挂载 `current` 和元数据；不能调用生成器或修改 private 数据。
 10. 不使用 Basic Auth 作为 Clash 客户端兼容性的必要条件，也不依赖移动 IP 白名单。
+11. Nginx 的订阅 location 不记录完整 URI，避免高强度令牌进入 access log；未知 Host、路径和令牌返回无产品特征的通用响应。
+12. 3x-ui 面板和原始订阅端口不得绑定公网；面板必须启用强密码、2FA、随机 Base Path 和登录限速。
+13. REALITY 降低主动探测暴露概率但不承诺不可识别。部署保持公网 443、匹配 Target 的 SNI、非空 short ID、经过验证的客户端指纹和固定版本。
+14. 订阅与 REALITY 位于同一 VPS，IP 被封时会同时失效。为少量用户保留离线恢复清单；更换 IP 后通过既有安全通信渠道发送一次新订阅地址。
+15. 不宣称使用 IP、域名或 REALITY 可以保证不被 GFW 封禁；验收只验证配置正确、公开面最小和泄漏可隔离。
 
 ## 15. Docker Compose 边界
+
+Nginx 和原生 3x-ui/Xray 是宿主机服务，不进入本项目 Compose。3x-ui 直接监听公网 TCP 443 的 REALITY 入站，同时把面板和原始订阅服务限制在回环地址。Compose 只承载 Clash 生成与发布组件。
 
 Compose 至少包含：
 
@@ -354,7 +419,7 @@ Compose 至少包含：
 ### 用户隔离
 
 - 每位普通用户输出只包含自己的 3x-ui 节点。
-- owner 输出包含四类获准来源。
+- owner 输出包含三类获准来源。
 - 普通用户输出中不存在 owner 节点名称、凭据或来源痕迹。
 - 用户令牌不能访问未授权 variant 或其他用户文件。
 
@@ -375,10 +440,14 @@ Compose 至少包含：
 ### 部署与安全
 
 - `docker compose config` 通过。
-- 公开网络只能到达 Nginx 和 publisher 允许的订阅路径。
+- 公网 TCP 443 只到达 3x-ui/Xray REALITY；公网 TCP 8443 只到达 Nginx。
+- Nginx 8443 只允许正确的面板和订阅虚拟主机，后端面板和 publisher 均为回环监听。
 - subconverter、生成器、validator 和管理命令均不能从公网访问。
 - 敏感信息扫描覆盖提交内容、日志和公开响应。
-- 一键部署不覆盖现有 Trojan/Nginx 配置，Nginx 检查失败时不 reload。
+- 防火墙默认拒绝入站，只开放明确批准的 SSH、TCP 80、TCP 443 和 TCP 8443。
+- 一键部署检测到旧 Trojan、冲突端口或非干净环境时停止；Nginx 检查失败时不 reload。
+- `panel.<domain>:8443` 能通过随机 Base Path、强认证和 2FA 正常访问，错误 Host/路径不泄漏面板特征。
+- `sub.<domain>:8443` 与可选 IP 地址入口均使用有效受信任证书；证书续期失败会在到期前报警。
 
 ## 17. 实施顺序
 
@@ -390,7 +459,15 @@ Compose 至少包含：
 6. 实现只读 publisher、流量头和令牌授权。
 7. 实现 `clash-sub` 管理命令。
 8. 更新 Compose，移除 sub-web，加入内部 MetaCubeX/subconverter。
-9. 编写现有 Trojan/Nginx 环境的一键部署和回滚说明。
+9. 编写干净服务器的 3x-ui 人工初始化清单，以及 Nginx 8443、证书、防火墙和 Compose 一键部署及回滚说明。
 10. 完成端到端、安全和故障回退验证。
 
-具体文件、测试和提交粒度由新的实施计划定义；旧的 2026-08-19 实施计划不得执行。
+具体文件、测试和提交粒度由复审后重新编写的实施计划定义；现有的 2026-08-19 和 2026-08-21 实施计划均不得执行。
+
+## 18. 决策参考
+
+- [3x-ui：VLESS + REALITY 配置说明](https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/config/reality.mdx)
+- [3x-ui：Nginx 反向代理说明](https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/operations/reverse-proxy.mdx)
+- [Xray-core：REALITY 传输配置](https://xtls.github.io/en/config/transports/reality.html)
+- [Let's Encrypt：短期证书与 IP 地址证书](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability.html)
+- [GFW Report：代理协议主动探测研究](https://gfw.report/publications/usenixsecurity23/en/)

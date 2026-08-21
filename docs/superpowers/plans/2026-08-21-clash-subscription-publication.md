@@ -1,5 +1,7 @@
 # Clash Private Subscription Publication Implementation Plan
 
+> **状态：已废止，禁止执行。** 本计划基于保留旧 Trojan/Nginx 443 路由的假设，与已改为“干净服务器、REALITY 独占公网 443、Nginx HTTPS 使用 8443”的当前设计冲突。待设计复审通过后重新编写实施计划。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a private, per-user Clash configuration generator and read-only subscription publisher that combines approved sources, preserves 3x-ui traffic metadata, and integrates safely with the server's existing Trojan/Nginx 443 routing.
