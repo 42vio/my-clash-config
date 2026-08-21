@@ -1,5 +1,7 @@
 # Clash Subscription Service Implementation Plan
 
+> **状态：已废弃。** 本计划基于包含 `sub-web` 和公开转换接口的旧设计，不得继续执行。后续实施必须以 `docs/superpowers/specs/2026-08-21-clash-subscription-publication-design.md` 及其新实施计划为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Provide a Docker Compose-hosted `subconverter` + `sub-web` service and generate the Balanced, Balanced_Win, and Privacy Clash configurations from credential-free templates with optional local-only private node fragments.

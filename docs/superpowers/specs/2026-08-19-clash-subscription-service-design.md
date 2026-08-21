@@ -1,7 +1,7 @@
 # Clash 订阅转换服务与私有配置生成设计
 
 **日期：** 2026-08-19  
-**状态：** 待用户 review  
+**状态：** 已废弃；由 `2026-08-21-clash-subscription-publication-design.md` 取代
 **范围：** `subconverter` + `sub-web` 在线转换服务、三套 Clash 模板、本地私有节点叠加生成
 
 ## 1. 目标
