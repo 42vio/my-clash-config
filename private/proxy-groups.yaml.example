@@ -1,6 +1,0 @@
-# Fragments may reference template anchors (e.g. <<: *fall, <<: *sel) but cannot modify the template's built-in groups (a3/g2/AI服务).
-- name: Private Relay
-  type: select
-  proxies:
-    - 🎯 Direct
-    - Example Private Node

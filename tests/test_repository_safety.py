@@ -32,14 +32,6 @@ TRACKED_DOCUMENT_PATHS = (
     "templates/variants/balanced.yaml",
     "templates/variants/balanced-win.yaml",
     "templates/variants/privacy.yaml",
-    "templates/_base.yaml.tmpl",
-    "templates/parts/dns-balanced.part",
-    "templates/parts/dns-privacy.part",
-    "templates/parts/geoip-resolve.part",
-    "templates/parts/geoip-no-resolve.part",
-    "private/proxies.yaml.example",
-    "private/proxy-groups.yaml.example",
-    "private/rules.yaml.example",
     "tests/fixtures/synthetic-users.yaml",
 )
 
