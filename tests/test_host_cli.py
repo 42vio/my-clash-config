@@ -1,12 +1,22 @@
 import json
+import subprocess
+import sys
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from clash_sub.host_cli import (
     EXIT_FAILURE,
+    EXIT_INTERRUPTED,
     EXIT_OK,
     EXIT_USAGE,
+    MAX_MANAGER_OUTPUT_BYTES,
+    CommandRunner,
     ManagerError,
     ValidatorError,
+    parse_manager_result,
+    require_success_without_echoing_config,
     run_cli,
 )
 
@@ -228,6 +238,12 @@ class HostCliTests(unittest.TestCase):
         for command in ("status", "refresh", "airport", "history", "rollback", "rotate-link", "logs"):
             self.assertIn(command, result.stdout)
 
+    def test_help_with_extra_arguments_still_prints_help(self):
+        result = self.run_cli(["help", "extra"])
+        self.assertEqual(result.returncode, EXIT_OK)
+        self.assertIn("commands:", result.stdout)
+        self.assertNotIn("unknown command", result.stderr)
+
     def test_unknown_command_exits_with_usage_code(self):
         result = self.run_cli(["frobnicate"])
         self.assertEqual(result.returncode, EXIT_USAGE)
@@ -418,6 +434,37 @@ class HostCliTests(unittest.TestCase):
         self.assertIn("certificate: state unavailable", result.stdout)
         self.assertIn("needs_refresh=", result.stdout)
 
+    def test_status_rejects_malformed_payload_without_claiming_reachable(self):
+        runner = FakeRunner(status_payload={"unexpected": ["shape"]})
+        result = run_cli(["status"], runner=runner)
+        self.assertEqual(result.returncode, EXIT_FAILURE)
+        self.assertNotIn("reachable", result.stdout)
+        self.assertIn("operation_failed", result.stderr)
+
+    def test_status_never_prints_unknown_certificate_fields(self):
+        certificate_payload = {
+            "issuer": "CN=acme,emailAddress=admin@secret.example",
+            "chain": "/etc/letsencrypt/live/subscription",
+            "email": "admin@secret.example",
+            "subject": "CN=sub.example.com",
+            "serial": "00ff00ff00ff00ff00ff00ff00ff00ff",
+            "valid": True,
+            "remaining_seconds": 42,
+        }
+        runner = FakeRunner(certificate_payload=certificate_payload)
+
+        result = run_cli(["status"], runner=runner)
+
+        self.assertEqual(result.returncode, EXIT_OK)
+        self.assertIn("valid=true", result.stdout)
+        self.assertIn("remaining_seconds=42", result.stdout)
+        self.assertNotIn("secret.example", result.stdout)
+        self.assertNotIn("letsencrypt", result.stdout)
+        self.assertNotIn("issuer", result.stdout)
+        self.assertNotIn("chain", result.stdout)
+        self.assertNotIn("subject", result.stdout)
+        self.assertNotIn("serial", result.stdout)
+
     def test_status_reports_unreachable_manager_without_leaking(self):
         runner = FakeRunner(failing_status=True, certificate_payload={"valid": True})
         result = run_cli(["status"], runner=runner)
@@ -538,6 +585,229 @@ class HostCliTests(unittest.TestCase):
         self.assertIn("status=success", result.stdout)
         self.assertNotIn("secret.example", result.stdout)
         self.assertNotIn("source_url", result.stdout)
+
+    def test_interrupt_exits_130_without_traceback(self):
+        class InterruptingRunner(FakeRunner):
+            def manager(self, arguments, stdin_text=None):
+                raise KeyboardInterrupt()
+
+        result = run_cli(["status"], runner=InterruptingRunner())
+
+        self.assertEqual(result.returncode, EXIT_INTERRUPTED)
+        self.assertIn("interrupted", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_unexpected_os_error_exits_with_redacted_failure(self):
+        class BrokenRunner(FakeRunner):
+            def manager(self, arguments, stdin_text=None):
+                raise OSError("synthetic disk failure")
+
+        result = run_cli(["status"], runner=BrokenRunner())
+
+        self.assertEqual(result.returncode, EXIT_FAILURE)
+        self.assertNotIn("synthetic disk failure", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("error:", result.stderr)
+
+
+class CommandRunnerTests(unittest.TestCase):
+    """Cover the production parse/redaction layer that FakeRunner bypasses."""
+
+    def completed(self, returncode=0, stdout="", stderr=""):
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def test_manager_returns_parsed_payload_with_fixed_compose_argv(self):
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return self.completed(stdout='{"users": {}}\n')
+
+        with patch("clash_sub.host_cli.subprocess.run", side_effect=fake_run):
+            payload = CommandRunner().manager(["status"])
+
+        self.assertEqual(payload, {"users": {}})
+        self.assertEqual(
+            captured["command"],
+            ["docker", "compose", "run", "--rm", "-T", "manager", "status"],
+        )
+        self.assertTrue(captured["kwargs"]["capture_output"])
+        self.assertFalse(captured["kwargs"]["check"])
+
+    def test_manager_passes_stdin_text_only(self):
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["kwargs"] = kwargs
+            return self.completed(stdout='{"imported": true}\n')
+
+        with patch("clash_sub.host_cli.subprocess.run", side_effect=fake_run):
+            CommandRunner().manager(["import-airport"], stdin_text="https://airport.example/x\n")
+
+        self.assertEqual(captured["kwargs"]["input"], "https://airport.example/x\n")
+        self.assertTrue(captured["kwargs"]["text"])
+
+    def test_parse_manager_result_rejects_malformed_json(self):
+        with self.assertRaises(ManagerError) as context:
+            parse_manager_result(self.completed(stdout="not json at all"))
+        self.assertEqual(context.exception.code, "manager_unavailable")
+
+    def test_parse_manager_result_rejects_non_dict_payloads(self):
+        for stdout in ('["users"]\n', '"ok"\n', "null\n", "17\n"):
+            with self.assertRaises(ManagerError) as context:
+                parse_manager_result(self.completed(stdout=stdout))
+            self.assertEqual(context.exception.code, "manager_unavailable")
+
+    def test_parse_manager_result_raises_payload_error_despite_zero_exit(self):
+        with self.assertRaises(ManagerError) as context:
+            parse_manager_result(
+                self.completed(stdout='{"error": {"code": "source_failed"}}\n')
+            )
+        self.assertEqual(context.exception.code, "source_failed")
+
+    def test_parse_manager_result_prefers_manager_error_code_on_failure(self):
+        with self.assertRaises(ManagerError) as context:
+            parse_manager_result(
+                self.completed(
+                    returncode=1,
+                    stdout='{"error": {"code": "release_missing"}}\n',
+                )
+            )
+        self.assertEqual(context.exception.code, "release_missing")
+
+    def test_parse_manager_result_maps_docker_failure_without_code(self):
+        for stdout in ("", "connection refused by peer\n"):
+            with self.assertRaises(ManagerError) as context:
+                parse_manager_result(self.completed(returncode=1, stdout=stdout))
+            self.assertEqual(context.exception.code, "manager_unavailable")
+            self.assertNotIn("connection refused", str(context.exception))
+
+    def test_parse_manager_result_bounds_oversized_stdout(self):
+        oversized = '{"a":"' + "b" * MAX_MANAGER_OUTPUT_BYTES + '"}'
+        self.assertGreater(len(oversized), MAX_MANAGER_OUTPUT_BYTES)
+        with self.assertRaises(ManagerError) as context:
+            parse_manager_result(self.completed(stdout=oversized))
+        self.assertEqual(context.exception.code, "manager_unavailable")
+
+    def test_validate_uses_pinned_compose_prefix_without_tty(self):
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return self.completed(returncode=0, stdout="cfg file test success")
+
+        with patch("clash_sub.host_cli.subprocess.run", side_effect=fake_run):
+            CommandRunner().validate(Path("/staging/op/owner/balanced.yaml"))
+
+        self.assertEqual(
+            captured["command"],
+            [
+                "docker",
+                "compose",
+                "run",
+                "--rm",
+                "-T",
+                "validator",
+                "-t",
+                "-f",
+                "/staging/op/owner/balanced.yaml",
+            ],
+        )
+        self.assertTrue(captured["kwargs"]["capture_output"])
+
+    def test_validate_failure_raises_redacted_error_without_echoing_output(self):
+        completed = self.completed(
+            returncode=2,
+            stdout="proxies: secret-node password private-server-443",
+            stderr="errno 1",
+        )
+
+        with patch("clash_sub.host_cli.subprocess.run", return_value=completed):
+            with self.assertRaises(ValidatorError) as context:
+                CommandRunner().validate(Path("/staging/op/owner/privacy.yaml"))
+
+        self.assertEqual(context.exception.code, "mihomo_validation_failed")
+        self.assertNotIn("secret-node", str(context.exception))
+        self.assertNotIn("private-server", str(context.exception))
+
+    def test_require_success_without_echoing_config_ignores_success_output(self):
+        self.assertIsNone(
+            require_success_without_echoing_config(
+                self.completed(returncode=0, stdout="anything")
+            )
+        )
+        with self.assertRaises(ValidatorError):
+            require_success_without_echoing_config(self.completed(returncode=1))
+
+    def test_missing_docker_binary_raises_redacted_manager_error(self):
+        with patch(
+            "clash_sub.host_cli.subprocess.run",
+            side_effect=FileNotFoundError("docker"),
+        ):
+            with self.assertRaises(ManagerError) as context:
+                CommandRunner().manager(["status"])
+        self.assertEqual(context.exception.code, "manager_unavailable")
+
+    def test_missing_docker_binary_raises_redacted_validator_error(self):
+        with patch(
+            "clash_sub.host_cli.subprocess.run",
+            side_effect=FileNotFoundError("docker"),
+        ):
+            with self.assertRaises(ValidatorError) as context:
+                CommandRunner().validate(Path("/staging/op/owner/balanced.yaml"))
+        self.assertEqual(context.exception.code, "validator_unavailable")
+
+    def test_certificate_status_returns_none_when_script_is_absent(self):
+        with TemporaryDirectory() as directory:
+            missing = Path(directory) / "check_certificate.py"
+            with patch("clash_sub.host_cli.CERTIFICATE_SCRIPT_PATH", missing):
+                self.assertIsNone(CommandRunner().certificate_status())
+
+    def test_certificate_status_returns_none_for_failure_or_bad_payload(self):
+        with TemporaryDirectory() as directory:
+            script = Path(directory) / "check_certificate.py"
+            script.write_text("# synthetic placeholder\n", encoding="utf-8")
+            with patch("clash_sub.host_cli.CERTIFICATE_SCRIPT_PATH", script):
+                for completed in (
+                    self.completed(returncode=1, stdout='{"valid": true}\n'),
+                    self.completed(returncode=0, stdout="not json\n"),
+                    self.completed(returncode=0, stdout='["valid"]\n'),
+                ):
+                    with patch("clash_sub.host_cli.subprocess.run", return_value=completed):
+                        self.assertIsNone(CommandRunner().certificate_status())
+                with patch(
+                    "clash_sub.host_cli.subprocess.run",
+                    side_effect=OSError("spawn failed"),
+                ):
+                    self.assertIsNone(CommandRunner().certificate_status())
+
+    def test_certificate_status_returns_parsed_state(self):
+        with TemporaryDirectory() as directory:
+            script = Path(directory) / "check_certificate.py"
+            script.write_text("# synthetic placeholder\n", encoding="utf-8")
+            captured = {}
+
+            def fake_run(command, **kwargs):
+                captured["command"] = command
+                return self.completed(stdout='{"valid": true}\n')
+
+            with patch("clash_sub.host_cli.CERTIFICATE_SCRIPT_PATH", script), patch(
+                "clash_sub.host_cli.subprocess.run", side_effect=fake_run
+            ):
+                status = CommandRunner().certificate_status()
+
+            self.assertEqual(status, {"valid": True})
+            self.assertEqual(
+                captured["command"],
+                [sys.executable, str(script), "--status-only"],
+            )
 
 
 if __name__ == "__main__":

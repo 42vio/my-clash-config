@@ -23,6 +23,7 @@ from typing import List, Mapping, Optional, Sequence, TextIO
 EXIT_OK = 0
 EXIT_FAILURE = 1
 EXIT_USAGE = 2
+EXIT_INTERRUPTED = 130
 
 MANAGER_SERVICE = "manager"
 VALIDATOR_SERVICE = "validator"
@@ -33,10 +34,22 @@ DEFAULT_LOG_LIMIT = 50
 MAX_LOG_LIMIT = 1000
 MAX_MANAGER_OUTPUT_BYTES = 1024 * 1024
 MAX_CERTIFICATE_VALUE_CHARS = 64
-OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-SENSITIVE_CERTIFICATE_KEY_RE = re.compile(
-    r"path|email|command|argv|san|domain|host|url|token|secret|key",
-    re.IGNORECASE,
+# Certificate status keys this command may display.  Task 12's
+# scripts/check_certificate.py must emit exactly these key names (values of
+# the listed types) and nothing else: the booleans ``valid`` and
+# ``renewal_ok``, the integer ``remaining_seconds``, the timestamp strings
+# ``checked_at``, ``last_success_at``, and ``last_alert_at``, and the stable
+# string ``error_code``.  Unknown keys are always dropped before display, so
+# the script must never put paths, issuer/subject details, emails, or SANs
+# into the status document.
+CERTIFICATE_STATUS_FIELDS = (
+    ("valid", bool),
+    ("renewal_ok", bool),
+    ("remaining_seconds", int),
+    ("checked_at", str),
+    ("last_success_at", str),
+    ("last_alert_at", str),
+    ("error_code", str),
 )
 
 HELP_TEXT = """clash-sub: manage the private Clash subscription service
@@ -122,31 +135,38 @@ class CommandRunner:
         arguments: Sequence[str],
         stdin_text: Optional[str] = None,
     ) -> Mapping[str, object]:
-        completed = subprocess.run(
-            ["docker", "compose", "run", "--rm", "-T", MANAGER_SERVICE, *arguments],
-            input=stdin_text,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                ["docker", "compose", "run", "--rm", "-T", MANAGER_SERVICE, *arguments],
+                input=stdin_text,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise ManagerError("manager_unavailable") from exc
         return parse_manager_result(completed)
 
     def validate(self, candidate_path: Path) -> None:
-        completed = subprocess.run(
-            [
-                "docker",
-                "compose",
-                "run",
-                "--rm",
-                VALIDATOR_SERVICE,
-                "-t",
-                "-f",
-                str(candidate_path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "run",
+                    "--rm",
+                    "-T",
+                    VALIDATOR_SERVICE,
+                    "-t",
+                    "-f",
+                    str(candidate_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise ValidatorError("validator_unavailable") from exc
         require_success_without_echoing_config(completed)
 
     def certificate_status(self) -> Optional[Mapping[str, object]]:
@@ -192,7 +212,7 @@ def main(
     prompt_function = getpass.getpass if prompt is None else prompt
     make_operation_id = operation_id_factory or _default_operation_id
 
-    if not arguments or arguments == ["help"]:
+    if not arguments or arguments[0] == "help":
         out_stream.write(HELP_TEXT)
         return EXIT_OK
 
@@ -223,6 +243,12 @@ def main(
     except ValidatorError as exc:
         err_stream.write("clash-sub: error: %s\n" % exc.code)
         return EXIT_FAILURE
+    except OSError:
+        err_stream.write("clash-sub: error: operation_failed\n")
+        return EXIT_FAILURE
+    except KeyboardInterrupt:
+        err_stream.write("clash-sub: interrupted\n")
+        return EXIT_INTERRUPTED
 
     err_stream.write("clash-sub: unknown command: %s\n" % _safe_command_name(command))
     err_stream.write("clash-sub: run 'clash-sub help' to list commands\n")
@@ -282,29 +308,26 @@ def _command_airport(rest, runner, out_stream, err_stream, prompt_function, make
 def _command_status(rest, runner, out_stream) -> int:
     if rest:
         raise UsageError("status takes no arguments")
-    out_stream.write("services:\n")
-    exit_code = EXIT_OK
     try:
         payload = runner.manager(["status"])
     except ManagerError as exc:
+        out_stream.write("services:\n")
         out_stream.write("  manager: unreachable (error=%s)\n" % exc.code)
-        exit_code = EXIT_FAILURE
-        payload = {}
-    else:
-        out_stream.write("  manager: reachable\n")
-    _write_certificate_state(runner, out_stream)
+        _write_certificate_state(runner, out_stream)
+        return EXIT_FAILURE
     users = payload.get("users")
-    out_stream.write("users:\n")
     if not isinstance(users, dict):
-        if exit_code == EXIT_OK:
-            raise ManagerError("operation_failed")
-        users = {}
+        raise ManagerError("operation_failed")
+    out_stream.write("services:\n")
+    out_stream.write("  manager: reachable\n")
+    _write_certificate_state(runner, out_stream)
+    out_stream.write("users:\n")
     for user_id in sorted(users):
         info = users[user_id]
         if not isinstance(info, dict):
             continue
         _write_user_status(out_stream, user_id, info)
-    return exit_code
+    return EXIT_OK
 
 
 def _command_history(rest, runner, out_stream) -> int:
@@ -483,16 +506,16 @@ def _write_certificate_state(runner, out_stream) -> None:
 
 def _certificate_fields(status) -> List[str]:
     fields = []
-    for key in sorted(status):
-        if SENSITIVE_CERTIFICATE_KEY_RE.search(key):
-            continue
-        value = status[key]
-        if isinstance(value, bool):
-            fields.append("%s=%s" % (key, "true" if value else "false"))
-        elif isinstance(value, int):
-            fields.append("%s=%d" % (key, value))
-        elif isinstance(value, str):
-            fields.append("%s=%s" % (key, value.strip()[:MAX_CERTIFICATE_VALUE_CHARS] or "-"))
+    for key, expected_type in CERTIFICATE_STATUS_FIELDS:
+        value = status.get(key)
+        if expected_type is bool:
+            if isinstance(value, bool):
+                fields.append("%s=%s" % (key, "true" if value else "false"))
+        elif expected_type is int:
+            if isinstance(value, int) and not isinstance(value, bool):
+                fields.append("%s=%d" % (key, value))
+        elif isinstance(value, str) and value:
+            fields.append("%s=%s" % (key, value[:MAX_CERTIFICATE_VALUE_CHARS]))
     return fields
 
 
