@@ -62,7 +62,57 @@ flowchart LR
 
 ## 5. 现有服务器集成
 
-服务器已有 Jrohy/Trojan 和 Nginx，80/443 已被现有链路使用。新服务必须遵守：
+服务器已有 Jrohy/Trojan 和 Nginx，80/443 已被现有链路使用。历史记录显示曾执行以下调整：
+
+- 在 `/usr/local/etc/trojan/config.json` 的 `ssl` 中设置 `fallback_addr = 127.0.0.1`、`fallback_port = 1443`。
+- 将 Nginx 原 HTTP 监听端口从 80 调整为 8080。
+- 为 Nginx 增加 1443 HTTPS 监听。
+
+这些改动的目的不是给普通服务直接开放 8080/1443，而是让 Trojan、伪装网页和多个 HTTPS 子域名复用公网 443。
+
+### 5.1 推定的流量结构
+
+根据历史记录和当时参考的 SNI 共用 443 方案，当前服务器很可能采用以下结构：
+
+```mermaid
+flowchart TD
+    A["公网 443"] --> B["Nginx stream\nssl_preread 读取 SNI"]
+    B -->|"Trojan 域名"| C["Trojan-Go 内部监听端口\n常见为 10443"]
+    B -->|"网页或订阅子域名"| D["Nginx HTTPS 1443"]
+    C -->|"合法 Trojan"| E["代理出站"]
+    C -->|"TLS 成功但不是 Trojan"| F["remote_addr:remote_port\n推定为 Nginx HTTP 8080"]
+    C -->|"TLS 握手失败"| D
+```
+
+Nginx stream 只在 TLS 握手前读取 SNI 并转发原始连接，不负责解密 HTTP。由于 stream 已占用公网 443，普通 Nginx HTTPS 虚拟主机需要改在内部 1443 终止 TLS；用户对外仍访问标准 443。
+
+### 5.2 `remote_port` 与 `fallback_port`
+
+Trojan-Go 有两条不同的伪装回退路径：
+
+| 配置 | 触发条件 | 转发的数据 | 后端典型协议 |
+| --- | --- | --- | --- |
+| `remote_addr:remote_port` | TLS 成功，但内容不是合法 Trojan，或密码不正确 | 已解密的数据 | 明文 HTTP，例如 Nginx 8080 |
+| `ssl.fallback_addr:fallback_port` | TLS 握手本身失败 | 尚未解密的原始连接 | TLS/HTTPS，例如 Nginx 1443 |
+
+因此 `fallback_port = 1443` 的作用是让非 TLS 探测也得到类似正常 HTTPS 服务器的行为，而不是直接断开。Nginx 8080 则很可能承接 Trojan 解密后的普通 HTTP 伪装请求。
+
+“80 改为 8080”的确切原因仍需实机确认：如果 Trojan 当前 `remote_port` 为 8080，它就是上述伪装 HTTP 后端；如果 `remote_port` 仍为 80，则历史记录遗漏了其他端口调整，8080 可能另有用途。公网 80 也可能由 Jrohy 管理网页、跳转站点或证书验证占用。
+
+### 5.3 实施前只读核查
+
+一键部署不得仅凭历史记录修改端口。必须先只读确认：
+
+- 80、443、8080、1443 及 Trojan 内部端口分别由哪个进程监听。
+- `nginx -T` 中的 `stream`、`ssl_preread`、SNI map、upstream 和各 HTTPS `server`。
+- Trojan 的 `local_port`、`remote_addr`、`remote_port`、`fallback_addr`、`fallback_port`，不得输出密码或完整用户数据。
+- 公网 80/443、防火墙和证书覆盖范围。
+
+如果实际结构与推定不符，安装器必须停止并给出差异，不得自动重写 Trojan 或现有 Nginx 主配置。
+
+### 5.4 新服务接入约束
+
+新服务必须遵守：
 
 1. Compose 不绑定 80 或 443。
 2. `publisher` 仅绑定 `127.0.0.1`。
