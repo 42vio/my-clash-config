@@ -32,6 +32,7 @@ from clash_sub.publisher import (
 )
 from clash_sub.rendering import render_variant
 from clash_sub.settings import hash_token, load_settings
+from clash_sub.traffic import TrafficError
 from clash_sub.validation import ValidationError, validate_config
 
 
@@ -60,7 +61,7 @@ class FakeTrafficClient:
     def fetch(self, source_url: str):
         self.calls += 1
         if self.fail:
-            raise SourceError("synthetic live fetch failure")
+            raise TrafficError("synthetic live fetch failure")
         return self._responses.get(source_url)
 
 
@@ -167,8 +168,13 @@ class HarnessCli:
         ]
         if not owner_ids:
             return SimpleNamespace(ok=False, error_code="operation_failed")
-        refresh = self.refresh(sorted(owner_ids)[0])
-        return SimpleNamespace(ok=refresh.ok, error_code=refresh.error_code)
+        # host_cli refreshes every owner in sorted order; mirror that.
+        refreshes = [self.refresh(owner_id) for owner_id in sorted(owner_ids)]
+        failures = [refresh for refresh in refreshes if not refresh.ok]
+        return SimpleNamespace(
+            ok=not failures,
+            error_code=failures[0].error_code if failures else None,
+        )
 
     def _listed_users(self):
         result = self.harness.run_manager(["list-users"])

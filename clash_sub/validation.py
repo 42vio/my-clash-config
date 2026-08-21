@@ -101,8 +101,11 @@ def _validate_groups(groups):
         if normalized_name in indexes:
             raise ValidationError("duplicate proxy group name: %s" % name)
         indexes[normalized_name] = index
+        include_all = mapping.get("include-all")
+        if include_all is not None and not isinstance(include_all, bool):
+            raise ValidationError("%s.include-all must be a boolean" % path)
         proxies = mapping.get("proxies")
-        if proxies is None and mapping.get("include-all") is not True:
+        if proxies is None and include_all is not True:
             raise ValidationError("%s must define proxies or include-all" % path)
         if proxies is not None:
             _require_list(proxies, "%s.proxies" % path)

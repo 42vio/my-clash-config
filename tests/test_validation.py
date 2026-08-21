@@ -330,6 +330,23 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, r"proxy-groups\[0\]\.name"):
             validate_config(dump(document), [], REALITY)
 
+    def test_non_boolean_include_all_is_rejected(self):
+        document = valid_document()
+        document["proxy-groups"][0]["include-all"] = "banana"
+
+        with self.assertRaisesRegex(
+            ValidationError, r"proxy-groups\[0\]\.include-all must be a boolean"
+        ):
+            validate_config(dump(document), [], REALITY)
+
+    def test_boolean_include_all_with_proxies_is_accepted(self):
+        document = valid_document()
+        document["proxy-groups"][0]["include-all"] = True
+
+        self.assertIsInstance(
+            validate_config(dump(document), [], REALITY), dict
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

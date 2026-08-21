@@ -8,15 +8,19 @@ private data?  It checks three things:
    YAML, release manifests, environment files, private-key files, and
    the legacy ``1/`` tree).
 2. Tracked text that contains concrete proxy URIs, bearer-token
-   subscription paths, PEM private-key blocks, non-example UUIDs, or
-   URL userinfo.  Documentation placeholders built from RFC 5737
-   addresses, ``example.com``, and repeated-digit UUIDs stay allowed.
+   subscription paths, PEM private-key blocks, non-example UUIDs, URL
+   userinfo, or random-looking bare 32-hex tokens.  Documentation
+   placeholders built from RFC 5737 addresses, ``example.com``,
+   repeated-digit UUIDs/hex, and hex embedded in rule-provider URLs
+   stay allowed.
 3. With ``--private-root``: credential-like scalar values extracted in
    memory from the ignored ``private/config`` and ``private/sources``
    trees must not occur, byte for byte, in any tracked file.
 
 Output is always a category and a tracked path.  A matched value is
-never printed, logged, or embedded in an error message.
+never printed, logged, or embedded in an error message; malformed
+private YAML is skipped silently and an unexpected internal failure
+prints exactly one redacted line.
 
 The scanner never follows symlinks, skips binary files, and reads at
 most 10 MiB of any single file.  It exits 0 only when clean.
@@ -31,6 +35,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 from typing import Iterable, List, Optional, Set, Tuple
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,12 +105,19 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
-_PROXY_URI_RE = re.compile(r"(?i)\b(?:vless|vmess|trojan|ss)://[0-9A-Za-z][^\s'\"`<>]*")
+_PROXY_URI_RE = re.compile(
+    r"(?i)\b(?:vless|vmess|trojan|ss|hysteria2|hy2|tuic|socks5h|socks5)://"
+    r"[0-9A-Za-z_.~+-][^\s'\"`<>]*"
+)
 _SUBSCRIPTION_TOKEN_RE = re.compile(r"/s/[A-Za-z0-9_-]{43,}")
 _PEM_KEY_RE = re.compile(r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----[A-Za-z0-9+/=\r\n]{100,}")
 _URL_USERINFO_RE = re.compile(
     r"[a-zA-Z][a-zA-Z0-9+.-]*://([^/@\s\"']+):([^/@\s\"']*)@"
 )
+# Bare 32-hex tokens (undashed UUID / token-hash form).  The boundary
+# assertions keep 64-hex sha256 digests from matching.
+_HEX_32_TOKEN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
+_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\"'`<>]+")
 _HEX_32_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
 _RANDOM_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _CREDENTIAL_KEY_FRAGMENTS = (
@@ -141,7 +154,7 @@ class Finding:
         return hash((self.category, self.path))
 
 
-def load_tracked_paths(root: Path) -> List[str]:
+def load_tracked_paths(root: Path, undecodable: Optional[List[bytes]] = None) -> List[str]:
     """Return the paths Git tracks, without reading any file content."""
     completed = subprocess.run(
         ["git", "ls-files", "-z"],
@@ -160,7 +173,8 @@ def load_tracked_paths(root: Path) -> List[str]:
         try:
             paths.append(raw.decode("utf-8"))
         except UnicodeDecodeError:
-            continue
+            if undecodable is not None:
+                undecodable.append(raw)
     return paths
 
 
@@ -198,6 +212,21 @@ def looks_like_example_uuid(value: str) -> bool:
     return counts.most_common(1)[0][1] >= 24
 
 
+def looks_like_example_hex(value: str) -> bool:
+    """Documentation hex repeats one digit or a short block; random does not."""
+    lowered = value.lower()
+    if len(lowered) != 32:
+        return False
+    counts = Counter(lowered)
+    if counts.most_common(1)[0][1] >= 24:
+        return True
+    for block_size in range(1, 9):
+        block = lowered[:block_size]
+        if block * (32 // block_size) == lowered:
+            return True
+    return False
+
+
 def _is_reserved_host(host: str) -> bool:
     lowered = host.strip().lower()
     if lowered in RESERVED_HOST_SUFFIXES:
@@ -232,12 +261,23 @@ def _proxy_uri_is_documentation(uri: str) -> bool:
     uuids = _UUID_RE.findall(uri)
     if any(not looks_like_example_uuid(value) for value in uuids):
         return False
-    userinfo = _URL_USERINFO_RE.search(uri)
-    if userinfo is not None:
-        if not (
-            _is_placeholder_credential(userinfo.group(1))
-            and _is_placeholder_credential(userinfo.group(2))
-        ):
+    authority = uri.split("://", 1)[1]
+    if "@" in authority:
+        userinfo = authority.rsplit("@", 1)[0]
+        if ":" in userinfo:
+            user, _, password = userinfo.partition(":")
+            if not (
+                _is_placeholder_credential(user)
+                and _is_placeholder_credential(password)
+            ):
+                return False
+        elif _UUID_RE.fullmatch(userinfo):
+            if not looks_like_example_uuid(userinfo):
+                return False
+        elif not _is_placeholder_credential(userinfo):
+            # Opaque single-token credentials (hysteria2/tuic auth,
+            # ss base64 blobs, vless UUIDs without dashes) are real
+            # secrets unless they are obvious placeholders.
             return False
     return True
 
@@ -261,6 +301,15 @@ def find_content_findings(text: str, relative_path: str) -> List[Finding]:
             and _is_placeholder_credential(match.group(2))
         ):
             findings.add(Finding("tracked-url-userinfo", relative_path))
+    url_spans = [match.span() for match in _URL_RE.finditer(text)]
+    for match in _HEX_32_TOKEN_RE.finditer(text):
+        if any(start <= match.start() < end for start, end in url_spans):
+            # Hex inside a URL (public rule-provider gist ids, and
+            # credential-bearing URIs already covered above) is judged
+            # by the URI rules, not the bare-token rule.
+            continue
+        if not looks_like_example_hex(match.group(0)):
+            findings.add(Finding("tracked-hex-token", relative_path))
     return sorted(findings, key=repr)
 
 
@@ -325,17 +374,17 @@ def extract_private_values(private_root: Path) -> Set[bytes]:
     """Extract credential-like scalar bytes from ignored private YAML.
 
     Only ``private/config`` and ``private/sources`` are read, entirely in
-    memory; nothing is written and no value is ever printed.
+    memory; nothing is written and no value is ever printed.  Malformed
+    YAML is skipped silently: a parser error message would embed the
+    offending source line, which may itself carry a private value.
     """
-    import yaml
-
     values: Set[bytes] = set()
     for path in _iter_private_yaml_files(private_root):
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
                 continue
             document = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeDecodeError):
+        except (OSError, ValueError, UnicodeDecodeError, yaml.YAMLError):
             continue
         scalars: List[Tuple[str, str]] = []
         _collect_scalars(document, "", scalars)
@@ -366,7 +415,12 @@ def scan_repository(
 ) -> List[Finding]:
     """Scan every tracked path; return every category/path finding."""
     findings: Set[Finding] = set()
-    tracked_paths = load_tracked_paths(root)
+    undecodable: List[bytes] = []
+    tracked_paths = load_tracked_paths(root, undecodable)
+    for raw in undecodable:
+        findings.add(
+            Finding("tracked-undecodable-name", raw.decode("utf-8", "backslashreplace"))
+        )
     private_values: Set[bytes] = set()
     if private_root is not None:
         private_values = extract_private_values(private_root)
@@ -404,7 +458,13 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 def main(argv: Optional[List[str]] = None, root: Optional[Path] = None) -> int:
     args = parse_args(argv)
     current_root = Path(root) if root is not None else ROOT
-    findings = scan_repository(current_root, args.private_root)
+    try:
+        findings = scan_repository(current_root, args.private_root)
+    except Exception:
+        # One redacted line only: an unexpected failure must never echo
+        # private content through a traceback.
+        print("scan failed: internal_error")
+        return 2
     for finding in findings:
         print(repr(finding))
     if findings:
