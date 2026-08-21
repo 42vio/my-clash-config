@@ -186,7 +186,7 @@ class TlsTemplateTests(unittest.TestCase):
             text = render(mode)
             servers = text.count("server {")
             fallbacks = len(
-                re.findall(r"location / \{\s*return 404;\s*\}", text)
+                re.findall(r"location / \{[^}]*return 404;[^}]*\}", text)
             )
             self.assertGreaterEqual(servers, 1)
             self.assertEqual(fallbacks, servers, mode)
@@ -207,12 +207,28 @@ class TlsTemplateTests(unittest.TestCase):
                 text, r"limit_req_zone \$binary_remote_addr zone=\S+ "
             )
 
-    def test_security_headers_on_generic_responses(self):
+    def test_security_headers_are_scoped_to_generic_fallbacks_only(self):
+        # Server-level headers would be inherited into the panel and
+        # subscription locations; a restrictive CSP on the panel breaks
+        # its SPA in CSP-enforcing browsers.
         for mode in self.modes:
             text = render(mode)
-            self.assertIn("X-Content-Type-Options nosniff", text)
-            self.assertIn("Referrer-Policy no-referrer", text)
-            self.assertIn("Content-Security-Policy", text)
+            fallbacks = re.findall(r"location / \{[^}]*\}", text)
+            self.assertTrue(fallbacks, mode)
+            for block in fallbacks:
+                self.assertIn("X-Content-Type-Options nosniff", block, mode)
+                self.assertIn("Referrer-Policy no-referrer", block, mode)
+                self.assertIn("Content-Security-Policy", block, mode)
+                self.assertIn("return 404;", block, mode)
+            panel_block = location_block(
+                text, r"location /example-random-panel-path/ \{"
+            )
+            sub_block = location_block(text, r"location /s/ \{")
+            self.assertNotIn("add_header", panel_block, mode)
+            self.assertNotIn("add_header", sub_block, mode)
+            # Exactly three header lines per fallback proves none are
+            # declared at server level or inside proxied locations.
+            self.assertEqual(text.count("add_header"), 3 * len(fallbacks), mode)
 
     def test_never_exposes_forbidden_ports_blocks_or_products(self):
         forbidden = (

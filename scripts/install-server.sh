@@ -1,5 +1,7 @@
 #!/bin/sh
-# Thin wrapper: validate python3, then exec the real installer with
+# Thin wrapper: validate python3, change to the repository root (so
+# preflight probes like a bare `docker compose config` never depend on
+# the caller's working directory), then exec the real installer with
 # the original arguments.  No second implementation lives here.
 set -eu
 
@@ -9,4 +11,5 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd -- "$here/.."
 exec python3 "$here/install_server.py" "$@"

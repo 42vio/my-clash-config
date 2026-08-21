@@ -273,6 +273,22 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(SettingsError, "panel-listen.*loopback"):
             load_settings(service_path, users_path)
 
+    def test_panel_base_path_shape_is_validated(self):
+        for bad in (
+            "example-random-panel-path/",
+            "/",
+            "/../escape/",
+            "/has space/",
+            "/has{brace}/",
+            "/has;semicolon/",
+        ):
+            service = self.valid_service()
+            service["xui"]["panel-base-path"] = bad
+            service_path, users_path = self.write_settings(service=service)
+
+            with self.assertRaisesRegex(SettingsError, "panel-base-path"):
+                load_settings(service_path, users_path)
+
     def test_publisher_listen_must_be_ipv4_loopback(self):
         service = self.valid_service()
         service["publication"]["publisher-listen"] = "::1"

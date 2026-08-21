@@ -46,3 +46,19 @@ bin/clash-sub logs --limit 50   # 最近的脱敏操作日志
   （以及本机回环的 3x-ui），绝不写进本仓库的任何文件。
 - 生成的三份配置只导入自己的 Clash 客户端；不得上传公共仓库、短链接服务
   或转发给其他人。
+
+## 服务器安装器（scripts/install-server.sh）
+
+- 安装器（含默认只读 dry-run 与 `--apply`）依赖 `SSH_CONNECTION` 环境变量
+  校验当前 SSH 端口；`sudo` 的 `env_reset` 会丢弃它，请用
+  `sudo -E /opt/clash-sub/scripts/install-server.sh ...` 运行。
+- 只读 preflight 在安装软件包**之前**执行，且其中包含 Docker / Compose 探测：
+  全新主机需先自行安装 Docker 与 Compose 插件（或接受 preflight 阻塞提示后
+  手动安装再重试）；其余软件包（nginx、ufw 等）由 `--apply` 的软件包阶段安装。
+- `--apply` 失败时回滚仅恢复本仓库拥有的主机文件与服务状态（含 Debian 默认
+  站点、证书定时器、nginx 配置）；软件包安装不可逆。已启动的 compose 容器、
+  `/opt/certbot` 虚拟环境与 ACME webroot 均只监听回环或无公网暴露，回滚后
+  留置无害，可直接重试 `--apply`。
+- 每次失败的 `--apply` 会在 `/var/backups/clash-sub/<操作 id>/` 保留
+  `inventory.json` 与 0600 的 `failure.log`（仅 root 可读，用于诊断
+  nginx/certbot/compose 失败输出；终端输出始终脱敏）。

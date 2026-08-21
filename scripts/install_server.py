@@ -85,6 +85,10 @@ PACKAGES = (
 )
 UFW_PUBLIC_TCP = ("80/tcp", "443/tcp", "8443/tcp")
 COMPOSE_FILE = ROOT / "compose.yaml"
+# Debian's nginx package ships a default site whose "listen 80
+# default_server" collides with the ACME server; bootstrap must remove
+# it (recorded in the backup inventory so rollback restores it).
+DEFAULT_SITE_PATH = "/etc/nginx/sites-enabled/default"
 
 # Installed Nginx files carry the literal project marker so the
 # post-install preflight attributes their listeners to this project.
@@ -227,10 +231,17 @@ def certbot_argv(certbot_bin: str, service, webroot: str) -> List[str]:
 
 
 class SystemRunner:
-    """Production runner: argv lists, timeouts, bounded output, no shell."""
+    """Production runner: argv lists, timeouts, bounded output, no shell.
+
+    Commands always run with the repository root as the working
+    directory so a bare ``docker compose config`` preflight probe does
+    not depend on the caller's cwd.  Failed commands record their
+    (bounded) stderr for the private failure log; it is never printed.
+    """
 
     def __init__(self):
         self.commands: List[Tuple[str, ...]] = []
+        self.failures: List[Tuple[str, str]] = []
 
     @property
     def mutating_command_seen(self) -> bool:
@@ -253,11 +264,19 @@ class SystemRunner:
                 timeout=timeout,
                 check=False,
                 env=environment,
+                cwd=str(ROOT),
             )
         except FileNotFoundError:
             return RunResult(127, "")
         except subprocess.TimeoutExpired:
             return RunResult(124, "")
+        if completed.returncode != 0:
+            self.failures.append(
+                (
+                    os.path.basename(argv[0]),
+                    (completed.stderr or "")[:4000],
+                )
+            )
         return RunResult(
             completed.returncode, (completed.stdout or "")[:MAX_OUTPUT_BYTES]
         )
@@ -300,6 +319,7 @@ class Action:
     argv: Tuple[Tuple[str, ...], ...] = ()
     writes: Tuple[Tuple[str, int, str], ...] = ()
     dirs: Tuple[str, ...] = ()
+    removes: Tuple[str, ...] = ()
     symlink: Optional[Tuple[str, str]] = None
     env: Optional[Dict[str, str]] = None
 
@@ -406,6 +426,7 @@ def build_actions(context) -> List[Action]:
             label="install the acme http server and validate nginx",
             dirs=(ACME_WEBROOT,),
             writes=((NGINX_FILE_TARGETS["acme"], 0o644, nginx_files[NGINX_FILE_TARGETS["acme"]]),),
+            removes=(DEFAULT_SITE_PATH,),
             argv=(("nginx", "-t"), nginx_start),
         ),
     ]
@@ -590,6 +611,7 @@ class ApplyJournal:
     created_paths: List[Path] = field(default_factory=list)
     nginx_was_active: bool = False
     nginx_started: bool = False
+    timers_enabled: bool = False
 
     def note_dir(self, path: Path) -> None:
         if not path.exists():
@@ -669,6 +691,17 @@ class ApplyJournal:
                     path.unlink()
             except OSError:
                 pass
+        # Timers we enabled must not keep firing against rolled-back
+        # files (the checker would alert certificate_unreadable).
+        if self.timers_enabled:
+            for timer in ("clash-sub-cert-renew.timer", "clash-sub-cert-check.timer"):
+                self.runner.run(
+                    ["systemctl", "disable", "--now", timer],
+                    timeout=FAST_TIMEOUT_SECONDS,
+                )
+            self.runner.run(
+                ["systemctl", "daemon-reload"], timeout=FAST_TIMEOUT_SECONDS
+            )
         # Any reload during rollback happens only when the restored
         # configuration still validates.
         check = self.runner.run(["nginx", "-t"], timeout=FAST_TIMEOUT_SECONDS)
@@ -681,9 +714,16 @@ class ApplyJournal:
                 self.runner.run(
                     ["systemctl", "stop", "nginx"], timeout=FAST_TIMEOUT_SECONDS
                 )
-        if self.backup_dir is not None:
-            _remove_tree(self.backup_dir)
+        # The backup directory deliberately survives a failed apply:
+        # it holds the inventory plus the private failure log an
+        # operator needs to diagnose what happened, so its ancestors
+        # are never removed either.
         for directory in reversed(self.created_dirs):
+            if self.backup_dir is not None and (
+                directory == self.backup_dir
+                or self.backup_dir.is_relative_to(directory)
+            ):
+                continue
             try:
                 directory.rmdir()
             except OSError:
@@ -714,12 +754,6 @@ def _atomic_write(path: Path, mode: int, content: str) -> None:
         raise
 
 
-def _remove_tree(path: Path) -> None:
-    import shutil
-
-    shutil.rmtree(path, ignore_errors=True)
-
-
 def _execute_action(action: Action, journal: ApplyJournal) -> None:
     for directory in action.dirs:
         journal.ensure_dir(journal.layout.p(directory))
@@ -729,6 +763,15 @@ def _execute_action(action: Action, journal: ApplyJournal) -> None:
         if not target.exists():
             journal.created_paths.append(target)
         _atomic_write(target, mode, content)
+    for host_path in action.removes:
+        # Only project-recognized conflicts (the stock Debian default
+        # site); the backup inventory restores whatever was here.
+        target = journal.layout.p(host_path)
+        try:
+            if target.is_symlink() or (target.exists() and not target.is_dir()):
+                target.unlink()
+        except OSError:
+            pass
     if action.symlink is not None:
         host_path, link_target = action.symlink
         target = journal.layout.p(host_path)
@@ -747,6 +790,12 @@ def _execute_action(action: Action, journal: ApplyJournal) -> None:
         )
         if len(argv) > 2 and argv[:2] == ("systemctl", "start") and argv[2] == "nginx":
             journal.nginx_started = True
+        if (
+            len(argv) > 2
+            and argv[:2] == ("systemctl", "enable")
+            and "clash-sub-cert-renew.timer" in argv
+        ):
+            journal.timers_enabled = True
         if result.returncode != 0:
             raise InstallerError("%s_failed" % action.code)
 
@@ -777,16 +826,6 @@ def _apply(context, actions: List[Action], out, err) -> int:
     runner = context["runner"]
     service = context["service"]
 
-    report = run_preflight(
-        runner, service, root=ROOT if layout.root is None else layout.root
-    )
-    if not report.ok:
-        err.write(
-            "install: error=preflight_blocked codes=%s\n"
-            % ",".join(report.blocking_codes)
-        )
-        return 1
-
     journal = ApplyJournal(layout=layout, runner=runner)
     journal.nginx_was_active = (
         runner.run(["systemctl", "is-active", "nginx"], timeout=FAST_TIMEOUT_SECONDS)
@@ -799,6 +838,7 @@ def _apply(context, actions: List[Action], out, err) -> int:
         NGINX_FILE_TARGETS["tls"],
         DEPLOY_HOOK_PATH,
         HOST_COMMAND_PATH,
+        DEFAULT_SITE_PATH,
     ] + ["%s/%s" % (SYSTEMD_TARGET_DIR, name) for name in SYSTEMD_UNITS]
 
     operation_id = _operation_id()
@@ -807,13 +847,10 @@ def _apply(context, actions: List[Action], out, err) -> int:
     journal.ensure_dir(journal.backup_dir)
     journal.backup(targets)
 
-    # Newly issued certificate files are project-owned too.
-    fullchain = layout.p(service.certificate.fullchain_path)
-    privkey = layout.p(service.certificate.fullchain_path.parent / "privkey.pem")
-    for cert_file in (fullchain, privkey):
-        if not cert_file.exists():
-            journal.created_paths.append(cert_file)
-            journal.ensure_dir(cert_file.parent)
+    # An issued certificate is deliberately NOT tracked for removal:
+    # deleting only the live symlinks would leave a half-deleted
+    # certbot lineage that blocks re-issuance on a retry apply, and a
+    # retained certificate is both harmless and idempotent.
 
     try:
         for action in actions:
@@ -830,11 +867,20 @@ def _apply(context, actions: List[Action], out, err) -> int:
             )
             if timer.returncode != 0:
                 raise InstallerError("ip_mode_requirements_failed")
-    except InstallerError as error:
+    except (InstallerError, OSError) as error:
+        code = error.code if isinstance(error, InstallerError) else "filesystem_error"
+        if not isinstance(error, InstallerError):
+            failures = getattr(runner, "failures", None)
+            if isinstance(failures, list):
+                failures.append(("python", "exception: %r" % (error,)))
         journal.rollback()
-        err.write("install: error=%s rolled_back=yes\n" % error.code)
+        _write_failure_log(journal, code)
+        err.write("install: error=%s rolled_back=yes\n" % code)
         err.write(
             "install: packages already installed are not removed by rollback\n"
+        )
+        err.write(
+            "install: diagnostics written to the private backup root\n"
         )
         return 1
 
@@ -842,6 +888,20 @@ def _apply(context, actions: List[Action], out, err) -> int:
     out.write("verification: preflight-ok firewall-enabled nginx-reloaded\n")
     out.write("verification: compose-healthy backup-id=%s\n" % operation_id)
     return 0
+
+
+def _write_failure_log(journal: ApplyJournal, code: str) -> None:
+    """Record bounded command diagnostics at mode 0600, never stdout."""
+    if journal.backup_dir is None:
+        return
+    try:
+        lines = ["error=%s" % code]
+        failures = getattr(journal.runner, "failures", None) or []
+        for program, detail in list(failures)[:16]:
+            lines.append("%s: %s" % (program, str(detail)[:2000]))
+        _atomic_write(journal.backup_dir / "failure.log", 0o600, "\n".join(lines))
+    except OSError:
+        pass
 
 
 def main(argv=None, root=None, runner=None) -> int:
@@ -882,6 +942,23 @@ def main(argv=None, root=None, runner=None) -> int:
         "runner": current_runner,
         "ssh_port": args.ssh_port or environment_port or 22,
     }
+
+    # The read-only preflight gates both modes: a dry-run preview must
+    # show the same blocking codes an apply would stop on.
+    report = run_preflight(
+        current_runner,
+        service,
+        root=ROOT if context["layout"].root is None else context["layout"].root,
+    )
+    if not report.ok:
+        codes = ",".join(report.blocking_codes)
+        if args.apply:
+            sys.stderr.write("install: error=preflight_blocked codes=%s\n" % codes)
+        else:
+            sys.stdout.write("install dry-run (no changes will be made)\n")
+            sys.stdout.write("  preflight: blocked codes=%s\n" % codes)
+            sys.stdout.write("result: DRY-RUN BLOCKED (no changes were made)\n")
+        return 1
 
     try:
         actions = build_actions(context)

@@ -229,10 +229,12 @@ def _parse_xui_settings(xui_doc):
         "subscription-listen",
     )
     _validate_loopback_literal(subscription_listen, "subscription-listen")
+    panel_base_path = _require_str(xui_doc["panel-base-path"], "panel-base-path")
+    _validate_panel_base_path(panel_base_path)
     return XuiSettings(
         panel_listen=panel_listen,
         panel_port=_require_port(xui_doc["panel-port"], "panel-port"),
-        panel_base_path=_require_str(xui_doc["panel-base-path"], "panel-base-path"),
+        panel_base_path=panel_base_path,
         subscription_listen=subscription_listen,
         subscription_port=_require_port(
             xui_doc["subscription-port"],
@@ -402,6 +404,17 @@ def _validate_public_authority(authority: str, field_name: str, mode: str) -> st
 
 def _authority_host(authority: str) -> str:
     return authority.rsplit(":", 1)[0]
+
+
+def _validate_panel_base_path(value: str) -> None:
+    """The path lands verbatim in an Nginx location: keep it plain."""
+    if not value.startswith("/") or len(value) < 2:
+        raise SettingsError("panel-base-path must start with / and name a path")
+    if ".." in value:
+        raise SettingsError("panel-base-path must not contain ..")
+    for character in "{};\n\r\t ":
+        if character in value:
+            raise SettingsError("panel-base-path contains forbidden characters")
 
 
 def _validate_loopback_http_url(url: str, field_name: str) -> str:

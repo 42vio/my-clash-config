@@ -12,18 +12,19 @@ server {
     ssl_certificate_key {{PRIVKEY_PATH}};
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy no-referrer always;
-    add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'" always;
-
     client_max_body_size 1m;
 
     location / {
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'" always;
         return 404;
     }
 }
 
-# Single literal-IP server: routing is by path only.
+# Single literal-IP server: routing is by path only. Security headers
+# stay scoped to the generic fallback so the panel application
+# controls its own content policy.
 server {
     listen 8443 ssl;
     listen [::]:8443 ssl;
@@ -35,10 +36,6 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     client_max_body_size 1m;
-
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy no-referrer always;
-    add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'" always;
 
     location {{PANEL_BASE_PATH}} {
         proxy_pass http://{{PANEL_UPSTREAM}};
@@ -70,6 +67,9 @@ server {
     }
 
     location / {
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Content-Security-Policy "default-src 'none'; frame-ancestors 'none'" always;
         return 404;
     }
 }

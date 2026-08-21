@@ -128,6 +128,7 @@ class FakeRunner(server_preflight.FixtureRunner):
         self.fail_on = tuple(fail_on)
         self.apply_root = Path(root)
         self.commands = []
+        self.failures = []
 
     def run(self, argv, timeout=None, env=None):
         argv = [str(item) for item in argv]
@@ -135,6 +136,10 @@ class FakeRunner(server_preflight.FixtureRunner):
         if self.fail_on and _is_ordered_subsequence(
             self.fail_on, [os.path.basename(argv[0])] + argv[1:]
         ):
+            program = os.path.basename(argv[0])
+            self.failures.append(
+                (program, "simulated failure output for %s" % program)
+            )
             return RunResult(1, "")
         name = os.path.basename(argv[0])
         if name == "openssl":
@@ -203,10 +208,12 @@ def snapshot(root):
 
 
 def snapshot_without_backups(root):
+    """Snapshot minus the backup root area, which failed applies keep
+    (inventory plus the private failure log) on purpose."""
     return {
         key: value
         for key, value in snapshot(root).items()
-        if not key.startswith("var/backups")
+        if key != "var" and not key.startswith("var/backups")
     }
 
 
@@ -291,6 +298,19 @@ class InstallerTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, result.stdout + result.stderr)
 
+    def test_dry_run_runs_the_read_only_preflight_and_reports_blocking_codes(self):
+        root = self.empty_root()
+        fixture = copy.deepcopy(BASE_FIXTURE)
+        fixture["services"] = dict(BASE_FIXTURE["services"], **{"x-ui": "inactive"})
+        runner = FakeRunner(fixture=fixture, root=root)
+        result = run_installer(self.arguments(), root=root, runner=runner)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("blocked", result.stdout)
+        self.assertIn("xui_service_inactive", result.stdout)
+        self.assertEqual(list(root.rglob("*")), [])
+        self.assertFalse(runner.mutating_command_seen)
+
     # ------------------------------------------------------------------
     # ordering and rollback
 
@@ -320,12 +340,12 @@ class InstallerTests(unittest.TestCase):
 
     def test_failed_nginx_validation_restores_files_and_never_reloads(self):
         root = self.installed_root()
-        before = snapshot(root)
+        before = snapshot_without_backups(root)
         runner = FakeRunner(fail_on=("nginx", "-t"), root=root)
         result = run_installer(self.arguments("--apply"), root=root, runner=runner)
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(snapshot(root), before)
+        self.assertEqual(snapshot_without_backups(root), before)
         self.assertNotIn(("systemctl", "reload", "nginx"), runner.commands)
         self.assertNotIn(("systemctl", "start", "nginx"), runner.commands)
 
@@ -382,33 +402,41 @@ class InstallerTests(unittest.TestCase):
 
     def test_package_failure_rolls_back_and_reports_code(self):
         root = self.installed_root()
-        before = snapshot(root)
+        before = snapshot_without_backups(root)
         runner = FakeRunner(fail_on=("apt-get",), root=root)
         result = run_installer(self.arguments("--apply"), root=root, runner=runner)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("package_install_failed", result.stderr)
-        self.assertEqual(snapshot(root), before)
+        self.assertEqual(snapshot_without_backups(root), before)
 
     def test_certificate_failure_rolls_back(self):
         root = self.installed_root()
-        before = snapshot(root)
+        before = snapshot_without_backups(root)
         runner = FakeRunner(fail_on=("certbot",), root=root)
         result = run_installer(self.arguments("--apply"), root=root, runner=runner)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("certificate_issuance_failed", result.stderr)
-        self.assertEqual(snapshot(root), before)
+        self.assertEqual(snapshot_without_backups(root), before)
 
     def test_compose_failure_rolls_back(self):
         root = self.installed_root()
-        before = snapshot(root)
+        before = snapshot_without_backups(root)
         runner = FakeRunner(fail_on=("docker", "compose", "up"), root=root)
         result = run_installer(self.arguments("--apply"), root=root, runner=runner)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("compose_failed", result.stderr)
-        self.assertEqual(snapshot(root), before)
+        # The issued certificate is deliberately retained (deleting
+        # only the live files would corrupt the certbot lineage), so
+        # the comparison ignores the letsencrypt tree.
+        after = {
+            key: value
+            for key, value in snapshot_without_backups(root).items()
+            if not key.startswith("etc/letsencrypt")
+        }
+        self.assertEqual(after, before)
         # The only reload is the successful pre-failure one; rollback
         # stops the nginx we started instead of reloading over it.
         up_command = next(
@@ -578,6 +606,105 @@ class InstallerTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("repo_path_mismatch", result.stderr)
 
+    # ------------------------------------------------------------------
+    # fresh-host bootstrap and rollback recoverability
+
+    def stock_nginx_root(self):
+        root = self.installed_root()
+        sites_enabled = root / "etc" / "nginx" / "sites-enabled"
+        sites_enabled.mkdir(parents=True, exist_ok=True)
+        (sites_enabled / "default").symlink_to("../sites-available/default")
+        return root, sites_enabled / "default"
+
+    def test_stock_debian_default_site_is_removed_for_acme_bootstrap(self):
+        # Debian's nginx package ships a default site whose
+        # "listen 80 default_server" collides with the ACME server; a
+        # fresh-host apply must remove it to ever pass nginx -t.
+        root, default_site = self.stock_nginx_root()
+        runner = FakeRunner(root=root)
+        result = run_installer(self.arguments("--apply"), root=root, runner=runner)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(default_site.exists())
+        self.assertFalse(default_site.is_symlink())
+
+    def test_default_site_removal_is_rolled_back_on_failure(self):
+        root, default_site = self.stock_nginx_root()
+        runner = FakeRunner(fail_on=("docker", "compose", "up"), root=root)
+        result = run_installer(self.arguments("--apply"), root=root, runner=runner)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(default_site.is_symlink())
+        self.assertEqual(os.readlink(default_site), "../sites-available/default")
+
+    def test_rollback_disables_certificate_timers(self):
+        root = self.empty_root()
+        runner = FakeRunner(fail_on=("docker", "compose", "up"), root=root)
+        result = run_installer(self.arguments("--apply"), root=root, runner=runner)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            ("systemctl", "disable", "--now", "clash-sub-cert-renew.timer"),
+            runner.commands,
+        )
+        self.assertIn(
+            ("systemctl", "disable", "--now", "clash-sub-cert-check.timer"),
+            runner.commands,
+        )
+        disable_index = runner.commands.index(
+            ("systemctl", "disable", "--now", "clash-sub-cert-renew.timer")
+        )
+        enable_index = runner.commands.index(
+            ("systemctl", "enable", "--now", "clash-sub-cert-renew.timer")
+        )
+        self.assertLess(enable_index, disable_index)
+
+    def test_issued_certificate_survives_rollback_so_reapply_succeeds(self):
+        # Deleting only the live symlinks would leave a half-deleted
+        # certbot lineage that blocks re-issuance; the certificate must
+        # be retained so a retry apply succeeds.
+        root = self.empty_root()
+        failed = run_installer(
+            self.arguments("--apply"),
+            root=root,
+            runner=FakeRunner(fail_on=("docker", "compose", "up"), root=root),
+        )
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertTrue(list(root.rglob("fullchain.pem")))
+
+        retry = run_installer(
+            self.arguments("--apply"), root=root, runner=FakeRunner(root=root)
+        )
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+
+    def test_filesystem_error_triggers_rollback_without_traceback(self):
+        root = self.empty_root()
+        (root / "etc").mkdir()
+        (root / "etc" / "nginx").write_text("not a directory\n", encoding="utf-8")
+        runner = FakeRunner(root=root)
+        result = run_installer(self.arguments("--apply"), root=root, runner=runner)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("filesystem_error", result.stderr)
+        self.assertNotIn("Traceback", result.stderr + result.stdout)
+
+    def test_failed_apply_records_diagnostics_in_a_private_failure_log(self):
+        root = self.installed_root()
+        runner = FakeRunner(fail_on=("nginx", "-t"), root=root)
+        result = run_installer(self.arguments("--apply"), root=root, runner=runner)
+
+        self.assertNotEqual(result.returncode, 0)
+        import stat as stat_module
+
+        failure_logs = list((root / "var" / "backups" / "clash-sub").rglob("failure.log"))
+        self.assertEqual(len(failure_logs), 1)
+        self.assertEqual(
+            stat_module.S_IMODE(failure_logs[0].stat().st_mode), 0o600
+        )
+        content = failure_logs[0].read_text(encoding="utf-8")
+        self.assertIn("nginx", content)
+        self.assertNotIn("failure.log", result.stdout + result.stderr)
+
     def test_active_ufw_with_exact_approved_rules_proceeds_without_reset(self):
         root = self.empty_root()
         runner = FakeRunner(root=root, ufw_status=UFW_ACTIVE_APPROVED)
@@ -605,7 +732,10 @@ class SystemdUnitTests(unittest.TestCase):
                 stripped = line.strip()
                 if not stripped.startswith(("ExecStart=", "ExecStartPost=")):
                     continue
-                executable = stripped.split("=", 1)[1].split()[0]
+                # A leading "-" is systemd's ignore-failure prefix.
+                command = stripped.split("=", 1)[1]
+                command = command[1:] if command.startswith("-") else command
+                executable = command.split()[0]
                 self.assertTrue(
                     executable.startswith(allowed), (path.name, executable)
                 )
@@ -641,6 +771,30 @@ class WrapperTests(unittest.TestCase):
         self.assertNotIn("apt-get", text)
         self.assertNotIn("ufw", text)
         self.assertIn("python3", text)
+
+    def test_wrapper_changes_to_the_repository_root(self):
+        # Keeps preflight commands such as a bare `docker compose
+        # config` independent of the caller's working directory.
+        text = (ROOT / "scripts" / "install-server.sh").read_text(encoding="utf-8")
+
+        self.assertIn("cd", text)
+
+
+class SystemRunnerTests(unittest.TestCase):
+    def test_commands_run_from_the_repository_root_regardless_of_cwd(self):
+        import tempfile
+
+        runner = install_server.SystemRunner()
+        with tempfile.TemporaryDirectory() as elsewhere:
+            previous = os.getcwd()
+            os.chdir(elsewhere)
+            try:
+                result = runner.run(["pwd"], timeout=10)
+            finally:
+                os.chdir(previous)
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), str(install_server.ROOT))
 
 
 if __name__ == "__main__":
