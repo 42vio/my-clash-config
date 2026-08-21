@@ -277,6 +277,7 @@ class PublicationFixture:
             },
             "certificate": {
                 "fullchain-path": str(self.private_root / "certs" / "fullchain.pem"),
+                "acme-email": "admin@example.com",
                 "alert-before-seconds": 1209600,
                 "alert-command": [],
             },

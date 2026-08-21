@@ -24,6 +24,7 @@ xui:
   expected-panel-version: 3.6.0
   expected-xray-version: 26.6.27
 certificate:
-  fullchain-path: /etc/letsencrypt/live/panel.example.com/fullchain.pem
+  fullchain-path: /etc/letsencrypt/live/clash-sub-domain/fullchain.pem
+  acme-email: admin@example.com
   alert-before-seconds: 1209600
   alert-command: []

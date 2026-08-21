@@ -29,7 +29,12 @@ class SettingsError(ValueError):
 
 
 _TOKEN_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_ACME_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+_ARGV_FORBIDDEN_CHARS = set(";|&`$<>\"'\\\n\r\t")
 _LOOPBACK_HOSTS = {"127.0.0.1", "::1"}
+# Short-lived IP certificates leave little runway: alert at least two
+# full days ahead when publication relies on one.
+IP_MODE_MIN_ALERT_SECONDS = 172800
 
 
 def load_settings(service_path: Path, users_path: Path) -> Settings:
@@ -107,12 +112,25 @@ def _parse_service_settings(service_doc):
     publication = _parse_publication_settings(_require_dict(service_doc["publication"], "publication"))
     reality = _parse_reality_settings(_require_dict(service_doc["reality"], "reality"))
     xui = _parse_xui_settings(_require_dict(service_doc["xui"], "xui"))
-    certificate = _parse_certificate_settings(
-        _require_dict(service_doc["certificate"], "certificate")
-    )
     converter_base_url = _validate_loopback_http_url(
         _require_str(service_doc["converter-base-url"], "converter-base-url"),
         "converter-base-url",
+    )
+    if publication.mode == "ip":
+        subscription_host = _authority_host(publication.subscription_authority)
+        panel_host = _authority_host(publication.panel_authority)
+        if subscription_host != panel_host:
+            raise SettingsError(
+                "publication authorities must use the same public IP in ip mode"
+            )
+        if subscription_host != reality.public_address:
+            raise SettingsError(
+                "publication authorities must use the reality public-address in ip mode"
+            )
+    certificate = _parse_certificate_settings(
+        _require_dict(service_doc["certificate"], "certificate"),
+        publication_mode=publication.mode,
+        public_ip=reality.public_address,
     )
     _validate_distinct_ports(
         (
@@ -237,24 +255,53 @@ def _parse_xui_settings(xui_doc):
     )
 
 
-def _parse_certificate_settings(certificate_doc):
+def _parse_certificate_settings(certificate_doc, publication_mode: str, public_ip: str):
     _require_mapping_keys(
         certificate_doc,
-        ("fullchain-path", "alert-before-seconds", "alert-command"),
+        ("fullchain-path", "acme-email", "alert-before-seconds", "alert-command"),
         "certificate",
     )
     alert_command = certificate_doc["alert-command"]
     if not isinstance(alert_command, list):
         raise SettingsError("alert-command must be a list")
+    for item in alert_command:
+        _require_str(item, "alert-command item")
+        if not item or any(character in item for character in _ARGV_FORBIDDEN_CHARS):
+            raise SettingsError(
+                "alert-command items must be single non-empty argv tokens"
+            )
+    acme_email = _require_str(certificate_doc["acme-email"], "acme-email")
+    if not _ACME_EMAIL_RE.fullmatch(acme_email):
+        raise SettingsError("acme-email must be a valid email address")
+    raw_fullchain = _require_str(certificate_doc["fullchain-path"], "fullchain-path")
+    fullchain_path = Path(raw_fullchain).resolve()
+    if not fullchain_path.is_absolute() or not raw_fullchain.startswith("/"):
+        raise SettingsError("fullchain-path must be an absolute path")
+    if fullchain_path.name != "fullchain.pem":
+        raise SettingsError("fullchain-path must end with fullchain.pem")
+    alert_before_seconds = _require_int(
+        certificate_doc["alert-before-seconds"],
+        "alert-before-seconds",
+    )
+    if publication_mode == "ip":
+        if not alert_command:
+            raise SettingsError(
+                "alert-command must be configured in ip mode"
+            )
+        if alert_before_seconds < IP_MODE_MIN_ALERT_SECONDS:
+            raise SettingsError(
+                "alert-before-seconds must be at least %d in ip mode"
+                % IP_MODE_MIN_ALERT_SECONDS
+            )
+        if public_ip not in str(fullchain_path):
+            raise SettingsError(
+                "fullchain-path must name the public IP certificate in ip mode"
+            )
     return CertificateSettings(
-        fullchain_path=Path(
-            _require_str(certificate_doc["fullchain-path"], "fullchain-path")
-        ).resolve(),
-        alert_before_seconds=_require_int(
-            certificate_doc["alert-before-seconds"],
-            "alert-before-seconds",
-        ),
-        alert_command=tuple(_require_str(item, "alert-command item") for item in alert_command),
+        fullchain_path=fullchain_path,
+        acme_email=acme_email,
+        alert_before_seconds=alert_before_seconds,
+        alert_command=tuple(alert_command),
     )
 
 
@@ -351,6 +398,10 @@ def _validate_public_authority(authority: str, field_name: str, mode: str) -> st
     if mode == "ip" and not is_ip:
         raise SettingsError("%s must be an IP in ip mode" % field_name)
     return authority
+
+
+def _authority_host(authority: str) -> str:
+    return authority.rsplit(":", 1)[0]
 
 
 def _validate_loopback_http_url(url: str, field_name: str) -> str:

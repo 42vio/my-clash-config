@@ -39,6 +39,7 @@ class XuiSettings:
 @dataclass(frozen=True)
 class CertificateSettings:
     fullchain_path: Path
+    acme_email: str
     alert_before_seconds: int
     alert_command: Tuple[str, ...]
 

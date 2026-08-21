@@ -243,6 +243,7 @@ class ReleaseTests(unittest.TestCase):
             ),
             certificate=CertificateSettings(
                 fullchain_path=self.private_root / "fullchain.pem",
+                acme_email="admin@example.com",
                 alert_before_seconds=1209600,
                 alert_command=(),
             ),

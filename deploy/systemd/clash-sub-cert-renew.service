@@ -1,0 +1,13 @@
+[Unit]
+Description=Renew certificates for the private publication service
+After=network-online.target
+Wants=network-online.target
+# renewal_ok in the sanitized state file reflects the last mark made
+# here: ExecStartPost runs only after a successful renewal, failures
+# are recorded by clash-sub-cert-renew-failed.service via OnFailure.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot/bin/certbot renew --quiet
+ExecStartPost=/opt/clash-sub/scripts/check_certificate.py --mark-renewal ok
+OnFailure=clash-sub-cert-renew-failed.service

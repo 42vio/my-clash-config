@@ -84,6 +84,7 @@ def build_settings(mode="domain"):
         ),
         certificate=CertificateSettings(
             fullchain_path=Path("/etc/letsencrypt/live/panel.example.com/fullchain.pem"),
+            acme_email="admin@example.com",
             alert_before_seconds=1209600,
             alert_command=(),
         ),

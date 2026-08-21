@@ -165,6 +165,7 @@ class ManagerTests(unittest.TestCase):
             },
             "certificate": {
                 "fullchain-path": str(self.private_root / "fullchain.pem"),
+                "acme-email": "admin@example.com",
                 "alert-before-seconds": 1209600,
                 "alert-command": [],
             },

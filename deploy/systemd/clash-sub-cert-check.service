@@ -1,0 +1,8 @@
+[Unit]
+Description=Check certificate health and send alerts
+# Runs the checker only: never a subscription refresh or a manager
+# container command.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/clash-sub/scripts/check_certificate.py

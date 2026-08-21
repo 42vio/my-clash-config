@@ -1,0 +1,16 @@
+# Managed by the local installer. Do not edit.
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    server_tokens off;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/clash-sub/acme;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 404;
+    }
+}

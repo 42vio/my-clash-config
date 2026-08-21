@@ -92,6 +92,7 @@ class SettingsTests(unittest.TestCase):
             },
             "certificate": {
                 "fullchain-path": str(self.private_root / "certs" / "fullchain.pem"),
+                "acme-email": "admin@example.com",
                 "alert-before-seconds": 1209600,
                 "alert-command": [],
             },
@@ -140,6 +141,12 @@ class SettingsTests(unittest.TestCase):
             "panel-authority": "198.51.100.10:8443",
             "publisher-listen": "127.0.0.1",
             "publisher-port": 25501,
+        }
+        service["certificate"] = {
+            "fullchain-path": "/etc/letsencrypt/live/198.51.100.10/fullchain.pem",
+            "acme-email": "admin@example.com",
+            "alert-before-seconds": 259200,
+            "alert-command": ["notify-command", "--channel", "private"],
         }
         service_path, users_path = self.write_settings(service=service)
 
@@ -318,6 +325,150 @@ class SettingsTests(unittest.TestCase):
         service_path, users_path = self.write_settings(users_mode=0o644)
 
         with self.assertRaisesRegex(SettingsError, "permissions"):
+            load_settings(service_path, users_path)
+
+    def test_ip_mode_requires_shared_public_ip_and_ip_named_certificate(self):
+        service = self.valid_service()
+        service["publication"] = {
+            "mode": "ip",
+            "subscription-authority": "198.51.100.10:8443",
+            "panel-authority": "198.51.100.10:8443",
+            "publisher-listen": "127.0.0.1",
+            "publisher-port": 25501,
+        }
+        service["reality"]["public-address"] = "198.51.100.10"
+        service["certificate"] = {
+            "fullchain-path": "/etc/letsencrypt/live/198.51.100.10/fullchain.pem",
+            "acme-email": "admin@example.com",
+            "alert-before-seconds": 259200,
+            "alert-command": ["notify-command", "--channel", "private"],
+        }
+        service_path, users_path = self.write_settings(service=service)
+
+        settings = load_settings(service_path, users_path)
+
+        self.assertEqual(settings.service.certificate.acme_email, "admin@example.com")
+
+    def test_invalid_acme_email_shape_is_rejected(self):
+        for bad in ("not-an-email", "admin@example", "@example.com", "a b@example.com"):
+            service = self.valid_service()
+            service["certificate"]["acme-email"] = bad
+            service_path, users_path = self.write_settings(service=service)
+
+            with self.assertRaisesRegex(SettingsError, "acme-email"):
+                load_settings(service_path, users_path)
+
+    def test_shell_string_alert_command_is_rejected(self):
+        service = self.valid_service()
+        service["certificate"]["alert-command"] = "notify-command --channel private"
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "alert-command"):
+            load_settings(service_path, users_path)
+
+        service = self.valid_service()
+        service["certificate"]["alert-command"] = ["notify; rm -rf /"]
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "alert-command"):
+            load_settings(service_path, users_path)
+
+    def test_relative_certificate_path_is_rejected(self):
+        service = self.valid_service()
+        service["certificate"]["fullchain-path"] = "certs/fullchain.pem"
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "fullchain-path"):
+            load_settings(service_path, users_path)
+
+        service = self.valid_service()
+        service["certificate"]["fullchain-path"] = str(
+            self.private_root / "certs" / "chain.pem"
+        )
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "fullchain-path"):
+            load_settings(service_path, users_path)
+
+    def test_domain_authorities_are_rejected_in_ip_mode(self):
+        service = self.valid_service()
+        service["publication"]["mode"] = "ip"
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "ip mode"):
+            load_settings(service_path, users_path)
+
+    def test_ip_authorities_are_rejected_in_domain_mode(self):
+        service = self.valid_service()
+        service["publication"]["subscription-authority"] = "198.51.100.10:8443"
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "domain mode"):
+            load_settings(service_path, users_path)
+
+    def test_ip_mode_requires_matching_public_ip_across_authorities(self):
+        service = self.valid_service()
+        service["publication"] = {
+            "mode": "ip",
+            "subscription-authority": "198.51.100.10:8443",
+            "panel-authority": "198.51.100.11:8443",
+            "publisher-listen": "127.0.0.1",
+            "publisher-port": 25501,
+        }
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "same public IP"):
+            load_settings(service_path, users_path)
+
+    def test_ip_mode_certificate_path_must_name_the_public_ip(self):
+        service = self.valid_service()
+        service["publication"] = {
+            "mode": "ip",
+            "subscription-authority": "198.51.100.10:8443",
+            "panel-authority": "198.51.100.10:8443",
+            "publisher-listen": "127.0.0.1",
+            "publisher-port": 25501,
+        }
+        service["certificate"]["fullchain-path"] = (
+            "/etc/letsencrypt/live/clash-sub-other/fullchain.pem"
+        )
+        service["certificate"]["alert-command"] = ["notify-command", "--channel", "private"]
+        service["certificate"]["alert-before-seconds"] = 259200
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "fullchain-path.*IP"):
+            load_settings(service_path, users_path)
+
+    def test_ip_mode_requires_alert_command_and_longer_threshold(self):
+        base = {
+            "mode": "ip",
+            "subscription-authority": "198.51.100.10:8443",
+            "panel-authority": "198.51.100.10:8443",
+            "publisher-listen": "127.0.0.1",
+            "publisher-port": 25501,
+        }
+        certificate = {
+            "fullchain-path": "/etc/letsencrypt/live/198.51.100.10/fullchain.pem",
+            "acme-email": "admin@example.com",
+            "alert-before-seconds": 259200,
+            "alert-command": ["notify-command", "--channel", "private"],
+        }
+        service = self.valid_service()
+        service["publication"] = dict(base)
+        service["certificate"] = dict(certificate)
+        service["certificate"]["alert-command"] = []
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "alert-command"):
+            load_settings(service_path, users_path)
+
+        service = self.valid_service()
+        service["publication"] = dict(base)
+        service["certificate"] = dict(certificate)
+        service["certificate"]["alert-before-seconds"] = 86400
+        service_path, users_path = self.write_settings(service=service)
+
+        with self.assertRaisesRegex(SettingsError, "alert-before-seconds"):
             load_settings(service_path, users_path)
 
     def test_hash_token_is_stable_without_storing_plaintext(self):
