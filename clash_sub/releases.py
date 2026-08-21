@@ -182,10 +182,16 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
     if candidate.manifest_path != candidate.path / MANIFEST_NAME:
         raise BuildError("candidate manifest path is invalid")
     staging_root = private_root / "staging"
-    _require_canonical_child(staging_root, candidate.path, "candidate path")
+    expected_candidate_path = staging_root / candidate.operation_id / candidate.user_id
+    _require_exact_resolved_path(expected_candidate_path, candidate.path, "candidate path")
+    _require_exact_resolved_path(
+        expected_candidate_path / MANIFEST_NAME,
+        candidate.manifest_path,
+        "candidate manifest path",
+    )
     manifest = _load_manifest(candidate.manifest_path)
-    _validate_manifest(manifest, candidate.operation_id, candidate.user_id)
-    _verify_release_hashes(candidate.path, manifest, candidate.user_id)
+    manifest_variants = _validate_manifest(manifest, candidate.operation_id, candidate.user_id)
+    _verify_release_hashes(candidate.path, manifest_variants, manifest, candidate.user_id)
 
     releases_root = private_root / "releases" / candidate.user_id
     current_root = private_root / "current"
@@ -200,7 +206,7 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
         raise BuildError("release already exists")
     try:
         candidate.path.rename(release_path)
-        release = _release_from_manifest(release_path, manifest, candidate.user_id)
+        release = _release_from_manifest(release_path, manifest_variants, candidate.user_id)
         _switch_current_link(private_root, candidate.user_id, release_path)
         _prune_old_releases(releases_root, keep)
         return release
@@ -322,14 +328,24 @@ def _load_manifest(path: Path) -> Mapping[str, object]:
     return manifest
 
 
-def _verify_release_hashes(release_path: Path, manifest: Mapping[str, object], user_id: str) -> None:
+def _verify_release_hashes(
+    release_path: Path,
+    manifest_variants: Sequence[str],
+    manifest: Mapping[str, object],
+    user_id: str,
+) -> None:
     output_hashes = manifest.get("output_hashes")
     if not isinstance(output_hashes, dict):
         raise BuildError("release manifest is invalid")
     if manifest.get("user_id") != user_id:
         raise BuildError("release manifest is invalid")
+    expected_variants = set(manifest_variants)
+    if _discover_release_variants(release_path, VARIANT_SUFFIX) != expected_variants:
+        raise BuildError("release is incomplete")
+    if _discover_release_variants(release_path, SIDECAR_SUFFIX) != expected_variants:
+        raise BuildError("release is incomplete")
 
-    for variant in VARIANTS:
+    for variant in manifest_variants:
         expected_hash = output_hashes.get(variant)
         if not isinstance(expected_hash, str):
             raise BuildError("release manifest is invalid")
@@ -356,11 +372,11 @@ def _load_sidecar(path: Path) -> Mapping[str, object]:
 
 def _release_from_manifest(
     release_path: Path,
-    manifest: Mapping[str, object],
+    manifest_variants: Sequence[str],
     user_id: str,
 ) -> Release:
     files = {}
-    for variant in VARIANTS:
+    for variant in manifest_variants:
         files[variant] = release_path / ("%s%s" % (variant, VARIANT_SUFFIX))
     return Release(
         release_id=release_path.name,
@@ -384,9 +400,9 @@ def _load_release(release_path: Path, user_id: str) -> Release:
     except (OSError, ValueError):
         raise BuildError("release path escapes release root")
     manifest = _load_manifest(release_path / MANIFEST_NAME)
-    _validate_manifest(manifest, release_path.name, user_id)
-    _verify_release_hashes(release_path, manifest, user_id)
-    return _release_from_manifest(release_path, manifest, user_id)
+    manifest_variants = _validate_manifest(manifest, release_path.name, user_id)
+    _verify_release_hashes(release_path, manifest_variants, manifest, user_id)
+    return _release_from_manifest(release_path, manifest_variants, user_id)
 
 
 def _switch_current_link(private_root: Path, user_id: str, release_path: Path) -> None:
@@ -436,7 +452,7 @@ def _verify_manifest_digest(manifest_path: Path) -> None:
         raise BuildError("release manifest integrity is invalid")
 
 
-def _validate_manifest(manifest: Mapping[str, object], release_id: str, user_id: str) -> None:
+def _validate_manifest(manifest: Mapping[str, object], release_id: str, user_id: str) -> Tuple[str, ...]:
     if set(manifest) != MANIFEST_FIELDS:
         raise BuildError("release manifest is invalid")
     if manifest.get("schema_version") != 1:
@@ -445,12 +461,25 @@ def _validate_manifest(manifest: Mapping[str, object], release_id: str, user_id:
         raise BuildError("release manifest is invalid")
     if manifest.get("user_id") != user_id:
         raise BuildError("release manifest is invalid")
-    if manifest.get("variants") != list(VARIANTS):
-        raise BuildError("release manifest is invalid")
+    manifest_variants = _validate_manifest_variants(manifest.get("variants"))
     _validate_timestamp(manifest.get("created_at"))
     _validate_hash_mapping(manifest.get("input_hashes"), ("template", "xui"), LOCAL_SOURCE_KINDS)
-    _validate_hash_mapping(manifest.get("output_hashes"), tuple(VARIANTS))
+    _validate_hash_mapping(manifest.get("output_hashes"), manifest_variants, exact=True)
     _validate_count_mapping(manifest.get("source_counts"))
+    return manifest_variants
+
+
+def _validate_manifest_variants(value: object) -> Tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise BuildError("release manifest is invalid")
+    variants = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, str) or item not in VARIANTS or item in seen:
+            raise BuildError("release manifest is invalid")
+        seen.add(item)
+        variants.append(item)
+    return tuple(variants)
 
 
 def _validate_timestamp(value: object) -> None:
@@ -462,12 +491,20 @@ def _validate_timestamp(value: object) -> None:
         raise BuildError("release manifest is invalid")
 
 
-def _validate_hash_mapping(value: object, required_keys: Sequence[str], optional_keys: Sequence[str] = ()) -> None:
+def _validate_hash_mapping(
+    value: object,
+    required_keys: Sequence[str],
+    optional_keys: Sequence[str] = (),
+    exact: bool = False,
+) -> None:
     if not isinstance(value, dict):
         raise BuildError("release manifest is invalid")
     allowed_keys = set(required_keys) | set(optional_keys)
     actual_keys = set(value)
-    if not actual_keys.issubset(allowed_keys):
+    if exact:
+        if actual_keys != set(required_keys):
+            raise BuildError("release manifest is invalid")
+    elif not actual_keys.issubset(allowed_keys):
         raise BuildError("release manifest is invalid")
     if not set(required_keys).issubset(actual_keys):
         raise BuildError("release manifest is invalid")
@@ -510,3 +547,29 @@ def _require_canonical_child(root: Path, target: Path, label: str) -> Path:
     except (FileNotFoundError, OSError, ValueError):
         raise BuildError("%s escapes root" % label)
     return resolved_target
+
+
+def _require_exact_resolved_path(expected: Path, actual: Path, label: str) -> Path:
+    try:
+        resolved_expected = expected.resolve(strict=True)
+        resolved_actual = actual.resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        raise BuildError("%s is invalid" % label)
+    if resolved_actual != resolved_expected:
+        raise BuildError("%s is invalid" % label)
+    return resolved_actual
+
+
+def _discover_release_variants(release_path: Path, suffix: str) -> set:
+    variants = set()
+    try:
+        children = tuple(release_path.iterdir())
+    except OSError:
+        raise BuildError("release is incomplete")
+    for child in children:
+        if child.is_dir():
+            continue
+        name = child.name
+        if name.endswith(suffix):
+            variants.add(name[: -len(suffix)])
+    return variants

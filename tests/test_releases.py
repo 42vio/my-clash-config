@@ -354,6 +354,24 @@ class ReleaseTests(unittest.TestCase):
         )
         self.assertTrue((self.private_root / "current" / "owner").is_symlink())
 
+    def test_member_publish_uses_declared_variant_subset(self):
+        candidate = self.builder.build_candidate("friend", "op-friend")
+
+        release = publish_candidate(candidate, self.private_root, keep=5)
+
+        self.assertEqual(
+            (self.private_root / "current" / "friend").resolve(),
+            release.path.resolve(),
+        )
+        self.assertEqual(set(release.files), {"balanced"})
+        self.assertTrue((release.path / "balanced.yaml").exists())
+        self.assertTrue((release.path / "balanced.meta.json").exists())
+        self.assertFalse((release.path / "balanced-win.yaml").exists())
+        self.assertFalse((release.path / "privacy.yaml").exists())
+        manifest = json.loads((release.path / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["variants"], ["balanced"])
+        self.assertEqual(set(manifest["output_hashes"]), {"balanced"})
+
     def test_failed_build_does_not_change_current(self):
         previous = self.publish_valid_owner_release()
         self.renderer.fail_variant = "privacy"
@@ -471,6 +489,26 @@ class ReleaseTests(unittest.TestCase):
 
         self.assertFalse(escaped_root.exists())
         self.assertTrue(candidate.path.exists())
+
+    def test_publish_candidate_rejects_nested_staging_child_forgery(self):
+        candidate = self.builder.build_candidate("owner", "op-owner")
+        forged_root = self.private_root / "staging" / "op-owner" / "forged"
+        forged_root.mkdir()
+        moved_path = forged_root / "owner"
+        candidate.path.rename(moved_path)
+        forged = Candidate(
+            operation_id=candidate.operation_id,
+            user_id=candidate.user_id,
+            path=moved_path,
+            files={variant: moved_path / path.name for variant, path in candidate.files.items()},
+            manifest_path=moved_path / "manifest.json",
+        )
+
+        with self.assertRaises(BuildError):
+            publish_candidate(forged, self.private_root, keep=5)
+
+        self.assertTrue(moved_path.exists())
+        self.assertFalse((self.private_root / "staging" / "op-owner" / "owner").exists())
 
     def test_publish_rejects_candidate_if_manifest_changes_after_write(self):
         candidate = self.builder.build_candidate("owner", "op-owner")
