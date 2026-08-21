@@ -108,6 +108,24 @@ class TrafficTests(unittest.TestCase):
 
         self.assertEqual(opener.calls[0][1], 7)
 
+    def test_fetch_rejects_over_limit_header_without_echoing_source_url(self):
+        source_url = "http://127.0.0.1:2096/sub/private-value"
+        oversized_number = "9" * 600
+        oversized_header = (
+            "upload=%s; download=2; total=%s; expire=4"
+            % (oversized_number, oversized_number)
+        )
+        response = HeaderOnlyResponse(headers={"Subscription-Userinfo": oversized_header})
+        client = TrafficClient(opener=HeaderOnlyOpener(response=response))
+
+        with self.assertRaisesRegex(TrafficError, "size limit") as context:
+            client.fetch(source_url)
+
+        self.assertTrue(response.closed)
+        self.assertEqual(response.read_calls, 0)
+        self.assertNotIn(source_url, str(context.exception))
+        self.assertNotIn(oversized_number, str(context.exception))
+
     def test_fetch_errors_do_not_echo_source_url(self):
         source_url = "http://127.0.0.1:2096/sub/private-value"
         client = TrafficClient(opener=HeaderOnlyOpener(error=URLError("boom")))

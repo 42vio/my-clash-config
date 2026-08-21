@@ -190,6 +190,16 @@ class ConverterTests(unittest.TestCase):
                 RealitySettings("198.51.100.25", 443, "xtls-rprx-vision"),
             )
 
+    def test_reality_normalizer_rejects_xhttp_for_self_hosted_nodes(self):
+        proxy = yaml.safe_load(REALITY_YAML)["proxies"][0]
+        proxy["network"] = "xhttp"
+
+        with self.assertRaisesRegex(SourceError, "REALITY"):
+            normalize_reality_proxy(
+                proxy,
+                RealitySettings("198.51.100.25", 443, "xtls-rprx-vision"),
+            )
+
     def test_reality_normalizer_rejects_missing_short_id(self):
         proxy = yaml.safe_load(REALITY_YAML)["proxies"][0]
         proxy["reality-opts"]["short-id"] = ""

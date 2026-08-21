@@ -9,6 +9,9 @@ class TrafficError(RuntimeError):
     """Raised when subscription traffic metadata is missing or invalid."""
 
 
+SUBSCRIPTION_USERINFO_MAX_LENGTH = 512
+
+
 def parse_subscription_userinfo(value: str) -> SubscriptionUserinfo:
     fields = {}
     for item in value.split(";"):
@@ -39,4 +42,6 @@ class TrafficClient:
             raise TrafficError("subscription metadata fetch failed") from exc
         if value is None:
             return None
+        if len(value) > SUBSCRIPTION_USERINFO_MAX_LENGTH:
+            raise TrafficError("subscription metadata exceeds size limit")
         return parse_subscription_userinfo(value)
