@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,7 @@ from clash_sub.converter import (
     merge_proxy_sources,
     normalize_reality_proxy,
 )
-from clash_sub.models import Candidate, Release, Settings, SourceSpec
+from clash_sub.models import Candidate, LOCAL_SOURCE_KINDS, Release, Settings, SourceSpec, VARIANTS
 from clash_sub.rendering import render_variant
 from clash_sub.traffic import TrafficClient, TrafficError
 from clash_sub.validation import ValidationError, sha256_bytes, sha256_file, validate_config
@@ -20,12 +21,27 @@ from clash_sub.validation import ValidationError, sha256_bytes, sha256_file, val
 
 VARIANT_SUFFIX = ".yaml"
 MANIFEST_NAME = "manifest.json"
+MANIFEST_DIGEST_NAME = "manifest.sha256"
 SIDECAR_SUFFIX = ".meta.json"
 SOURCE_LABELS = {
     "xui": "3x-ui",
     "airport": "机场",
     "home": "家庭",
 }
+SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+MANIFEST_FIELDS = frozenset(
+    (
+        "created_at",
+        "input_hashes",
+        "operation_id",
+        "output_hashes",
+        "schema_version",
+        "source_counts",
+        "user_id",
+        "variants",
+    )
+)
 
 
 class BuildError(RuntimeError):
@@ -54,6 +70,8 @@ class ReleaseBuilder:
         self._clock = clock or _utcnow
 
     def build_candidate(self, user_id: str, operation_id: str) -> Candidate:
+        _validate_slug(user_id, "user id")
+        _validate_slug(operation_id, "operation id")
         user = self._settings.users.get(user_id)
         if user is None:
             raise BuildError("unknown user")
@@ -61,11 +79,12 @@ class ReleaseBuilder:
             raise BuildError("member candidates may not access local sources")
 
         private_root = self._settings.service.private_root
-        operation_root = private_root / "staging" / operation_id
+        staging_root = private_root / "staging"
+        operation_root = staging_root / operation_id
         candidate_root = operation_root / user_id
         manifest_path = candidate_root / MANIFEST_NAME
         _ensure_private_dir(private_root)
-        _ensure_private_dir(private_root / "staging")
+        _ensure_private_dir(staging_root)
         _ensure_private_dir(operation_root)
         if candidate_root.exists():
             raise BuildError("candidate already exists")
@@ -139,6 +158,7 @@ class ReleaseBuilder:
                 "source_counts": source_counts,
             }
             _write_private_json(manifest_path, manifest)
+            _write_manifest_digest(manifest_path)
             return Candidate(
                 operation_id=operation_id,
                 user_id=user_id,
@@ -147,19 +167,24 @@ class ReleaseBuilder:
                 manifest_path=manifest_path,
             )
         except BuildError:
-            _cleanup_candidate(operation_root)
+            _cleanup_candidate(staging_root, operation_root)
             raise
         except (OSError, SourceError, TrafficError, ValidationError, ValueError, KeyError):
-            _cleanup_candidate(operation_root)
+            _cleanup_candidate(staging_root, operation_root)
             raise BuildError("failed to build release candidate")
 
 
 def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -> Release:
     if keep < 1:
         raise BuildError("keep must be positive")
+    _validate_slug(candidate.user_id, "user id")
+    _validate_slug(candidate.operation_id, "operation id")
+    if candidate.manifest_path != candidate.path / MANIFEST_NAME:
+        raise BuildError("candidate manifest path is invalid")
+    staging_root = private_root / "staging"
+    _require_canonical_child(staging_root, candidate.path, "candidate path")
     manifest = _load_manifest(candidate.manifest_path)
-    if manifest.get("operation_id") != candidate.operation_id or manifest.get("user_id") != candidate.user_id:
-        raise BuildError("candidate manifest does not match candidate metadata")
+    _validate_manifest(manifest, candidate.operation_id, candidate.user_id)
     _verify_release_hashes(candidate.path, manifest, candidate.user_id)
 
     releases_root = private_root / "releases" / candidate.user_id
@@ -184,6 +209,7 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
 
 
 def list_history(private_root: Path, user_id: str) -> Tuple[Release, ...]:
+    _validate_slug(user_id, "user id")
     releases_root = private_root / "releases" / user_id
     if not releases_root.exists():
         return ()
@@ -192,11 +218,12 @@ def list_history(private_root: Path, user_id: str) -> Tuple[Release, ...]:
         release = _try_load_release(child, user_id)
         if release is not None:
             releases.append(release)
-    releases.sort(key=lambda item: item[0], reverse=True)
-    return tuple(item[1] for item in releases)
+    releases.sort(reverse=True)
+    return tuple(item[2] for item in releases)
 
 
 def rollback(private_root: Path, user_id: str, release_id: str) -> Release:
+    _validate_slug(user_id, "user id")
     _validate_release_id(release_id)
     releases_root = private_root / "releases" / user_id
     release_path = releases_root / release_id
@@ -221,9 +248,8 @@ def _fetch_traffic(traffic_client: TrafficClient, source_url: str):
         return None
 
 
-def _cleanup_candidate(operation_root: Path) -> None:
-    if operation_root.exists():
-        shutil.rmtree(operation_root)
+def _cleanup_candidate(staging_root: Path, operation_root: Path) -> None:
+    _remove_private_path(staging_root, operation_root)
 
 
 def _ensure_private_dir(path: Path) -> None:
@@ -248,6 +274,11 @@ def _write_private_bytes(path: Path, contents: bytes) -> None:
     finally:
         handle.close()
     os.chmod(path, 0o600)
+
+
+def _write_manifest_digest(manifest_path: Path) -> None:
+    digest = sha256_bytes(manifest_path.read_bytes())
+    _write_private_text(manifest_path.with_name(MANIFEST_DIGEST_NAME), digest + "\n")
 
 
 def _utcnow() -> datetime:
@@ -281,6 +312,7 @@ def _hash_proxies(proxies: Sequence[Mapping[str, object]]) -> str:
 
 
 def _load_manifest(path: Path) -> Mapping[str, object]:
+    _verify_manifest_digest(path)
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -291,16 +323,13 @@ def _load_manifest(path: Path) -> Mapping[str, object]:
 
 
 def _verify_release_hashes(release_path: Path, manifest: Mapping[str, object], user_id: str) -> None:
-    variants = manifest.get("variants")
     output_hashes = manifest.get("output_hashes")
-    if not isinstance(variants, list) or not all(isinstance(item, str) for item in variants):
-        raise BuildError("release manifest is invalid")
     if not isinstance(output_hashes, dict):
         raise BuildError("release manifest is invalid")
     if manifest.get("user_id") != user_id:
         raise BuildError("release manifest is invalid")
 
-    for variant in variants:
+    for variant in VARIANTS:
         expected_hash = output_hashes.get(variant)
         if not isinstance(expected_hash, str):
             raise BuildError("release manifest is invalid")
@@ -330,12 +359,11 @@ def _release_from_manifest(
     manifest: Mapping[str, object],
     user_id: str,
 ) -> Release:
-    variants = manifest["variants"]
     files = {}
-    for variant in variants:
+    for variant in VARIANTS:
         files[variant] = release_path / ("%s%s" % (variant, VARIANT_SUFFIX))
     return Release(
-        release_id=str(manifest["operation_id"]),
+        release_id=release_path.name,
         user_id=user_id,
         path=release_path,
         files=files,
@@ -343,13 +371,11 @@ def _release_from_manifest(
 
 
 def _validate_release_id(release_id: str) -> None:
-    if not release_id or "/" in release_id or "\\" in release_id:
-        raise BuildError("invalid release id")
-    if release_id in (".", ".."):
-        raise BuildError("invalid release id")
+    _validate_slug(release_id, "release id")
 
 
 def _load_release(release_path: Path, user_id: str) -> Release:
+    _validate_slug(release_path.name, "release id")
     releases_root = release_path.parent
     resolved_root = releases_root.resolve()
     try:
@@ -358,11 +384,13 @@ def _load_release(release_path: Path, user_id: str) -> Release:
     except (OSError, ValueError):
         raise BuildError("release path escapes release root")
     manifest = _load_manifest(release_path / MANIFEST_NAME)
+    _validate_manifest(manifest, release_path.name, user_id)
     _verify_release_hashes(release_path, manifest, user_id)
     return _release_from_manifest(release_path, manifest, user_id)
 
 
 def _switch_current_link(private_root: Path, user_id: str, release_path: Path) -> None:
+    _validate_slug(user_id, "user id")
     current_root = private_root / "current"
     _ensure_private_dir(current_root)
     current_link = current_root / user_id
@@ -377,19 +405,108 @@ def _switch_current_link(private_root: Path, user_id: str, release_path: Path) -
 def _prune_old_releases(releases_root: Path, keep: int) -> None:
     history = list_history(releases_root.parent.parent, releases_root.name)
     for release in history[keep:]:
-        if release.path.exists():
-            shutil.rmtree(release.path)
+        _remove_private_path(releases_root, release.path)
 
 
 def _try_load_release(path: Path, user_id: str):
     if not path.is_dir():
         return None
     try:
-        manifest = _load_manifest(path / MANIFEST_NAME)
-        _verify_release_hashes(path, manifest, user_id)
+        release = _load_release(path, user_id)
     except BuildError:
         return None
-    created_at = manifest.get("created_at")
-    if not isinstance(created_at, str):
-        return None
-    return created_at, _release_from_manifest(path, manifest, user_id)
+    stat_result = path.stat()
+    return stat_result.st_mtime_ns, release.release_id, release
+
+
+def _validate_slug(value: str, label: str) -> None:
+    if not isinstance(value, str) or not SAFE_SLUG_RE.match(value):
+        raise BuildError("invalid %s" % label)
+
+
+def _verify_manifest_digest(manifest_path: Path) -> None:
+    digest_path = manifest_path.with_name(MANIFEST_DIGEST_NAME)
+    try:
+        digest = digest_path.read_text(encoding="utf-8")
+    except OSError:
+        raise BuildError("release manifest integrity is invalid")
+    if not SHA256_RE.match(digest.rstrip("\n")) or digest != digest.rstrip("\n") + "\n":
+        raise BuildError("release manifest integrity is invalid")
+    if sha256_bytes(manifest_path.read_bytes()) != digest.rstrip("\n"):
+        raise BuildError("release manifest integrity is invalid")
+
+
+def _validate_manifest(manifest: Mapping[str, object], release_id: str, user_id: str) -> None:
+    if set(manifest) != MANIFEST_FIELDS:
+        raise BuildError("release manifest is invalid")
+    if manifest.get("schema_version") != 1:
+        raise BuildError("release manifest is invalid")
+    if manifest.get("operation_id") != release_id:
+        raise BuildError("release manifest is invalid")
+    if manifest.get("user_id") != user_id:
+        raise BuildError("release manifest is invalid")
+    if manifest.get("variants") != list(VARIANTS):
+        raise BuildError("release manifest is invalid")
+    _validate_timestamp(manifest.get("created_at"))
+    _validate_hash_mapping(manifest.get("input_hashes"), ("template", "xui"), LOCAL_SOURCE_KINDS)
+    _validate_hash_mapping(manifest.get("output_hashes"), tuple(VARIANTS))
+    _validate_count_mapping(manifest.get("source_counts"))
+
+
+def _validate_timestamp(value: object) -> None:
+    if not isinstance(value, str):
+        raise BuildError("release manifest is invalid")
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        raise BuildError("release manifest is invalid")
+
+
+def _validate_hash_mapping(value: object, required_keys: Sequence[str], optional_keys: Sequence[str] = ()) -> None:
+    if not isinstance(value, dict):
+        raise BuildError("release manifest is invalid")
+    allowed_keys = set(required_keys) | set(optional_keys)
+    actual_keys = set(value)
+    if not actual_keys.issubset(allowed_keys):
+        raise BuildError("release manifest is invalid")
+    if not set(required_keys).issubset(actual_keys):
+        raise BuildError("release manifest is invalid")
+    for key in sorted(actual_keys):
+        item = value.get(key)
+        if not isinstance(item, str) or not SHA256_RE.match(item):
+            raise BuildError("release manifest is invalid")
+
+
+def _validate_count_mapping(value: object) -> None:
+    if not isinstance(value, dict):
+        raise BuildError("release manifest is invalid")
+    actual_keys = tuple(sorted(value))
+    allowed_keys = ("xui",) + tuple(LOCAL_SOURCE_KINDS)
+    if not set(actual_keys).issubset(set(allowed_keys)):
+        raise BuildError("release manifest is invalid")
+    if "xui" not in value:
+        raise BuildError("release manifest is invalid")
+    for key in actual_keys:
+        item = value.get(key)
+        if not isinstance(item, int) or item < 0:
+            raise BuildError("release manifest is invalid")
+
+
+def _remove_private_path(root: Path, target: Path) -> None:
+    if not target.exists() and not target.is_symlink():
+        return
+    resolved_target = _require_canonical_child(root, target, "cleanup path")
+    if target.is_symlink() or resolved_target.is_file():
+        target.unlink()
+        return
+    shutil.rmtree(str(resolved_target))
+
+
+def _require_canonical_child(root: Path, target: Path, label: str) -> Path:
+    try:
+        resolved_root = root.resolve(strict=True)
+        resolved_target = target.resolve(strict=True)
+        resolved_target.relative_to(resolved_root)
+    except (FileNotFoundError, OSError, ValueError):
+        raise BuildError("%s escapes root" % label)
+    return resolved_target

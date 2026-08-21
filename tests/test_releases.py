@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import stat
 import unittest
@@ -10,6 +11,7 @@ import yaml
 
 from clash_sub.converter import SourceError
 from clash_sub.models import (
+    Candidate,
     CertificateSettings,
     PublicationSettings,
     RealitySettings,
@@ -18,9 +20,17 @@ from clash_sub.models import (
     SourceSpec,
     SubscriptionUserinfo,
     UserSpec,
+    VARIANTS,
     XuiSettings,
 )
-from clash_sub.releases import BuildError, ReleaseBuilder, list_history, publish_candidate, rollback
+from clash_sub.releases import (
+    BuildError,
+    ReleaseBuilder,
+    _cleanup_candidate,
+    list_history,
+    publish_candidate,
+    rollback,
+)
 from clash_sub.validation import sha256_file
 
 
@@ -280,6 +290,19 @@ class ReleaseTests(unittest.TestCase):
         candidate = self.builder.build_candidate("owner", operation_id)
         return publish_candidate(candidate, self.private_root, keep=5)
 
+    def tamper_manifest(self, directory: Path, **changes):
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.update(changes)
+        manifest_text = json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        manifest_path.write_text(manifest_text, encoding="utf-8")
+
+    def write_manifest_digest(self, directory: Path):
+        manifest_path = directory / "manifest.json"
+        digest_path = directory / "manifest.sha256"
+        manifest_bytes = manifest_path.read_bytes()
+        digest_path.write_text(hashlib.sha256(manifest_bytes).hexdigest() + "\n", encoding="utf-8")
+
     def test_member_candidate_contains_only_its_own_xui_nodes(self):
         candidate = self.builder.build_candidate("friend", "op-friend")
 
@@ -290,6 +313,31 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("owner-airport-node", text)
         self.assertNotIn("owner-home-node", text)
         self.assertEqual(self.local_loader.calls, [])
+
+    def test_build_candidate_rejects_unsafe_operation_id_before_creating_paths(self):
+        escaped_root = Path(self.directory.name) / "escaped-build"
+
+        with self.assertRaises(BuildError):
+            self.builder.build_candidate("owner", "../../escaped-build")
+
+        self.assertFalse(escaped_root.exists())
+
+    def test_build_candidate_rejects_unsafe_user_id_before_path_join(self):
+        unsafe_user = UserSpec(
+            user_id="../owner",
+            role="owner",
+            token_sha256="c" * 64,
+            variants=tuple(VARIANTS),
+            xui_source=SourceSpec(kind="xui", label="owner", url=self.owner_url),
+            local_sources=(),
+        )
+        settings = Settings(service=self.make_settings().service, users={"../owner": unsafe_user})
+        builder = self.make_builder(settings=settings)
+
+        with self.assertRaises(BuildError):
+            builder.build_candidate("../owner", "op-unsafe-user")
+
+        self.assertFalse((self.private_root / "staging" / "op-unsafe-user").exists())
 
     def test_owner_switches_all_three_variants_together(self):
         candidate = self.builder.build_candidate("owner", "op-owner")
@@ -318,11 +366,25 @@ class ReleaseTests(unittest.TestCase):
             previous.path.resolve(),
         )
 
+    def test_cleanup_candidate_refuses_to_delete_outside_staging_root(self):
+        staging_root = self.private_root / "staging"
+        staging_root.mkdir(parents=True)
+        escaped_root = Path(self.directory.name) / "escaped-cleanup"
+        escaped_root.mkdir()
+        (escaped_root / "sentinel.txt").write_text("keep", encoding="utf-8")
+
+        with self.assertRaises(BuildError):
+            _cleanup_candidate(staging_root, escaped_root)
+
+        self.assertTrue(escaped_root.exists())
+        self.assertTrue((escaped_root / "sentinel.txt").exists())
+
     def test_candidate_uses_private_modes_and_writes_sidecars(self):
         candidate = self.builder.build_candidate("owner", "op-owner")
 
         self.assertEqual(private_mode(candidate.path), 0o700)
         self.assertEqual(private_mode(candidate.manifest_path), 0o600)
+        self.assertEqual(private_mode(candidate.path / "manifest.sha256"), 0o600)
         for variant, path in candidate.files.items():
             self.assertEqual(private_mode(path), 0o600)
             self.assertEqual(private_mode(path.with_suffix(".meta.json")), 0o600)
@@ -364,11 +426,13 @@ class ReleaseTests(unittest.TestCase):
 
         manifest_text = candidate.manifest_path.read_text(encoding="utf-8")
         manifest = json.loads(manifest_text)
+        manifest_digest_text = (candidate.path / "manifest.sha256").read_text(encoding="utf-8")
 
         self.assertEqual(manifest["schema_version"], 1)
         self.assertEqual(manifest["variants"], ["balanced", "balanced-win", "privacy"])
         self.assertEqual(set(manifest["input_hashes"]), {"template", "xui", "airport", "home"})
         self.assertEqual(set(manifest["source_counts"]), {"xui", "airport", "home"})
+        self.assertRegex(manifest_digest_text, "^[0-9a-f]{64}\n$")
         self.assertNotIn(self.owner_url, manifest_text)
         self.assertNotIn("owner-airport-node", manifest_text)
         self.assertNotIn("owner-home-node", manifest_text)
@@ -390,6 +454,30 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn(self.friend_url, sidecar_text)
         self.assertNotIn("friend-node", sidecar_text)
         self.assertNotIn("22222222-2222-4222-8222-222222222222", sidecar_text)
+
+    def test_publish_candidate_rejects_unsafe_candidate_user_id_before_move(self):
+        candidate = self.builder.build_candidate("owner", "op-owner")
+        forged = Candidate(
+            operation_id=candidate.operation_id,
+            user_id="../../escaped-release-owner",
+            path=candidate.path,
+            files=candidate.files,
+            manifest_path=candidate.manifest_path,
+        )
+        escaped_root = Path(self.directory.name) / "escaped-release-owner"
+
+        with self.assertRaises(BuildError):
+            publish_candidate(forged, self.private_root, keep=5)
+
+        self.assertFalse(escaped_root.exists())
+        self.assertTrue(candidate.path.exists())
+
+    def test_publish_rejects_candidate_if_manifest_changes_after_write(self):
+        candidate = self.builder.build_candidate("owner", "op-owner")
+        self.tamper_manifest(candidate.path, created_at="2099-12-31T23:59:59Z")
+
+        with self.assertRaises(BuildError):
+            publish_candidate(candidate, self.private_root, keep=5)
 
     def test_source_name_collisions_are_disambiguated_by_source_label(self):
         duplicate_proxy = self.reality_proxy("duplicate-node", "33333333-3333-4333-8333-333333333333")
@@ -450,6 +538,20 @@ class ReleaseTests(unittest.TestCase):
 
         self.assertEqual([item.release_id for item in history], [newer.release_id])
 
+    def test_list_history_rejects_manifest_metadata_tampering(self):
+        older = self.publish_valid_owner_release("op-owner-older")
+        self.clock_value = self.clock_value + timedelta(minutes=1)
+        newer = self.publish_valid_owner_release("op-owner-newer")
+        self.tamper_manifest(older.path, created_at="2099-12-31T23:59:59Z")
+
+        history = list_history(self.private_root, "owner")
+
+        self.assertEqual([item.release_id for item in history], [newer.release_id])
+
+    def test_list_history_rejects_unsafe_user_id(self):
+        with self.assertRaises(BuildError):
+            list_history(self.private_root, "../owner")
+
     def test_rollback_rejects_traversal_and_requires_matching_hashes(self):
         first = self.publish_valid_owner_release("op-owner-first")
         self.clock_value = self.clock_value + timedelta(minutes=1)
@@ -468,6 +570,15 @@ class ReleaseTests(unittest.TestCase):
             (self.private_root / "current" / "owner").resolve(),
             first.path.resolve(),
         )
+
+    def test_rollback_rejects_manifest_metadata_tampering(self):
+        first = self.publish_valid_owner_release("op-owner-first")
+        self.clock_value = self.clock_value + timedelta(minutes=1)
+        self.publish_valid_owner_release("op-owner-second")
+        self.tamper_manifest(first.path, created_at="2099-12-31T23:59:59Z")
+
+        with self.assertRaises(BuildError):
+            rollback(self.private_root, "owner", "op-owner-first")
 
     def test_validator_receives_exact_private_source_locations(self):
         self.builder.build_candidate("owner", "op-owner")
