@@ -182,7 +182,12 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
     if candidate.manifest_path != candidate.path / MANIFEST_NAME:
         raise BuildError("candidate manifest path is invalid")
     staging_root = private_root / "staging"
+    operation_root = staging_root / candidate.operation_id
     expected_candidate_path = staging_root / candidate.operation_id / candidate.user_id
+    _require_real_directory(staging_root, "staging root")
+    _require_real_directory(operation_root, "operation root")
+    _require_real_directory(expected_candidate_path, "candidate path")
+    _require_real_directory(candidate.path, "candidate path")
     _require_exact_resolved_path(expected_candidate_path, candidate.path, "candidate path")
     _require_exact_resolved_path(
         expected_candidate_path / MANIFEST_NAME,
@@ -558,6 +563,11 @@ def _require_exact_resolved_path(expected: Path, actual: Path, label: str) -> Pa
     if resolved_actual != resolved_expected:
         raise BuildError("%s is invalid" % label)
     return resolved_actual
+
+
+def _require_real_directory(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise BuildError("%s is invalid" % label)
 
 
 def _discover_release_variants(release_path: Path, suffix: str) -> set:

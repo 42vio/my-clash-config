@@ -510,6 +510,19 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(moved_path.exists())
         self.assertFalse((self.private_root / "staging" / "op-owner" / "owner").exists())
 
+    def test_publish_candidate_rejects_symlinked_expected_staging_user_path(self):
+        candidate = self.builder.build_candidate("owner", "op-owner")
+        external_root = Path(self.directory.name) / "outside-candidate"
+        candidate.path.rename(external_root)
+        candidate.path.symlink_to(external_root, target_is_directory=True)
+
+        with self.assertRaises(BuildError):
+            publish_candidate(candidate, self.private_root, keep=5)
+
+        self.assertTrue(candidate.path.is_symlink())
+        self.assertTrue(external_root.exists())
+        self.assertFalse((self.private_root / "releases" / "owner" / "op-owner").exists())
+
     def test_publish_rejects_candidate_if_manifest_changes_after_write(self):
         candidate = self.builder.build_candidate("owner", "op-owner")
         self.tamper_manifest(candidate.path, created_at="2099-12-31T23:59:59Z")
