@@ -169,9 +169,9 @@ class ReleaseBuilder:
         except BuildError:
             _cleanup_candidate(staging_root, operation_root)
             raise
-        except (OSError, SourceError, TrafficError, ValidationError, ValueError, KeyError):
+        except (OSError, SourceError, TrafficError, ValidationError, ValueError, KeyError) as exc:
             _cleanup_candidate(staging_root, operation_root)
-            raise BuildError("failed to build release candidate")
+            raise BuildError("failed to build release candidate") from exc
 
 
 def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -> Release:
@@ -211,8 +211,8 @@ def publish_candidate(candidate: Candidate, private_root: Path, keep: int = 5) -
         _switch_current_link(private_root, candidate.user_id, release_path)
         _prune_old_releases(private_root, candidate.user_id, keep)
         return release
-    except OSError:
-        raise BuildError("failed to publish release")
+    except OSError as exc:
+        raise BuildError("failed to publish release") from exc
 
 
 def list_history(private_root: Path, user_id: str) -> Tuple[Release, ...]:
