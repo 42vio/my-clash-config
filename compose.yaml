@@ -1,9 +1,21 @@
 # Pinned loopback-only service stack.
 #
+# Prerequisite (once per host, before `docker compose up`): the ignored
+# private tree must already exist and belong to the application user,
+# because the manager publishes 0700/0600 files as uid/gid 10001 while
+# Docker auto-creates missing bind sources as root:
+#
+#   install -d -o 10001 -g 10001 -m 700 \
+#     private private/config private/staging private/releases \
+#     private/current private/logs private/sources
+#   # private/config/service.yaml and users.yaml: 0600, owned by 10001.
+#
 # Every HTTP listener binds 127.0.0.1 on the host (host networking is
 # mandatory: bridge containers cannot reach host loopback services such as
 # 3x-ui and subconverter).  Security comes from explicit loopback binding
 # plus the absence of any published Docker port, never from port mapping.
+# Tmpfs mounts carry an explicit size cap here; noexec/nosuid/nodev are
+# applied by the Docker runtime's tmpfs defaults.
 services:
   subconverter:
     # Digest-pinned MetaCubeX subconverter; the pref.ini mount replaces the
@@ -23,8 +35,10 @@ services:
       driver: none
     volumes:
       - ./config/subconverter/pref.ini:/base/pref.ini:ro
-    tmpfs:
-      - /tmp
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 16m
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:25500/version >/dev/null"]
       interval: 30s
@@ -53,8 +67,16 @@ services:
       - ./private/config:/app/private/config:ro
       - ./private/current:/app/private/current:ro
       - ./private/releases:/app/private/releases:ro
-    tmpfs:
-      - /tmp
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 16m
+    # Access logs carry route hashes only, but keep them bounded anyway.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:25501/healthz >/dev/null"]
       interval: 30s
@@ -62,11 +84,15 @@ services:
       retries: 3
       start_period: 10s
 
+  # One-shot services below carry the "manual" profile so a plain
+  # `docker compose up -d` never starts them; `docker compose run`
+  # still targets them directly by name.
   manager:
     build:
       context: .
       dockerfile: Dockerfile
     image: clash-sub/app:local
+    profiles: ["manual"]
     # Host networking reaches the loopback 3x-ui subscription endpoints and
     # subconverter; the manager itself starts no listener.
     network_mode: host
@@ -81,14 +107,21 @@ services:
     # and the operation log all live under the ignored host directory.
     volumes:
       - ./private:/app/private
-    tmpfs:
-      - /tmp
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 16m
 
   validator:
     image: docker.io/metacubex/mihomo:v1.19.30
+    profiles: ["manual"]
     # `-t` parses the candidate and exits before provider initialization,
     # so the validator needs no network at all.
     network_mode: none
+    # The staging tree is written by the manager as uid 10001 with 0700
+    # directories and 0600 files; cap_drop removes DAC overrides, so the
+    # validator must run as that same user to read its candidates.
+    user: "10001:10001"
     read_only: true
     cap_drop: [ALL]
     security_opt:
@@ -96,8 +129,13 @@ services:
     # The candidate mount must expose the staging tree at the same path the
     # manager reports in its build payload, because the host CLI passes
     # that string verbatim to `docker compose run --rm -T validator -t -f`.
+    # Only staging is exposed: no token hashes, panel URLs, or snapshots.
     entrypoint: ["/mihomo"]
     volumes:
-      - ./private:/app/private:ro
-    tmpfs:
-      - /root/.config/mihomo
+      - ./private/staging:/app/private/staging:ro
+      # /root is not traversable for uid 10001; keep the tmpfs fallback at
+      # a path the user can always reach.
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 16m

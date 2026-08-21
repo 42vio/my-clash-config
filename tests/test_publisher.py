@@ -5,6 +5,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -1003,6 +1005,26 @@ class PublisherServerTests(unittest.TestCase):
     def test_handler_uses_fifteen_second_connection_timeout(self):
         self.assertEqual(PublisherRequestHandler.timeout, CONNECTION_TIMEOUT_SECONDS)
         self.assertEqual(CONNECTION_TIMEOUT_SECONDS, 15)
+
+
+class ModuleEntryTests(unittest.TestCase):
+    def test_startup_failure_reports_one_redacted_line_without_a_traceback(self):
+        with TemporaryDirectory() as directory:
+            broken_root = Path(directory) / "private"
+            broken_root.mkdir(mode=0o700)
+            completed = subprocess.run(
+                [sys.executable, "-m", "clash_sub.publisher"],
+                cwd=Path(__file__).resolve().parents[1],
+                env=dict(os.environ, PRIVATE_ROOT=str(broken_root)),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        self.assertEqual(completed.returncode, 1)
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertNotIn(str(broken_root), completed.stderr)
+        lines = [line for line in completed.stderr.splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1, completed.stderr)
 
 
 if __name__ == "__main__":

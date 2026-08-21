@@ -535,16 +535,27 @@ def _main() -> int:
     service_path = private_root / "config" / "service.yaml"
     users_path = private_root / "config" / "users.yaml"
     settings_paths = (service_path, users_path)
-    port = load_settings(service_path, users_path).service.publication.publisher_port
-    service = PublicationService(
-        settings_loader=lambda: load_settings(service_path, users_path),
-        traffic_client=TrafficClient(),
-        settings_revision=lambda: settings_file_revision(settings_paths),
-    )
-    listen = os.environ.get("PUBLISHER_LISTEN", LOOPBACK_LISTEN)
-    server = create_publication_server(listen, port, service)
+    try:
+        port = load_settings(service_path, users_path).service.publication.publisher_port
+        service = PublicationService(
+            settings_loader=lambda: load_settings(service_path, users_path),
+            traffic_client=TrafficClient(),
+            settings_revision=lambda: settings_file_revision(settings_paths),
+        )
+        listen = os.environ.get("PUBLISHER_LISTEN", LOOPBACK_LISTEN)
+        server = create_publication_server(listen, port, service)
+    except Exception:
+        # One redacted line only: a crash-looping container must never
+        # spray tracebacks (or private paths) into the log driver.
+        sys.stderr.write("clash-sub-publisher: error: startup_failed\n")
+        return 1
     try:
         server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        sys.stderr.write("clash-sub-publisher: error: server_failed\n")
+        return 1
     finally:
         server.server_close()
     return 0

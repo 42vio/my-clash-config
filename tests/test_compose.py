@@ -38,6 +38,29 @@ def load_compose():
     return yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
 
 
+def bind_mounts(service):
+    """Return {source: target/read_only} for the short-syntax bind mounts."""
+    binds = {}
+    for volume in service.get("volumes", []):
+        if isinstance(volume, str):
+            parts = volume.split(":")
+            if len(parts) >= 2:
+                binds[parts[0]] = {
+                    "target": parts[1],
+                    "read_only": "ro" in parts[2:],
+                }
+    return binds
+
+
+def tmpfs_mounts(service):
+    """Return the long-syntax tmpfs volume entries."""
+    return [
+        volume
+        for volume in service.get("volumes", [])
+        if isinstance(volume, dict) and volume.get("type") == "tmpfs"
+    ]
+
+
 class ComposeSecurityTests(unittest.TestCase):
     def test_no_service_publishes_a_port_or_mounts_docker_socket(self):
         compose = yaml.safe_load((ROOT / "compose.yaml").read_text())
@@ -83,11 +106,21 @@ class ComposeSecurityTests(unittest.TestCase):
             self.assertTrue(service.get("read_only"), name)
             self.assertEqual(service.get("cap_drop"), ["ALL"], name)
             self.assertIn("no-new-privileges:true", service.get("security_opt", []), name)
-            self.assertTrue(service.get("tmpfs"), "%s needs tmpfs for runtime writes" % name)
+            mounts = tmpfs_mounts(service)
+            self.assertTrue(mounts, "%s needs a tmpfs for runtime writes" % name)
+            for mount in mounts:
+                size = (mount.get("tmpfs") or {}).get("size")
+                self.assertTrue(
+                    size, "%s tmpfs %s needs an explicit size cap" % (name, mount.get("target"))
+                )
 
     def test_application_services_run_as_a_non_root_user(self):
         compose = load_compose()
         self.assertEqual(compose["services"]["subconverter"]["user"], "65534:65534")
+        # The validator must match the uid that owns the 0700/0600 staging
+        # files: cap_drop removes DAC overrides, so even root could not
+        # read them otherwise.
+        self.assertEqual(compose["services"]["validator"]["user"], "10001:10001")
         dockerfile = DOCKERFILE_PATH.read_text(encoding="utf-8")
         self.assertIn("adduser -D -H -u 10001 -G clash-sub clash-sub", dockerfile)
         self.assertIn("USER 10001:10001", dockerfile)
@@ -101,11 +134,25 @@ class ComposeSecurityTests(unittest.TestCase):
         for service in compose["services"].values():
             self.assertNotEqual(service.get("restart"), "always")
 
+    def test_one_shot_services_start_only_when_targeted_directly(self):
+        compose = load_compose()
+        for name in ONE_SHOT_SERVICES:
+            self.assertEqual(compose["services"][name].get("profiles"), ["manual"], name)
+        for name in LONG_RUNNING_SERVICES:
+            self.assertNotIn("profiles", compose["services"][name], name)
+
     def test_converter_request_logging_is_disabled(self):
         compose = load_compose()
         self.assertEqual(
             compose["services"]["subconverter"]["logging"]["driver"], "none"
         )
+
+    def test_publisher_logs_are_bounded_and_rotated(self):
+        compose = load_compose()
+        logging_config = compose["services"]["publisher"]["logging"]
+        self.assertEqual(logging_config["driver"], "json-file")
+        self.assertEqual(logging_config["options"]["max-size"], "10m")
+        self.assertEqual(int(logging_config["options"]["max-file"]), 2)
 
     def test_converter_pref_is_mounted_read_only_over_the_image_default(self):
         compose = load_compose()
@@ -140,43 +187,59 @@ class ComposeServiceBoundaryTests(unittest.TestCase):
             compose["services"]["publisher"]["command"], ["clash_sub.publisher"]
         )
 
-    def test_validator_shares_the_manager_private_root_without_write_access(self):
+    def test_validator_mounts_only_the_staging_tree_the_manager_reports(self):
         compose = load_compose()
-        manager_mounts = [
-            parts for parts in (
-                str(volume).split(":")
-                for volume in compose["services"]["manager"]["volumes"]
-            )
-            if parts[0] == "./private"
-        ]
-        validator_mounts = [
-            parts for parts in (
-                str(volume).split(":")
-                for volume in compose["services"]["validator"]["volumes"]
-            )
-            if parts[0] == "./private"
-        ]
-        self.assertEqual(len(manager_mounts), 1, "manager mounts the private root once")
-        self.assertEqual(len(validator_mounts), 1, "validator mounts the private root once")
-        self.assertEqual(manager_mounts[0][1], validator_mounts[0][1])
-        self.assertNotIn("ro", manager_mounts[0])
-        self.assertIn("ro", validator_mounts[0])
+        validator_binds = bind_mounts(compose["services"]["validator"])
+        self.assertEqual(set(validator_binds), {"./private/staging"})
+        staging = validator_binds["./private/staging"]
+        self.assertTrue(staging["read_only"])
+        manager_binds = bind_mounts(compose["services"]["manager"])
+        private = manager_binds["./private"]
+        self.assertFalse(private["read_only"])
+        # The candidate path the manager reports must resolve to the same
+        # file inside the validator, so the staging mount has to sit under
+        # the manager's container-side private path.
+        self.assertTrue(staging["target"].startswith(private["target"] + "/"))
 
     def test_publisher_mounts_are_read_only_and_exclude_sources_and_staging(self):
         compose = load_compose()
-        volumes = compose["services"]["publisher"]["volumes"]
-        self.assertTrue(volumes, "publisher mounts its read-only inputs")
-        sources = set()
-        for volume in volumes:
-            text = str(volume)
-            self.assertTrue(text.endswith(":ro"), text)
-            lowered = text.lower()
-            self.assertNotIn("staging", lowered, text)
-            self.assertNotIn("sources", lowered, text)
-            sources.add(text.split(":")[0])
+        service = compose["services"]["publisher"]
+        binds = bind_mounts(service)
+        self.assertTrue(binds, "publisher mounts its read-only inputs")
+        for source, mount in binds.items():
+            self.assertTrue(mount["read_only"], source)
+            lowered = source.lower()
+            self.assertNotIn("staging", lowered, source)
+            self.assertNotIn("sources", lowered, source)
         self.assertEqual(
-            sources, {"./private/config", "./private/current", "./private/releases"}
+            set(binds), {"./private/config", "./private/current", "./private/releases"}
         )
+
+
+class ServiceExampleConsistencyTests(unittest.TestCase):
+    def load_service_example(self):
+        document = yaml.safe_load(
+            (ROOT / "config" / "service.example.yaml").read_text(encoding="utf-8")
+        )
+        self.assertIsInstance(document, dict)
+        return document
+
+    def test_example_private_root_matches_the_compose_private_mount(self):
+        example = self.load_service_example()
+        compose = load_compose()
+        manager_binds = bind_mounts(compose["services"]["manager"])
+        self.assertEqual(example["private-root"], manager_binds["./private"]["target"])
+
+    def test_example_publisher_port_matches_the_compose_healthcheck(self):
+        example = self.load_service_example()
+        port = example["publication"]["publisher-port"]
+        self.assertEqual(port, 25501)
+        compose = load_compose()
+        joined = " ".join(
+            str(part)
+            for part in compose["services"]["publisher"]["healthcheck"]["test"]
+        )
+        self.assertIn("http://127.0.0.1:%d/" % port, joined)
 
 
 class ApplicationImageTests(unittest.TestCase):
