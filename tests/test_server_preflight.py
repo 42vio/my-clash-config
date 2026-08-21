@@ -109,6 +109,24 @@ UFW_ACTIVE_EXPECTED_RULES = (
     "[ 4] 8443/tcp                  ALLOW IN    Anywhere\n"
 )
 
+# An "Anywhere" To column allows every port for one source; skipping
+# that row would let an allow-all rule pass as clean.
+UFW_ANYWHERE_TO_RULES = (
+    "Status: active\n"
+    "\n"
+    "To                         Action      From\n"
+    "--                         ------      ----\n"
+    "[ 1] Anywhere                 ALLOW IN    10.0.0.2\n"
+)
+
+# Inline comments must not create or hide listeners.
+NGINX_PROJECT_COMMENT_DUMP = (
+    "# configuration file /etc/nginx/conf.d/clash-sub-http.conf:\n"
+    "server {\n"
+    "    listen 80; # used to be listen 443 ssl\n"
+    "}\n"
+)
+
 NGINX_443_DUMP = (
     "# configuration file /etc/nginx/sites-enabled/default:\n"
     "server {\n"
@@ -314,6 +332,40 @@ class ServerPreflightTests(unittest.TestCase):
         report = run_preflight(self.make_runner(fixture), self.settings)
         self.assertIn("udp_443_open", report.blocking_codes)
 
+    def test_udp6_443_listener_blocks_apply(self):
+        fixture = copy.deepcopy(self.clean)
+        fixture["listeners"].append(
+            "udp6  UNCONN 0      0            [::]:443           [::]:*      "
+            'users:(("hysteria",pid=2100,fd=9))'
+        )
+        report = run_preflight(self.make_runner(fixture), self.settings)
+        self.assertIn("udp_443_open", report.blocking_codes)
+
+    def test_tcp6_wildcard_443_owned_by_xray_passes(self):
+        # A dual-stack Go listener shows up as a single tcp6 [::]:443 line.
+        report = run_preflight(self.clean_runner(), self.settings)
+        self.assertTrue(report.ok, report.blocking_codes)
+        self.assertTrue(report.checks["tcp_443_xray_owned"])
+        self.assertIn(443, report.facts["public_listener_ports"])
+
+    def test_tcp6_unexpected_public_listener_blocks_apply(self):
+        fixture = copy.deepcopy(self.clean)
+        fixture["listeners"].append(
+            "tcp6  LISTEN 0      511          [::]:8080          [::]:*      "
+            'users:(("legacy6",pid=2101,fd=4))'
+        )
+        report = run_preflight(self.make_runner(fixture), self.settings)
+        self.assertIn("unexpected_public_listener", report.blocking_codes)
+
+    def test_tcp_443_process_name_lookalike_is_not_xray(self):
+        fixture = copy.deepcopy(self.clean)
+        fixture["listeners"] = [
+            line.replace('users:(("xray",pid=1234,fd=7))', 'users:(("notxray",pid=1234,fd=7))')
+            for line in fixture["listeners"]
+        ]
+        report = run_preflight(self.make_runner(fixture), self.settings)
+        self.assertIn("tcp_443_not_xray", report.blocking_codes)
+
     def test_panel_listener_not_loopback_blocks_apply(self):
         fixture = copy.deepcopy(self.clean)
         fixture["listeners"] = [
@@ -418,6 +470,11 @@ class ServerPreflightTests(unittest.TestCase):
         self.assertTrue(report.ok, report.blocking_codes)
         self.assertEqual(report.facts["nginx_state"], "present")
 
+    def test_nginx_inline_comments_are_ignored_when_scanning(self):
+        report = self.report_for(nginx_dump=NGINX_PROJECT_COMMENT_DUMP)
+        self.assertTrue(report.ok, report.blocking_codes)
+        self.assertEqual(report.facts["nginx_state"], "present")
+
     def test_stale_trojan_web_service_blocks_apply(self):
         services = dict(self.clean["services"], **{"trojan-web": "active"})
         report = self.report_for(services=services)
@@ -448,6 +505,10 @@ class ServerPreflightTests(unittest.TestCase):
 
     def test_ufw_active_with_unknown_rule_blocks_apply(self):
         report = self.report_for(ufw_status_output=UFW_ACTIVE_UNKNOWN_RULES)
+        self.assertIn("ufw_unsafe", report.blocking_codes)
+
+    def test_ufw_anywhere_to_column_rule_blocks_apply(self):
+        report = self.report_for(ufw_status_output=UFW_ANYWHERE_TO_RULES)
         self.assertIn("ufw_unsafe", report.blocking_codes)
 
     def test_ufw_active_with_expected_ports_is_clean(self):

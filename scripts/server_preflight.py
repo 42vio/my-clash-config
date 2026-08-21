@@ -264,7 +264,9 @@ class CommandRunner:
 
 
 class SubprocessRunner(CommandRunner):
-    """Live read-only runner: bounded commands, capped reads, no shell."""
+    """Live read-only runner: bounded timeout-limited commands without
+    a shell; command stdout and file reads are capped at 256 KiB each
+    (stderr is spooled to a temp file and never read)."""
 
     def __init__(self, root=ROOT):
         super().__init__()
@@ -538,8 +540,7 @@ def run_preflight(runner: CommandRunner, settings, root=None) -> PreflightReport
     checks["tcp_443_xray_owned"] = (
         len(tcp_public) == 1
         and not tcp_public[0].loopback
-        and tcp_public[0].process is not None
-        and "xray" in tcp_public[0].process.lower()
+        and _is_xray_process(tcp_public[0].process)
     )
     checks["udp_443_closed"] = not any(
         item.proto == "udp" and item.port == public_port for item in listeners
@@ -613,7 +614,9 @@ def run_preflight(runner: CommandRunner, settings, root=None) -> PreflightReport
     )
 
     # Firewall state.
-    ufw_state, ufw_ports = _evaluate_ufw(runner.run(["ufw", "status", "numbered"]))
+    ufw_state, ufw_ports, ufw_unscoped = _evaluate_ufw(
+        runner.run(["ufw", "status", "numbered"])
+    )
     facts["ufw_state"] = ufw_state
     ufw_safe = True
     if ufw_state == "absent":
@@ -621,7 +624,9 @@ def run_preflight(runner: CommandRunner, settings, root=None) -> PreflightReport
     elif ufw_state == "inactive":
         notes.append("ufw_inactive")
     elif ufw_state == "active":
-        if any(port not in allowed_public for port in ufw_ports):
+        # An "Anywhere" To column allows every port for one source and
+        # any rule outside the expected public ports is unattributed.
+        if ufw_unscoped or any(port not in allowed_public for port in ufw_ports):
             ufw_safe = False
         else:
             notes.append("ufw_active_clean")
@@ -786,7 +791,9 @@ def _parse_listeners(ss_text: str) -> List[Listener]:
         fields = line.split()
         if len(fields) < 6:
             continue
-        proto = fields[0].lower()
+        # ss reports IPv6 sockets as tcp6/udp6; a dual-stack Go listener
+        # (Xray with an empty listen address) shows up only as tcp6.
+        proto = fields[0].lower().rstrip("6")
         if proto not in ("tcp", "udp"):
             continue
         address, separator, port_text = fields[4].rpartition(":")
@@ -803,6 +810,14 @@ def _parse_listeners(ss_text: str) -> List[Listener]:
             )
         )
     return listeners
+
+
+def _is_xray_process(process: Optional[str]) -> bool:
+    """Exact-token match: "notxray" or "xrayevil" must not pass."""
+    if not process:
+        return False
+    name = process.lower()
+    return name == "xray" or name.startswith("xray ") or name.startswith("xray-")
 
 
 def _ssh_port(value: Optional[str]) -> Optional[int]:
@@ -827,27 +842,33 @@ def _panel_version_output(runner: CommandRunner) -> str:
     direct = runner.run(["x-ui", "--version"])
     if direct.returncode == 0 and direct.stdout.strip():
         return direct.stdout
+    # Fallback only: the packaged unit exposes its Version property.
     shown = runner.run(["systemctl", "show", "x-ui", "--property=Version"])
     return shown.stdout
 
 
-def _evaluate_ufw(result: RunResult) -> Tuple[str, Sequence[int]]:
+def _evaluate_ufw(result: RunResult) -> Tuple[str, Sequence[int], bool]:
+    """Return (state, rule ports, whether any rule allows all ports)."""
     if result.returncode == 127 or not result.stdout.strip():
-        return "absent", ()
+        return "absent", (), False
     match = _UFW_STATUS_RE.search(result.stdout)
     if match is None:
-        return "unknown", ()
+        return "unknown", (), False
     state = match.group(1).lower()
     if state != "active":
-        return "inactive" if state == "inactive" else "unknown", ()
+        return ("inactive" if state == "inactive" else "unknown"), (), False
     ports = []
+    unscoped = False
     for rule in _UFW_RULE_RE.finditer(result.stdout):
         token = rule.group(1).split("/")[0]
         if token.isdigit():
             port = int(token)
             if port not in ports:
                 ports.append(port)
-    return "active", ports
+        else:
+            # e.g. "Anywhere" in the To column: every port is allowed.
+            unscoped = True
+    return "active", ports, unscoped
 
 
 def _evaluate_nginx(dump: RunResult) -> str:
@@ -860,9 +881,10 @@ def _evaluate_nginx(dump: RunResult) -> str:
         if header:
             current_file = header.group(1)
             continue
-        if line.lstrip().startswith("#"):
-            continue
-        match = _NGINX_LISTEN_RE.search(line)
+        # Scan the directive text only: a trailing comment such as
+        # "# used to be listen 443" must not create a phantom listener.
+        code = line.split("#", 1)[0]
+        match = _NGINX_LISTEN_RE.search(code)
         if not match:
             continue
         port = int(match.group(1))

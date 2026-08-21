@@ -1,10 +1,17 @@
 """Read-only REALITY dest probe.
 
-Judges one prospective REALITY dest from a single
-``openssl s_client -brief`` observation and reduces it to five
-booleans, elapsed milliseconds, and a stable error code.  The script
-never writes to the host and never echoes certificate material,
-target bodies, or any other raw observation into its output.
+Judges one prospective REALITY dest from a single full-mode
+``openssl s_client`` observation and reduces it to five booleans,
+elapsed milliseconds, and a stable error code.  ``-brief`` is
+deliberately NOT used: quiet mode routes the ALPN summary through a
+discarded BIO, so the ALPN line would never appear.  Hostname
+checking is delegated to openssl itself via ``-verify_hostname``.
+
+The script never writes to the host and never echoes certificate
+material, target bodies, or any other raw observation into its
+output.  The parser accepts both the OpenSSL 3.0 ``Server Temp
+Key:`` label and the OpenSSL >= 3.5 ``Peer Temp Key:`` rename, plus
+``-brief``-style text piped in manually.
 """
 
 from __future__ import annotations
@@ -22,8 +29,8 @@ from typing import Callable, Mapping, Optional, Tuple
 
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
-# openssl -brief output is a handful of summary lines; the cap exists
-# so a hostile or pathological peer cannot flood the process memory.
+# The combined stdout+stderr capture is capped at this many bytes so a
+# hostile or pathological peer cannot flood the process memory.
 MAX_OUTPUT_BYTES = 256 * 1024
 
 CHECK_NAMES = (
@@ -40,17 +47,31 @@ _HOSTNAME_RE = re.compile(
 )
 _FORBIDDEN_ADDRESS_CHARS = set(';|&`$<>"\'\\()\n\r\t ')
 
-_PROTOCOL_RE = re.compile(r"^Protocol version:\s*(\S+)", re.MULTILINE)
-_ALPN_RE = re.compile(r"^ALPN protocol:\s*(\S+)", re.MULTILINE)
-_TEMP_KEY_RE = re.compile(r"^Server Temp Key:\s*(.+?)\s*$", re.MULTILINE)
+# -brief-style labels (kept for manually piped text).
+_PROTOCOL_VERSION_RE = re.compile(r"^Protocol version:\s*(\S+)", re.MULTILINE)
 _PEER_CERT_RE = re.compile(r"^Peer certificate:\s*(.+?)\s*$", re.MULTILINE)
 _VERIFIED_RE = re.compile(r"^Verification:\s*OK\s*$", re.MULTILINE)
-_CN_RE = re.compile(r"\bCN=([^,\s]+)")
+# Full-mode labels.
+_CONNECTED_RE = re.compile(r"^CONNECTED\(", re.MULTILINE)
+_PROTOCOL_RE = re.compile(r"^Protocol:\s*(TLSv\S+)", re.MULTILINE)
+_NEW_SESSION_RE = re.compile(r"^New,\s*([A-Za-z0-9().]+)", re.MULTILINE)
+_SESSION_PROTOCOL_RE = re.compile(r"^\s+Protocol\s*:\s*(TLSv[\w.]+)", re.MULTILINE)
+_ALPN_RE = re.compile(r"^ALPN protocol:\s*(\S+)", re.MULTILINE)
+# OpenSSL >= 3.5 renamed "Server Temp Key" to "Peer Temp Key".
+_TEMP_KEY_RE = re.compile(r"^(?:Server|Peer) Temp Key:\s*(.+?)\s*$", re.MULTILINE)
+_VERIFY_RETURN_RE = re.compile(r"^\s*Verify return code:\s*(\d+)", re.MULTILINE)
+_VERIFIED_PEERNAME_RE = re.compile(r"^Verified peername:\s*(\S+)", re.MULTILINE)
+_SUBJECT_RE = re.compile(r"^subject=(.*)$", re.MULTILINE)
+_CN_RE = re.compile(r"CN\s*=\s*([^,\s/]+)")
+_SAN_DNS_RE = re.compile(r"DNS:([^,\s]+)")
 _RECOGNIZED_LINE_RE = re.compile(
-    r"^(?:Protocol version|Ciphers|Peer certificate|Verification|"
-    r"Server Temp Key|ALPN protocol|CONNECTION ESTABLISHED|CONNECTED|"
-    r"New,|depth|write:errno|read:errno|no peer certificate|handshake|"
-    r"openssl|unknown option|usage)\b",
+    r"^(?:Protocol version|Protocol:|Ciphersuite|Peer certificate|Verification|"
+    r"Verify return code|Verified peername|Server Temp Key|Peer Temp Key|"
+    r"ALPN protocol|No ALPN negotiated|CONNECTION ESTABLISHED|CONNECTED|New,|"
+    r"depth|write:errno|read:errno|no peer certificate|handshake|openssl|"
+    r"unknown option|usage|subject|issuer|Certificate chain|Server certificate|"
+    r"SSL handshake|SSL-Session|Secure Renegotiation|Compression|Expansion|"
+    r"Server public key|No client certificate|Early data|DONE)",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -61,14 +82,18 @@ class InvalidTargetError(ValueError):
 
 @dataclass(frozen=True)
 class TargetObservation:
-    """Facts extracted from one ``s_client -brief`` run (never serialized)."""
+    """Facts extracted from one s_client run (never serialized)."""
 
     reachable: bool
     protocol_version: Optional[str]
     alpn: Optional[str]
     server_temp_key: Optional[str]
+    subject: Optional[str]
     peer_certificate: Optional[str]
     verification_ok: bool
+    verify_return_code: Optional[int]
+    verified_peername: Optional[str]
+    sans: Tuple[str, ...]
     error_code: Optional[str]
 
 
@@ -149,25 +174,37 @@ def build_command(connect_address: str, port: int, server_name: str) -> list:
         endpoint,
         "-servername",
         server_name,
+        # Let openssl itself check the certificate name; the parsed
+        # "Verify return code" then reflects chain AND hostname.
+        "-verify_hostname",
+        server_name,
         "-tls1_3",
         "-alpn",
         "h2",
         "-groups",
         "X25519",
-        "-brief",
     ]
 
 
 def parse_s_client_output(text: str) -> TargetObservation:
-    """Extract the -brief facts; never raise on malformed output."""
-    reachable = "CONNECTION ESTABLISHED" in text
+    """Extract the summary facts; never raise on malformed output."""
+    reachable = "CONNECTION ESTABLISHED" in text or bool(
+        _CONNECTED_RE.search(text)
+    )
+    verify_code = _VERIFY_RETURN_RE.search(text)
     return TargetObservation(
         reachable=reachable,
-        protocol_version=_capture(_PROTOCOL_RE, text),
+        protocol_version=_protocol_version(text),
         alpn=_capture(_ALPN_RE, text),
         server_temp_key=_capture(_TEMP_KEY_RE, text),
+        subject=_capture(_SUBJECT_RE, text),
         peer_certificate=_capture(_PEER_CERT_RE, text),
         verification_ok=bool(_VERIFIED_RE.search(text)),
+        verify_return_code=(
+            int(verify_code.group(1)) if verify_code is not None else None
+        ),
+        verified_peername=_capture(_VERIFIED_PEERNAME_RE, text),
+        sans=tuple(_SAN_DNS_RE.findall(text)),
         error_code=None if reachable else _infer_error_code(text),
     )
 
@@ -207,13 +244,10 @@ def probe_target(
         returncode, output = run(argv, timeout)
     except subprocess.TimeoutExpired:
         elapsed = int((time.monotonic() - started) * 1000)
-        return TargetResult(
-            checks={name: False for name in CHECK_NAMES},
-            elapsed_ms=elapsed,
-            error_code="timeout",
-            address_family=family,
-        )
+        return _failed_result("timeout", elapsed, family)
     elapsed = int((time.monotonic() - started) * 1000)
+    if returncode == 127 and not output.strip():
+        return _failed_result("openssl_unavailable", elapsed, family)
     parsed = evaluate_target(
         parse_s_client_output(output), expected_server_name=server_name
     )
@@ -221,6 +255,15 @@ def probe_target(
         checks=parsed.checks,
         elapsed_ms=elapsed,
         error_code=parsed.error_code,
+        address_family=family,
+    )
+
+
+def _failed_result(error_code: str, elapsed_ms: int, family: str) -> TargetResult:
+    return TargetResult(
+        checks={name: False for name in CHECK_NAMES},
+        elapsed_ms=elapsed_ms,
+        error_code=error_code,
         address_family=family,
     )
 
@@ -248,8 +291,22 @@ def _run_openssl(argv: list, timeout: float) -> Tuple[int, str]:
             out.read(MAX_OUTPUT_BYTES)
             + b"\n"
             + err.read(MAX_OUTPUT_BYTES)
-        )
+        )[:MAX_OUTPUT_BYTES]
     return returncode, combined.decode("utf-8", errors="replace")
+
+
+def _protocol_version(text: str) -> Optional[str]:
+    """Prefer explicit protocol lines over the session-summary token."""
+    for pattern in (
+        _PROTOCOL_VERSION_RE,  # -brief label
+        _PROTOCOL_RE,  # full-mode OpenSSL >= 3.5 label
+        _NEW_SESSION_RE,  # "New, TLSv1.3, Cipher is ..."
+        _SESSION_PROTOCOL_RE,  # SSL-Session block
+    ):
+        captured = _capture(pattern, text)
+        if captured and captured.startswith("TLSv"):
+            return captured
+    return None
 
 
 def _capture(pattern, text):
@@ -280,24 +337,49 @@ def _infer_error_code(text: str) -> Optional[str]:
     return "malformed_output"
 
 
+def _name_matches(name: Optional[str], expected: str) -> bool:
+    if not name:
+        return False
+    candidate = name.strip().rstrip(".").lower()
+    wanted = expected.strip().rstrip(".").lower()
+    if candidate == wanted:
+        return True
+    if candidate.startswith("*."):
+        # A wildcard name covers exactly one extra label.
+        suffix = candidate[1:]
+        return wanted.endswith(suffix) and len(wanted) > len(suffix)
+    return candidate.endswith("." + wanted)
+
+
 def _certificate_name_matches(
     observation: TargetObservation, expected_server_name: str
 ) -> bool:
+    """Hostname decision, strongest evidence first.
+
+    The -verify_hostname result (chain plus hostname) is authoritative;
+    the remaining signals only cover text that lacks it.
+    """
+    if observation.verify_return_code is not None:
+        return observation.verify_return_code == 0
+    if _name_matches(observation.verified_peername, expected_server_name):
+        return True
     if observation.verification_ok:
         return True
-    if not observation.peer_certificate:
-        return False
-    match = _CN_RE.search(observation.peer_certificate)
-    if not match:
-        return False
-    common_name = match.group(1).rstrip(".")
-    expected = expected_server_name.rstrip(".")
-    return common_name == expected or common_name.endswith("." + expected)
+    for san in observation.sans:
+        if _name_matches(san, expected_server_name):
+            return True
+    for line in (observation.subject, observation.peer_certificate):
+        if not line:
+            continue
+        match = _CN_RE.search(line)
+        if match and _name_matches(match.group(1), expected_server_name):
+            return True
+    return False
 
 
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Read-only REALITY dest probe (openssl s_client -brief)."
+        description="Read-only REALITY dest probe (full-mode openssl s_client)."
     )
     parser.add_argument("--connect-address", required=True)
     parser.add_argument("--port", type=int, required=True)

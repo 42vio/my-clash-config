@@ -67,8 +67,11 @@ examples; the real values live only in the private `service.yaml` and in
    only by their matching `users.yaml` entry, and the owner has a
    separate client of their own.
 9. **Verify before use:** run `scripts/check_reality_target.py` before
-   accepting the REALITY target, then `scripts/server_preflight.py`
-   (as root, exit 0 required) before running the project installer.
+   accepting the REALITY target, then
+   `scripts/server_preflight.py --config private/config/service.yaml`
+   (as root, exit 0 required) before running the project installer —
+   a bare invocation defaults to the repository example settings and
+   will always block on the DNS comparison.
 
 ## Redacted verification table
 
