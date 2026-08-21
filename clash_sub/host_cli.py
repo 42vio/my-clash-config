@@ -28,6 +28,13 @@ EXIT_INTERRUPTED = 130
 MANAGER_SERVICE = "manager"
 VALIDATOR_SERVICE = "validator"
 CERTIFICATE_SCRIPT_PATH = Path("scripts") / "check_certificate.py"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+# Pin the compose file absolutely: without ``-f`` Docker Compose would
+# look for compose.yaml in (and resolve ``./private`` binds against) the
+# caller's working directory, so ``clash-sub`` would only work from the
+# repository root.  With ``-f`` the project directory is the file's
+# parent, which also keeps the project name stable across callers.
+COMPOSE_FILE = REPO_ROOT / "compose.yaml"
 
 AIRPORT_PROMPT = "Temporary airport subscription URL: "
 DEFAULT_LOG_LIMIT = 50
@@ -137,11 +144,22 @@ class CommandRunner:
     ) -> Mapping[str, object]:
         try:
             completed = subprocess.run(
-                ["docker", "compose", "run", "--rm", "-T", MANAGER_SERVICE, *arguments],
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    str(COMPOSE_FILE),
+                    "run",
+                    "--rm",
+                    "-T",
+                    MANAGER_SERVICE,
+                    *arguments,
+                ],
                 input=stdin_text,
                 text=True,
                 capture_output=True,
                 check=False,
+                cwd=str(REPO_ROOT),
             )
         except OSError as exc:
             raise ManagerError("manager_unavailable") from exc
@@ -153,6 +171,8 @@ class CommandRunner:
                 [
                     "docker",
                     "compose",
+                    "-f",
+                    str(COMPOSE_FILE),
                     "run",
                     "--rm",
                     "-T",
@@ -164,6 +184,7 @@ class CommandRunner:
                 capture_output=True,
                 text=True,
                 check=False,
+                cwd=str(REPO_ROOT),
             )
         except OSError as exc:
             raise ValidatorError("validator_unavailable") from exc

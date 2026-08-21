@@ -56,6 +56,10 @@ ALERT_DEDUP_SECONDS = 12 * 3600
 STATE_FILE_MODE = 0o600
 DEFAULT_THRESHOLD_SECONDS = 14 * 24 * 3600
 DEFAULT_CONFIG_PATH = ROOT / "private" / "config" / "service.yaml"
+# Host-side default derived from the repository root, mirroring
+# DEFAULT_CONFIG_PATH: settings.private_root is the container-visible
+# /app/private and must never anchor host-side state.
+DEFAULT_STATE_PATH = ROOT / "private" / "state" / "certificate.json"
 
 STATUS_KEYS = (
     "valid",
@@ -362,12 +366,10 @@ def _parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _state_path_for(args, service) -> Path:
+def _state_path_for(args) -> Path:
     if args.state is not None:
         return Path(args.state)
-    if service is not None:
-        return Path(service.private_root) / "state" / "certificate.json"
-    return DEFAULT_CONFIG_PATH.parent / "state" / "certificate.json"
+    return DEFAULT_STATE_PATH
 
 
 def main(argv=None, runner=None) -> int:
@@ -379,7 +381,7 @@ def main(argv=None, runner=None) -> int:
     except RuntimeError:
         service = None
 
-    state_path = _state_path_for(args, service)
+    state_path = _state_path_for(args)
 
     if args.status_only:
         state = load_state(state_path) if (service is not None or args.state is not None) else {}

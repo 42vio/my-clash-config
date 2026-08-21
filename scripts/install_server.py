@@ -497,7 +497,10 @@ def build_actions(context) -> List[Action]:
             )
         )
 
-    private_root = Path(service.private_root)
+    # The bind sources are repository-relative (./private in compose);
+    # settings.private_root is the container-visible /app/private and
+    # must never be provisioned on the host.
+    private_root = ROOT / "private"
     provision = [
         "install",
         "-d",

@@ -471,6 +471,23 @@ class CertificateCliTests(unittest.TestCase):
         self.assertFalse(state["renewal_ok"])
         self.assertEqual(runner.commands, [])
 
+    def test_default_state_path_is_repository_relative_not_container_private_root(self):
+        # settings.private_root is the container-visible /app/private;
+        # the host-side checker must keep its state inside the
+        # repository's private tree (ROOT/private/state), mirroring
+        # DEFAULT_CONFIG_PATH's derivation.
+        args = check_certificate._parse_args([])
+        default_state = check_certificate._state_path_for(args)
+        self.assertEqual(
+            default_state,
+            check_certificate.ROOT / "private" / "state" / "certificate.json",
+        )
+        self.assertEqual(
+            default_state.parent.parent,
+            check_certificate.DEFAULT_CONFIG_PATH.parent.parent,
+        )
+        self.assertNotIn("/app", str(default_state))
+
 
 if __name__ == "__main__":
     unittest.main()

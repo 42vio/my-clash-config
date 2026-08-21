@@ -550,9 +550,15 @@ class InstallerTests(unittest.TestCase):
             argv[1:7], ("-d", "-o", "10001", "-g", "10001", "-m", "700")[:6]
         )
         provisioned = argv[7:]
-        self.assertIn(str((root / "private").resolve()), provisioned)
+        # The bind sources live at <repo>/private on the host; the
+        # settings' private-root is the container-visible /app/private
+        # and must never be provisioned on the host.
+        repo_private = (install_server.ROOT / "private").resolve()
+        self.assertIn(str(repo_private), provisioned)
         for name in ("config", "staging", "releases", "current", "logs", "sources"):
-            self.assertIn(str((root / "private" / name).resolve()), provisioned)
+            self.assertIn(str(repo_private / name), provisioned)
+        self.assertNotIn(str(root / "private"), provisioned)
+        self.assertNotIn("/app/private", " ".join(provisioned))
 
     def test_host_command_symlink_points_at_the_repository(self):
         root = self.empty_root()
@@ -747,6 +753,31 @@ class SystemdUnitTests(unittest.TestCase):
                         executable, "/opt/certbot/bin/certbot", path.name
                     )
         self.assertTrue(checker_seen)
+
+    def test_checker_units_pin_explicit_state_and_config_paths(self):
+        # The checker runs on the host, where the state must live under
+        # /opt/clash-sub/private (the repository's bind source), never
+        # under the container-visible /app/private.  Explicit flags keep
+        # the units self-describing and independent of the script's
+        # default derivation.
+        state_flag = "--state /opt/clash-sub/private/state/certificate.json"
+        for path in sorted((ROOT / "deploy" / "systemd").glob("*.service")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if not stripped.startswith(("ExecStart=", "ExecStartPost=")):
+                    continue
+                command = stripped.split("=", 1)[1]
+                command = command[1:] if command.startswith("-") else command
+                if "check_certificate.py" not in command:
+                    continue
+                self.assertIn(state_flag, command, path.name)
+                self.assertNotIn("/app", command, path.name)
+                if "--status-only" not in command and "--mark-renewal" not in command:
+                    self.assertIn(
+                        "--config /opt/clash-sub/private/config/service.yaml",
+                        command,
+                        path.name,
+                    )
 
     def test_units_never_refresh_subscriptions_or_run_containers(self):
         exec_lines = []

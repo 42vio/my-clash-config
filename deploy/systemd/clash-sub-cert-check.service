@@ -5,4 +5,7 @@ Description=Check certificate health and send alerts
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 /opt/clash-sub/scripts/check_certificate.py
+# Explicit host-side paths keep the unit self-describing: the state
+# lives in the repository's private tree, never under the
+# container-visible /app/private.
+ExecStart=/usr/bin/python3 /opt/clash-sub/scripts/check_certificate.py --config /opt/clash-sub/private/config/service.yaml --state /opt/clash-sub/private/state/certificate.json

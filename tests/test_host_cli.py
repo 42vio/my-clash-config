@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from clash_sub.host_cli import (
+    COMPOSE_FILE,
     EXIT_FAILURE,
     EXIT_INTERRUPTED,
     EXIT_OK,
@@ -635,7 +636,17 @@ class CommandRunnerTests(unittest.TestCase):
         self.assertEqual(payload, {"users": {}})
         self.assertEqual(
             captured["command"],
-            ["docker", "compose", "run", "--rm", "-T", "manager", "status"],
+            [
+                "docker",
+                "compose",
+                "-f",
+                str(COMPOSE_FILE),
+                "run",
+                "--rm",
+                "-T",
+                "manager",
+                "status",
+            ],
         )
         self.assertTrue(captured["kwargs"]["capture_output"])
         self.assertFalse(captured["kwargs"]["check"])
@@ -652,6 +663,39 @@ class CommandRunnerTests(unittest.TestCase):
 
         self.assertEqual(captured["kwargs"]["input"], "https://airport.example/x\n")
         self.assertTrue(captured["kwargs"]["text"])
+
+    def test_compose_invocations_pin_the_repo_compose_file_regardless_of_cwd(self):
+        # Docker Compose locates compose.yaml (and resolves relative bind
+        # mounts like ./private) from the caller's working directory when
+        # no -f is given, so `clash-sub status` from $HOME would target a
+        # different project or fail outright.  Both runner methods must
+        # pass the repository's compose file explicitly and run from the
+        # repository root.
+        import os
+
+        repository_root = Path(__file__).resolve().parents[1]
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured.setdefault("calls", []).append((command, kwargs))
+            return self.completed(stdout='{"users": {}}\n')
+
+        with patch("clash_sub.host_cli.subprocess.run", side_effect=fake_run):
+            with TemporaryDirectory() as elsewhere:
+                previous = os.getcwd()
+                os.chdir(elsewhere)
+                try:
+                    CommandRunner().manager(["status"])
+                    CommandRunner().validate(Path("/staging/op/owner/balanced.yaml"))
+                finally:
+                    os.chdir(previous)
+
+        self.assertEqual(len(captured["calls"]), 2)
+        for command, kwargs in captured["calls"]:
+            self.assertEqual(command[command.index("-f") + 1], str(COMPOSE_FILE))
+            self.assertEqual(kwargs.get("cwd"), str(repository_root))
+        self.assertTrue(COMPOSE_FILE.is_file(), str(COMPOSE_FILE))
+        self.assertEqual(COMPOSE_FILE, (repository_root / "compose.yaml").resolve())
 
     def test_parse_manager_result_rejects_malformed_json(self):
         with self.assertRaises(ManagerError) as context:
@@ -711,6 +755,8 @@ class CommandRunnerTests(unittest.TestCase):
             [
                 "docker",
                 "compose",
+                "-f",
+                str(COMPOSE_FILE),
                 "run",
                 "--rm",
                 "-T",
