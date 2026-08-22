@@ -720,6 +720,7 @@ git commit -m "feat: add native lightweight deployment assets"
 - Delete: `clash_sub/settings.py`
 - Delete: `clash_sub/traffic.py`
 - Delete: `clash_sub/validation.py`
+- Modify: `clash_sub/generator.py`
 - Replace: `clash_sub/__init__.py`
 - Delete: `templates/variants/balanced-win.yaml`
 - Delete: `scripts/check_certificate.py`
@@ -735,6 +736,7 @@ git commit -m "feat: add native lightweight deployment assets"
 - Delete: legacy `tests/test_*.py` files not named `test_lightweight_*`, `test_repository_safety.py`, `test_secret_scan.py`, or `test_reality_target.py`
 - Modify: `tests/test_repository_safety.py`
 - Modify: `tests/test_secret_scan.py`
+- Modify: `tests/test_lightweight_cli.py`
 
 **Interfaces:**
 - Consumes: the fully passing replacement path from Tasks 1–10.
