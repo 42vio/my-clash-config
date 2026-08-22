@@ -1,4 +1,5 @@
 import base64
+import contextlib
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +26,8 @@ class FakeStore:
         self.releases = {}
         self.prepared = []
         self.pruned = []
+        self.discarded = []
+        self.marked = []
         self.counter = 0
 
     def prepare(self, client_id, bundle, input_hashes):
@@ -49,7 +52,15 @@ class FakeStore:
         return tuple(reversed(self.releases.get(client_id, ())))
 
     def mark_current(self, client_id, release_id):
+        self.marked.append((client_id, release_id))
+
+    def current_artifact(self, client_id, release_id):
         self.verify_release(client_id, release_id)
+        return Path("/private/current/%s" % client_id), (release_id + "\n").encode(), 0o600
+
+    def discard_unreferenced(self, client_id, release_id):
+        self.discarded.append((client_id, release_id))
+        self.releases[client_id] = [item for item in self.releases[client_id] if item.release_id != release_id]
 
     def prune(self, client_id, keep=5):
         self.pruned.append(client_id)
@@ -102,6 +113,7 @@ class ServiceTests(unittest.TestCase):
             runner=lambda *args, **kwargs: None,
             snapshot_encoder=lambda proxies: ("snapshot:%s" % proxies[0]["name"]).encode(),
             state_sink=lambda state: setattr(self, "state", state),
+            lock_factory=lambda _: contextlib.nullcontext(),
         )
 
     def _reconcile(self, previous, clients, owner_email):
@@ -146,12 +158,74 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.state.users[7].current_release, self.store.prepared[0][1].release_id)
         self.assertEqual(tuple(self.store.prepared[0][1].public_paths), ("balanced", "standard", "privacy"))
         self.assertTrue(all("token" not in repr(item) for item in result["updated"]))
+        self.assertEqual(self.store.marked, [])
+        self.assertEqual(len(self.activator.calls[0][2]), 2)
+
+    def test_sync_retries_rendered_output_after_failed_activation_and_discards_candidates(self):
+        self.activator.fail = True
+        with self.assertRaises(ServiceError):
+            self.service.sync_all()
+        self.assertEqual(self.store.history(7), ())
+        self.assertEqual(self.store.history(8), ())
+        self.assertEqual(len(self.store.discarded), 2)
+        self.activator.fail = False
+        self.service.sync_all()
+        self.assertEqual(len(self.mihomo_calls), 8)
+
+    def test_traffic_uses_existing_state_without_reconciliation_or_minting(self):
+        self.service.sync_all()
+        self.clients.append(client(9, "new@example.test"))
+        self.service._reconcile_state = lambda *args: (_ for _ in ()).throw(AssertionError("no reconcile"))
+        self.service.traffic_update()
+        self.assertNotIn(9, self.state.users)
+
+    def test_links_and_rotation_reject_release_less_or_inactive_users(self):
+        self.service.sync_all()
+        users = dict(self.state.users)
+        users[9] = UserState(9, "pending@example.test", token(b"p", "PQRSTU"), "PQRSTU", True, None)
+        self.state = RuntimeState(1, 7, users)
+        self.assertNotIn(9, [item["client_id"] for item in self.service.links()])
+        with self.assertRaises(ServiceError) as caught:
+            self.service.rotate_link(9)
+        self.assertEqual(caught.exception.code, "rotation_not_allowed")
+
+    def test_status_and_history_are_deterministically_sorted_without_secrets(self):
+        self.service.sync_all()
+        users = dict(self.state.users)
+        users[3] = replace(users[8], client_id=3, email="inactive@example.test", active=False)
+        del users[8]
+        self.state = RuntimeState(1, 7, users)
+        self.assertEqual([item["client_id"] for item in self.service.status()["users"]], [3, 7, 8])
+        self.assertNotIn("token", repr(self.service.status()))
+
+    def test_render_validation_receives_tokens_loopback_subid_and_airport_url(self):
+        seen = []
+        self.service._validate = lambda text, values: seen.extend(values)
+        self.service.update_airport("https://airport.example/transient")
+        self.assertIn(self.state.users[7].token, seen)
+        self.assertIn("sub-7", seen)
+        self.assertIn("https://airport.example/transient", seen)
+
+    def test_busy_lock_blocks_mutation_without_state_change(self):
+        before = self.state
+        self.service._lock_factory = lambda _: (_ for _ in ()).throw(ServiceError("operation_busy"))
+        with self.assertRaises(ServiceError) as caught:
+            self.service.sync_all()
+        self.assertEqual(caught.exception.code, "operation_busy")
+        self.assertEqual(self.state, before)
+
+    def test_observer_and_prune_failures_are_sanitized_after_activation(self):
+        self.service._sink = lambda _: (_ for _ in ()).throw(RuntimeError("secret"))
+        self.store.prune = lambda _: (_ for _ in ()).throw(RuntimeError("secret"))
+        result = self.service.sync_all()
+        self.assertEqual({item["code"] for item in result["errors"]}, {"release_cleanup_failed"})
+        self.assertNotIn("secret", repr(result))
 
     def test_unchanged_sync_updates_routes_without_render_or_mihomo(self):
         self.service.sync_all()
         self.generator_calls.clear(); self.mihomo_calls.clear(); self.store.prepared.clear()
         self.service.sync_all()
-        self.assertEqual(self.generator_calls, [])
+        self.assertEqual(self.generator_calls, [True, False])
         self.assertEqual(self.mihomo_calls, [])
         self.assertEqual(self.store.prepared, [])
         self.assertEqual(len(self.activator.calls), 2)
@@ -177,7 +251,6 @@ class ServiceTests(unittest.TestCase):
     def test_owner_failure_keeps_all_old_owner_variants(self):
         self.service.sync_all()
         old = self.state.users[7].current_release
-        self.service._input_cache.pop(7)
         self.fail_owner_render = True
         result = self.service.sync_all()
         self.assertEqual(self.state.users[7].current_release, old)
