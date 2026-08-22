@@ -29,13 +29,24 @@ dns:
   default-nameserver:
   - 223.5.5.5
   - 119.29.29.29
+  respect-rules: true
   nameserver:
-  - https://223.5.5.5/dns-query
-  - https://doh.pub/dns-query
+  - https://1.1.1.1/dns-query
+  - https://8.8.8.8/dns-query
   nameserver-policy:
+    geosite:private,cn:
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
     +.hitrontech.com:
     - 172.28.30.211
     - 172.28.30.210
+  proxy-server-nameserver:
+  - https://223.5.5.5/dns-query
+  - https://doh.pub/dns-query
+  direct-nameserver:
+  - https://223.5.5.5/dns-query
+  - https://doh.pub/dns-query
+  direct-nameserver-follow-policy: true
 proxy-groups:
 - type: select
   proxies:
@@ -55,17 +66,6 @@ proxy-groups:
   exclude-filter: 流量|到期|剩余|官网|过期
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png
   include-all: true
-- type: fallback
-  name: HomeServer
-  proxies:
-  - 🎯 Direct
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Back.png
-- type: select
-  name: ProxyServer
-  proxies:
-  - 🎯 Direct
-  - HomeServer
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/SSID.png
 - type: select
   proxies: &id001
   - 🎯 Direct
@@ -81,22 +81,25 @@ proxy-groups:
   name: Steam
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png
 - type: select
-  proxies: &id002
+  proxies:
   - 🎯 Direct
   - 加速线路
-  - ProxyServer
   name: BiliBili
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/bilibili.png
 - type: select
-  proxies: *id002
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: PT站加速
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Media.png
 - type: select
-  proxies: *id002
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: 国内流媒体
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png
 - type: select
-  proxies: &id003
+  proxies: &id002
   - 加速线路
   - 🎯 Direct
   name: 国外流媒体
@@ -120,7 +123,7 @@ proxy-groups:
   name: 测速工具
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Speedtest.png
 - type: select
-  proxies: *id003
+  proxies: *id002
   name: 国外网站
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Google_Search.png
 - type: select
@@ -131,7 +134,7 @@ proxy-groups:
   - 加速线路
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Advertising.png
 - type: select
-  proxies: *id003
+  proxies: *id002
   name: 🐟 Final
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png
 - type: select
@@ -180,7 +183,6 @@ proxy-groups:
   hidden: true
   include-all: true
 rules:
-- IP-CIDR,192.168.2.0/24,HomeServer,no-resolve
 - IP-CIDR,199.19.110.145/32,🎯 Direct,no-resolve
 - DOMAIN-SUFFIX,kfcv50.shop,🎯 Direct
 - DOMAIN-SUFFIX,420615.xyz,🎯 Direct
@@ -212,5 +214,5 @@ rules:
 - GEOSITE,category-speedtest,测速工具
 - RULE-SET,Global,国外网站,no-resolve
 - RULE-SET,China,🎯 Direct,no-resolve
-- GEOIP,CN,🎯 Direct,no-resolve
+- GEOIP,CN,🎯 Direct
 - MATCH,🐟 Final

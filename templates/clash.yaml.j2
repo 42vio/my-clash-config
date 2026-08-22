@@ -18,68 +18,6 @@ profile:
 
 {{ VARIANT_DNS_ROOT_YAML }}
 
-p:
-  type: http
-  interval: 86400
-  health-check:
-    enable: true
-    url: http://www.gstatic.com/generate_204
-    interval: 1800
-
-auto:
-  type: url-test
-  url: http://www.google.com/generate_204
-  interval: 1800
-  tolerance: 50
-  use:
-  - Subscribe
-
-sel:
-  type: select
-
-fall:
-  type: fallback
-
-usel:
-  type: select
-  use:
-  - Subscribe
-
-a3:
-  type: select
-  proxies:
-  - 自动选择
-  - 🏴‍☠️ 自建节点
-  - 🇭🇰 香港节点
-  - 🇯🇵 日本节点
-  - 🇺🇲 美国节点
-  - 🇨🇳 台湾节点
-  - 🇸🇬 新加坡节点
-
-g1:
-  type: select
-  proxies:
-  - 🎯 Direct
-  - 加速线路
-
-g2:
-  type: select
-  proxies:
-  - 🎯 Direct
-  - 加速线路
-  - ProxyServer
-
-g3:
-  type: select
-  proxies:
-  - 加速线路
-  - 🎯 Direct
-
-c:
-  type: http
-  behavior: classical
-  interval: 86400
-
 {{ PROXIES_ROOT_YAML }}
 
 {{ VARIANT_PROXY_GROUPS_ROOT_YAML }}

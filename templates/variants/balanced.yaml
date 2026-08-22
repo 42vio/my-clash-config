@@ -1,8 +1,6 @@
 _generator:
   inject-node-groups:
   - 加速线路
-  - HomeServer
-  - ProxyServer
   - AI服务
 dns:
   enable: true
