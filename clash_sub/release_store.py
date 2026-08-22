@@ -26,6 +26,7 @@ _MANIFEST_FIELDS = frozenset(
     )
 )
 _MEMBER_VARIANTS = ("standard",)
+_PUBLIC_DIRECTORY_MODE = 0o2750
 
 
 class ReleaseStoreError(RuntimeError):
@@ -72,9 +73,16 @@ class ReleaseStore:
         try:
             private_staging_root = _private_directory(self._private_root, "staging")
             private_stage = _new_directory(private_staging_root, release_id, 0o700)
-            public_releases = _public_directory(self._public_root, "releases")
-            public_client_root = _new_or_existing_directory(public_releases, client_name, 0o750)
-            public_stage = _new_directory(public_client_root, ".%s.tmp" % release_id, 0o750)
+            public_gid = _require_public_root(self._public_root)
+            public_releases = _new_or_existing_public_directory(
+                self._public_root, "releases", public_gid
+            )
+            public_client_root = _new_or_existing_public_directory(
+                public_releases, client_name, public_gid
+            )
+            public_stage = _new_public_directory(
+                public_client_root, ".%s.tmp" % release_id, public_gid
+            )
             manifest = {
                 "schema_version": 1,
                 "client_id": client_id,
@@ -99,6 +107,7 @@ class ReleaseStore:
                 0o600,
             )
 
+            _verify_public_staging(public_stage, variants, public_gid)
             _verify_staged_release(private_stage, public_stage, manifest)
             public_target = public_client_root / release_id
             if public_target.exists() or public_target.is_symlink():
@@ -127,7 +136,7 @@ class ReleaseStore:
         private_release = _existing_private_release_directory(
             self._private_root, "releases", client_name, release_id
         )
-        public_release = _existing_release_directory(
+        public_release, public_gid = _existing_public_release_directory(
             self._public_root, "releases", client_name, release_id
         )
         manifest_path = private_release / "manifest.json"
@@ -144,6 +153,8 @@ class ReleaseStore:
             _require_regular_file(private_file, "release")
             _require_regular_file(public_file, "release")
             if stat_mode(private_file) != 0o600 or stat_mode(public_file) != 0o640:
+                raise ReleaseStoreError("release permissions are invalid")
+            if public_file.stat().st_gid != public_gid:
                 raise ReleaseStoreError("release permissions are invalid")
             expected_hash = output_hashes[variant]
             if _sha256(private_file.read_bytes()) != expected_hash:
@@ -306,11 +317,6 @@ def _private_directory(root: Path, name: str) -> Path:
     return _new_or_existing_directory(base, name, 0o700)
 
 
-def _public_directory(root: Path, name: str) -> Path:
-    base = _new_or_existing_directory(root, None, 0o750)
-    return _new_or_existing_directory(base, name, 0o750)
-
-
 def _new_or_existing_directory(root: Path, name: str | None, mode: int) -> Path:
     path = root if name is None else root / name
     if path.exists() or path.is_symlink():
@@ -340,15 +346,58 @@ def _new_directory(root: Path, name: str, mode: int) -> Path:
     return path
 
 
-def _existing_release_directory(root: Path, *parts: str) -> Path:
+def _require_public_root(root: Path) -> int:
     if root.is_symlink() or not root.is_dir():
-        raise ReleaseStoreError("release path is invalid")
+        raise ReleaseStoreError("public release path is invalid")
+    if directory_mode(root) != _PUBLIC_DIRECTORY_MODE:
+        raise ReleaseStoreError("public release permissions are invalid")
+    return root.stat().st_gid
+
+
+def _new_or_existing_public_directory(root: Path, name: str, public_gid: int) -> Path:
+    path = root / name
+    if path.exists() or path.is_symlink():
+        _require_public_directory(path, public_gid)
+        return path
+    try:
+        path.mkdir(mode=_PUBLIC_DIRECTORY_MODE)
+        os.chmod(path, _PUBLIC_DIRECTORY_MODE)
+    except OSError as exc:
+        raise ReleaseStoreError("public release path is invalid") from exc
+    _require_public_directory(path, public_gid)
+    return path
+
+
+def _new_public_directory(root: Path, name: str, public_gid: int) -> Path:
+    path = root / name
+    if path.exists() or path.is_symlink():
+        raise ReleaseStoreError("public release path is invalid")
+    try:
+        path.mkdir(mode=_PUBLIC_DIRECTORY_MODE)
+        os.chmod(path, _PUBLIC_DIRECTORY_MODE)
+    except OSError as exc:
+        raise ReleaseStoreError("public release path is invalid") from exc
+    _require_public_directory(path, public_gid)
+    return path
+
+
+def _existing_public_release_directory(root: Path, *parts: str) -> tuple[Path, int]:
+    public_gid = _require_public_root(root)
     path = root
     for part in parts:
         path = path / part
-        if path.is_symlink() or not path.is_dir():
-            raise ReleaseStoreError("release path is invalid")
-    return path
+        _require_public_directory(path, public_gid)
+    return path, public_gid
+
+
+def _require_public_directory(path: Path, public_gid: int) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise ReleaseStoreError("public release path is invalid")
+    path_stat = path.stat()
+    if directory_mode(path) != _PUBLIC_DIRECTORY_MODE:
+        raise ReleaseStoreError("public release permissions are invalid")
+    if path_stat.st_gid != public_gid:
+        raise ReleaseStoreError("public release group is invalid")
 
 
 def _existing_private_release_directory(root: Path, *parts: str) -> Path:
@@ -377,6 +426,15 @@ def _write_file(path: Path, contents: bytes, mode: int) -> None:
         os.chmod(path, mode)
         handle.write(contents)
     os.chmod(path, mode)
+
+
+def _verify_public_staging(public_stage: Path, variants: tuple[str, ...], public_gid: int) -> None:
+    _require_public_directory(public_stage, public_gid)
+    for variant in variants:
+        public_file = public_stage / _filename(variant)
+        _require_regular_file(public_file, "release")
+        if stat_mode(public_file) != 0o600 or public_file.stat().st_gid != public_gid:
+            raise ReleaseStoreError("release permissions are invalid")
 
 
 def _verify_staged_release(private_stage: Path, public_stage: Path, manifest: Mapping[str, object]) -> None:
@@ -450,6 +508,10 @@ def _directory_names(path: Path) -> set[str]:
 
 def stat_mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
+
+
+def directory_mode(path: Path) -> int:
+    return path.stat().st_mode & 0o7777
 
 
 def _remove_owned_path(path: Path) -> None:

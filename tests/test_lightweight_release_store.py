@@ -28,6 +28,9 @@ class ReleaseStoreTests(unittest.TestCase):
         root = Path(self.tempdir.name)
         self.private_root = root / "private"
         self.public_root = root / "public"
+        self.public_root.mkdir()
+        os.chown(self.public_root, -1, os.getegid())
+        os.chmod(self.public_root, 0o2750)
         self.now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
         self.suffixes = iter(
             (
@@ -140,11 +143,16 @@ class ReleaseStoreTests(unittest.TestCase):
 
     def test_public_yaml_stays_private_through_staged_hash_verification_then_releases_group_readable(self):
         observed_modes = []
+        observed_groups = []
         real_verify = release_store_module._verify_staged_release
 
         def verify_with_mode_probe(private_stage, public_stage, manifest):
             observed_modes.extend(
                 stat.S_IMODE((public_stage / ("clash-%s.yaml" % variant)).stat().st_mode)
+                for variant in manifest["variants"]
+            )
+            observed_groups.extend(
+                (public_stage / ("clash-%s.yaml" % variant)).stat().st_gid
                 for variant in manifest["variants"]
             )
             return real_verify(private_stage, public_stage, manifest)
@@ -156,7 +164,60 @@ class ReleaseStoreTests(unittest.TestCase):
             release = self.prepare_member()
 
         self.assertEqual(observed_modes, [0o600])
+        self.assertEqual(observed_groups, [self.public_root.stat().st_gid])
         self.assertEqual(stat.S_IMODE(release.public_paths["standard"].stat().st_mode), 0o640)
+
+    def test_public_release_descendants_preserve_nginx_group_and_setgid_access(self):
+        release = self.prepare_member()
+        release_root = release.public_paths["standard"].parent
+        directories = (
+            self.public_root,
+            self.public_root / "releases",
+            release_root.parent,
+            release_root,
+        )
+        public_gid = self.public_root.stat().st_gid
+
+        self.assertEqual(
+            tuple(stat.S_IMODE(path.stat().st_mode) for path in directories),
+            (0o2750, 0o2750, 0o2750, 0o2750),
+        )
+        self.assertEqual(tuple(path.stat().st_gid for path in directories), (public_gid,) * 4)
+        self.assertEqual(release.public_paths["standard"].stat().st_gid, public_gid)
+        self.assertEqual(stat.S_IMODE(release.public_paths["standard"].stat().st_mode), 0o640)
+
+    def test_verify_release_rejects_public_ancestors_without_setgid_group_access(self):
+        release = self.prepare_member()
+        release_root = release.public_paths["standard"].parent
+        directories = (
+            self.public_root,
+            self.public_root / "releases",
+            release_root.parent,
+            release_root,
+        )
+
+        for path in directories:
+            with self.subTest(path=path.name):
+                os.chmod(path, 0o750)
+                with self.assertRaises(ReleaseStoreError):
+                    self.store.verify_release(7, release.release_id)
+                os.chmod(path, 0o2750)
+
+    def test_verify_release_rejects_public_ancestor_with_different_group(self):
+        release = self.prepare_member()
+        client_root = release.public_paths["standard"].parent.parent
+        public_gid = self.public_root.stat().st_gid
+        alternate_gid = next((gid for gid in os.getgroups() if gid != public_gid), None)
+        if alternate_gid is None:
+            self.skipTest("no alternate supplementary group available")
+        try:
+            os.chown(client_root, -1, alternate_gid)
+            os.chmod(client_root, 0o2750)
+        except PermissionError:
+            self.skipTest("cannot change test directory group")
+
+        with self.assertRaises(ReleaseStoreError):
+            self.store.verify_release(7, release.release_id)
 
     def test_identical_bundle_returns_no_new_release_when_current_output_hashes_match(self):
         first = self.prepare_member()
@@ -265,7 +326,16 @@ class ReleaseStoreTests(unittest.TestCase):
         self.assertEqual(self.store.verify_release(7, current).public_paths, first.public_paths)
 
     def test_prepare_cleans_private_candidate_when_public_root_setup_fails(self):
+        self.public_root.rmdir()
         self.public_root.write_text("not a directory\n", encoding="utf-8")
+
+        with self.assertRaises(ReleaseStoreError):
+            self.prepare_member()
+
+        self.assert_no_uncommitted_candidates()
+
+    def test_prepare_requires_deployment_created_public_root(self):
+        self.public_root.rmdir()
 
         with self.assertRaises(ReleaseStoreError):
             self.prepare_member()
