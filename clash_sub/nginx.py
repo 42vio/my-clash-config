@@ -12,6 +12,7 @@ from clash_sub.state import TOKEN_RE, _state_to_payload
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
 _ROUTE_MODE = 0o640
 _PRIVATE_MODE = 0o600
+_UNSAFE_PATH_CHARACTERS = frozenset(" \t\r\n;{}'\\\"")
 _TITLES = {
     "balanced": ("Clash Balanced", "Clash-Balanced.yaml"),
     "standard": ("Clash Standard", "Clash-Standard.yaml"),
@@ -24,7 +25,7 @@ class NginxError(RuntimeError):
 
 
 def render_routes(config, state, clients):
-    checked_config = _validate_config(config)
+    checked_config, _, public_root, _ = _validate_config(config)
     _validate_state(state)
     clients_by_id = _validated_clients(clients)
     blocks = []
@@ -37,25 +38,25 @@ def render_routes(config, state, clients):
         variants = OWNER_VARIANTS if client_id == state.owner_client_id else MEMBER_VARIANTS
         traffic = _userinfo(client)
         for variant in variants:
-            alias = _release_path(checked_config.public_root, client_id, release_id, variant)
+            alias = _release_path(public_root, client_id, release_id, variant)
             blocks.append(_route_block(user.token, variant, alias, traffic))
     return "\n".join(blocks) + ("\n" if blocks else "")
 
 
 def activate_runtime(config, state, routes, runner, extra_replacements=()):
-    checked_config = _validate_config(config)
+    checked_config, private_root, _, routes_path = _validate_config(config)
     _validate_state(state)
     if not isinstance(routes, str) or "\x00" in routes:
         raise NginxError("invalid routes")
     if not callable(runner):
         raise NginxError("invalid command runner")
 
-    state_path = checked_config.private_root / "state.json"
+    state_path = private_root / "state.json"
     artifacts = [
         (state_path, _state_bytes(state), _PRIVATE_MODE),
-        (checked_config.nginx_routes, routes.encode("utf-8"), _ROUTE_MODE),
+        (routes_path, routes.encode("utf-8"), _ROUTE_MODE),
     ]
-    artifacts.extend(_extra_artifacts(extra_replacements, checked_config.private_root))
+    artifacts.extend(_extra_artifacts(extra_replacements, private_root))
     _validate_artifacts(artifacts)
     snapshots = [(path, _snapshot(path)) for path, _, _ in artifacts]
     candidates = []
@@ -76,14 +77,16 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
         if not _command_ok(runner, (str(checked_config.systemctl_binary), "reload", "nginx")):
             if not _restore(snapshots):
                 raise NginxError("Nginx activation rollback failed")
-            _command_ok(runner, (str(checked_config.nginx_binary), "-t"))
-            _command_ok(runner, (str(checked_config.systemctl_binary), "reload", "nginx"))
+            if not _command_ok(runner, (str(checked_config.nginx_binary), "-t")):
+                raise NginxError("Nginx activation rollback failed")
+            if not _command_ok(runner, (str(checked_config.systemctl_binary), "reload", "nginx")):
+                raise NginxError("Nginx activation rollback failed")
             raise NginxError("Nginx reload failed")
     except NginxError:
         raise
     except Exception:
-        if changed:
-            _restore(snapshots)
+        if changed and not _restore(snapshots):
+            raise NginxError("Nginx activation rollback failed") from None
         raise NginxError("Nginx activation failed") from None
     finally:
         for _, candidate in candidates:
@@ -93,15 +96,16 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
 def _validate_config(config):
     if not isinstance(config, ServiceConfig):
         raise NginxError("invalid service configuration")
-    private_root = _directory(config.private_root, private=True)
-    routes = _target(config.nginx_routes)
-    _directory(routes.parent, private=False)
-    for binary in (config.nginx_binary, config.systemctl_binary):
-        if not isinstance(binary, Path) or not binary.is_absolute() or binary.name in {"", ".", ".."}:
-            raise NginxError("invalid service configuration")
-    if config.public_root.is_symlink() or not config.public_root.is_absolute():
+    try:
+        private_root = _directory(config.private_root, private=True)
+        public_root = _directory(config.public_root, private=False)
+        routes = _target(config.nginx_routes)
+        _directory(routes.parent, private=False)
+        for binary in (config.nginx_binary, config.systemctl_binary):
+            _safe_path(binary, require_exists=False)
+    except NginxError:
         raise NginxError("invalid service configuration")
-    return config
+    return config, private_root, public_root, routes
 
 
 def _validate_state(state):
@@ -179,17 +183,17 @@ def _route_block(token, variant, alias, userinfo):
     return "\n".join(
         (
             "location = /s/%s/clash-%s.yaml {" % (token, variant),
+            '    if ($request_method !~ ^(GET|HEAD)$) { return 404; }',
             '    if ($args != "") { return 404; }',
             "    limit_req zone=clash_subscription burst=5 nodelay;",
             "    client_max_body_size 1k;",
-            "    limit_except GET HEAD { deny all; }",
             "    access_log off;",
             "    log_not_found off;",
             '    default_type "text/yaml; charset=utf-8";',
             "    alias %s;" % alias,
-            '    add_header Profile-Title "%s" always;' % title,
-            "    add_header Content-Disposition 'attachment; filename=\"%s\"' always;" % filename,
-            '    add_header Subscription-Userinfo "%s" always;' % userinfo,
+            '    add_header Profile-Title "%s";' % title,
+            "    add_header Content-Disposition 'attachment; filename=\"%s\"';" % filename,
+            '    add_header Subscription-Userinfo "%s";' % userinfo,
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",
             "}",
@@ -214,14 +218,18 @@ def _extra_artifacts(replacements, private_root):
             raise NginxError("invalid extra replacements")
         path, contents = entry[:2]
         mode = entry[2] if len(entry) == 3 else _PRIVATE_MODE
-        path = _target(path)
         try:
-            path.relative_to(private_root)
-        except ValueError:
+            path = _target(path)
+        except NginxError:
+            raise NginxError("invalid extra replacements") from None
+        try:
+            canonical_path = path.resolve(strict=False)
+            canonical_path.relative_to(private_root)
+        except (OSError, ValueError):
             raise NginxError("invalid extra replacements") from None
         if not isinstance(contents, bytes) or not contents or isinstance(mode, bool) or mode != _PRIVATE_MODE:
             raise NginxError("invalid extra replacements")
-        artifacts.append((path, contents, mode))
+        artifacts.append((canonical_path, contents, mode))
     return artifacts
 
 
@@ -238,8 +246,8 @@ def _validate_artifacts(artifacts):
 
 
 def _directory(value, private):
-    path = Path(value)
-    if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+    path = _safe_path(value, require_exists=True)
+    if not path.is_dir():
         raise NginxError("invalid service path")
     if private and _mode(path) != 0o700:
         raise NginxError("invalid service path")
@@ -247,12 +255,31 @@ def _directory(value, private):
 
 
 def _target(value):
-    path = Path(value)
-    if not path.is_absolute() or path.name in {"", ".", ".."} or path.is_symlink():
-        raise NginxError("invalid service path")
+    path = _safe_path(value, require_exists=False)
     if path.exists() and not path.is_file():
         raise NginxError("invalid service path")
     return path
+
+
+def _safe_path(value, *, require_exists):
+    try:
+        raw = os.fspath(value)
+    except TypeError:
+        raise NginxError("invalid service path") from None
+    if not isinstance(raw, str) or not raw or any(character in _UNSAFE_PATH_CHARACTERS for character in raw):
+        raise NginxError("invalid service path")
+    path = Path(raw)
+    if not path.is_absolute() or any(part == ".." for part in path.parts):
+        raise NginxError("invalid service path")
+    ancestor = Path(path.anchor)
+    for part in path.parts[1:]:
+        ancestor = ancestor / part
+        if ancestor.is_symlink():
+            raise NginxError("invalid service path")
+    try:
+        return path.resolve(strict=require_exists)
+    except OSError:
+        raise NginxError("invalid service path") from None
 
 
 def _snapshot(path):

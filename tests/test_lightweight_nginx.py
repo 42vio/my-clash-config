@@ -4,10 +4,13 @@ import stat
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from clash_sub.domain import RuntimeState, ServiceConfig, UserState, XuiClient
 from clash_sub.state import load_state, save_state
+import clash_sub.nginx as nginx_module
 
 try:
     from clash_sub.nginx import NginxError, activate_runtime, render_routes
@@ -34,7 +37,7 @@ class FakeRunner:
 class LightweightNginxTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
-        root = Path(self.tempdir.name)
+        root = Path(self.tempdir.name).resolve()
         self.private_root = root / "private"
         self.private_root.mkdir(mode=0o700)
         self.public_root = root / "public"
@@ -97,13 +100,17 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertNotIn(self.member.email, text)
         self.assertNotIn(self.disabled.email, text)
         self.assertIn("alias %s;" % (self.public_root / "releases" / "8" / self.state.users[8].current_release / "clash-standard.yaml"), text)
-        self.assertIn('add_header Profile-Title "Clash Standard" always;', text)
-        self.assertIn("add_header Content-Disposition 'attachment; filename=\"Clash-Standard.yaml\"' always;", text)
-        self.assertIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8" always;', text)
+        self.assertIn('if ($request_method !~ ^(GET|HEAD)$) { return 404; }', text)
+        self.assertIn('add_header Profile-Title "Clash Standard";', text)
+        self.assertIn("add_header Content-Disposition 'attachment; filename=\"Clash-Standard.yaml\"';", text)
+        self.assertIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8";', text)
+        self.assertNotIn('add_header Profile-Title "Clash Standard" always;', text)
+        self.assertNotIn("add_header Content-Disposition 'attachment; filename=\"Clash-Standard.yaml\"' always;", text)
+        self.assertNotIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8" always;', text)
         self.assertIn('if ($args != "") { return 404; }', text)
         self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", text)
         self.assertIn("client_max_body_size 1k;", text)
-        self.assertIn("limit_except GET HEAD { deny all; }", text)
+        self.assertNotIn("limit_except GET HEAD", text)
         self.assertIn("access_log off;", text)
         self.assertIn("log_not_found off;", text)
         self.assertIn('default_type "text/yaml; charset=utf-8";', text)
@@ -120,6 +127,27 @@ class LightweightNginxTests(unittest.TestCase):
         with self.assertRaisesRegex(NginxError, "release path") as error:
             render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
 
+        self.assertNotIn(self.member_token, str(error.exception))
+
+    def test_routes_reject_public_alias_metacharacters_or_symlinked_ancestors(self):
+        self.assertIsNotNone(render_routes, "Nginx routes are not implemented")
+        for name in ("with space", "bad;alias", "bad{alias", "bad}alias", 'bad"alias', "bad'alias", "bad\\alias", "bad\nalias"):
+            with self.subTest(name=name):
+                bad_config = replace(self.config, public_root=self.public_root.parent / name)
+                with self.assertRaisesRegex(NginxError, "service configuration") as error:
+                    render_routes(bad_config, self.state, (self.owner, self.member, self.disabled))
+                self.assertNotIn(name, str(error.exception))
+                self.assertNotIn(self.member_token, str(error.exception))
+
+        dotted = replace(self.config, public_root=self.public_root / ".." / "public")
+        with self.assertRaisesRegex(NginxError, "service configuration"):
+            render_routes(dotted, self.state, (self.owner, self.member, self.disabled))
+
+        linked_parent = Path(self.tempdir.name) / "linked-parent"
+        linked_parent.symlink_to(Path(self.tempdir.name), target_is_directory=True)
+        symlinked = replace(self.config, public_root=linked_parent / "public")
+        with self.assertRaisesRegex(NginxError, "service configuration") as error:
+            render_routes(symlinked, self.state, (self.owner, self.member, self.disabled))
         self.assertNotIn(self.member_token, str(error.exception))
 
     def test_activate_installs_state_routes_and_extra_only_after_a_silent_nginx_test(self):
@@ -212,6 +240,133 @@ class LightweightNginxTests(unittest.TestCase):
         )
         self.assertNotIn(self.member_token, str(error.exception))
         self.assertNotIn("new routes", str(error.exception))
+
+    def test_failed_reload_never_reloads_an_old_configuration_that_fails_validation(self):
+        self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        self.routes.write_bytes(b"old routes\n")
+        runner = FakeRunner((0, 1, 1))
+
+        with self.assertRaisesRegex(NginxError, "rollback failed"):
+            activate_runtime(self.config, self.state, "new routes\n", runner)
+
+        self.assertEqual(
+            [call[0] for call in runner.calls],
+            [
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/bin/systemctl", "reload", "nginx"),
+                ("/usr/sbin/nginx", "-t"),
+            ],
+        )
+
+    def test_extra_replacements_reject_escape_and_symlinked_ancestors_without_writing_outside(self):
+        self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
+        outside = Path(self.tempdir.name) / "outside.json"
+        outside.write_bytes(b"outside bytes\n")
+        escaped = self.private_root / ".." / outside.name
+
+        with self.assertRaisesRegex(NginxError, "extra replacements"):
+            activate_runtime(
+                self.config,
+                self.state,
+                "new routes\n",
+                FakeRunner(),
+                extra_replacements=((escaped, b"new outside\n"),),
+            )
+        self.assertEqual(outside.read_bytes(), b"outside bytes\n")
+
+        outside_directory = Path(self.tempdir.name) / "outside-directory"
+        outside_directory.mkdir()
+        target = outside_directory / "airport.json"
+        target.write_bytes(b"outside airport\n")
+        linked = self.private_root / "linked"
+        linked.symlink_to(outside_directory, target_is_directory=True)
+
+        with self.assertRaisesRegex(NginxError, "extra replacements"):
+            activate_runtime(
+                self.config,
+                self.state,
+                "new routes\n",
+                FakeRunner(),
+                extra_replacements=((linked / "airport.json", b"new airport\n"),),
+            )
+        self.assertEqual(target.read_bytes(), b"outside airport\n")
+
+    def test_failed_validation_restores_prior_modes(self):
+        self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        self.routes.write_bytes(b"old routes\n")
+        os.chmod(self.routes, 0o644)
+        extra_path = self.private_root / "airport.json"
+        extra_path.write_bytes(b"old airport\n")
+        os.chmod(extra_path, 0o640)
+
+        with self.assertRaisesRegex(NginxError, "validation failed"):
+            activate_runtime(
+                self.config,
+                self.state,
+                "new routes\n",
+                FakeRunner((1,)),
+                extra_replacements=((extra_path, b"new airport\n"),),
+            )
+
+        self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.routes.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(extra_path.stat().st_mode), 0o640)
+
+    def test_partial_install_failure_restores_all_artifacts_and_removes_candidates(self):
+        self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        old_state = state_path.read_bytes()
+        self.routes.write_bytes(b"old routes\n")
+        old_routes = self.routes.read_bytes()
+        real_replace = nginx_module.os.replace
+        calls = 0
+
+        def fail_second_install(source, target):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("replace failed")
+            return real_replace(source, target)
+
+        with patch("clash_sub.nginx.os.replace", side_effect=fail_second_install):
+            with self.assertRaisesRegex(NginxError, "activation failed"):
+                activate_runtime(self.config, self.state, "new routes\n", FakeRunner())
+
+        self.assertEqual(state_path.read_bytes(), old_state)
+        self.assertEqual(self.routes.read_bytes(), old_routes)
+        self.assertEqual(tuple(self.private_root.glob(".*")), ())
+        self.assertEqual(tuple(self.routes.parent.glob(".*")), ())
+
+    def test_candidate_write_failure_preserves_artifacts_and_removes_prior_candidates(self):
+        self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        old_state = state_path.read_bytes()
+        self.routes.write_bytes(b"old routes\n")
+        old_routes = self.routes.read_bytes()
+        real_write_candidate = nginx_module._write_candidate
+        calls = 0
+
+        def fail_second_candidate(path, contents, mode):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("candidate write failed")
+            return real_write_candidate(path, contents, mode)
+
+        with patch("clash_sub.nginx._write_candidate", side_effect=fail_second_candidate):
+            with self.assertRaisesRegex(NginxError, "activation failed"):
+                activate_runtime(self.config, self.state, "new routes\n", FakeRunner())
+
+        self.assertEqual(state_path.read_bytes(), old_state)
+        self.assertEqual(self.routes.read_bytes(), old_routes)
+        self.assertEqual(tuple(self.private_root.glob(".*")), ())
+        self.assertEqual(tuple(self.routes.parent.glob(".*")), ())
 
 
 if __name__ == "__main__":
