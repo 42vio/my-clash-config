@@ -163,6 +163,8 @@ class SourceFetchingTests(unittest.TestCase):
 
         rendered = "".join(traceback.format_exception(caught.exception))
         self.assertNotIn(secret, rendered)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertIsNone(caught.exception.__cause__)
 
     def test_default_airport_downloader_installs_the_https_redirect_handler(self):
         response = FakeResponse(proxy_yaml(), "https://airport.example/final")

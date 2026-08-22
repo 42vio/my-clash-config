@@ -196,7 +196,8 @@ def _fetch_proxies(url, max_bytes, opener, valid_final_url, airport=False):
     except SourceError:
         raise
     except Exception:
-        raise SourceError(_SOURCE_ERROR) from None
+        pass
+    raise SourceError(_SOURCE_ERROR)
 
 
 def _open(opener, request):
