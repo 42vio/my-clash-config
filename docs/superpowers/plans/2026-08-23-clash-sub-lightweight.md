@@ -726,6 +726,7 @@ git commit -m "feat: add native lightweight deployment assets"
 - Delete: `scripts/install-server.sh`
 - Delete: `scripts/install_server.py`
 - Delete: `scripts/migrate_reference_templates.py`
+- Delete: `scripts/compare_reference_configs.py`
 - Delete: `scripts/server_preflight.py`
 - Delete: `deploy/nginx/00-acme-http.conf.tmpl`
 - Delete: `deploy/nginx/10-clash-domain.conf.tmpl`
