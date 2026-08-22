@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -94,6 +95,8 @@ def _private_config_path(path: Path, repo_root: Path) -> Path:
         raise ConfigError("service configuration could not be read") from error
     if mode != 0o600:
         raise ConfigError("service configuration mode must be 0600")
+    if os.geteuid() == 0 and resolved_path.stat().st_uid != 0:
+        raise ConfigError("service configuration must be root-owned")
     return resolved_path
 
 

@@ -3,14 +3,20 @@ import tempfile
 import unittest
 from dataclasses import FrozenInstanceError, is_dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 from clash_sub.config import ConfigError, load_config
 from clash_sub.domain import (
     MEMBER_VARIANTS,
     OWNER_VARIANTS,
     VARIANTS,
+    PreparedRelease,
+    RuntimeState,
     ServiceConfig,
+    Traffic,
     UserState,
+    XuiClient,
+    XuiSnapshot,
 )
 
 
@@ -57,11 +63,44 @@ class LightweightConfigTests(unittest.TestCase):
         self.assertEqual(config.template_root, self.root / "templates")
 
     def test_domain_records_are_immutable_dataclasses(self):
-        self.assertTrue(is_dataclass(ServiceConfig))
+        records = (
+            ServiceConfig,
+            XuiClient,
+            XuiSnapshot,
+            UserState,
+            RuntimeState,
+            Traffic,
+            PreparedRelease,
+        )
+        for record in records:
+            self.assertTrue(is_dataclass(record))
+            self.assertTrue(record.__dataclass_params__.frozen)
         user = UserState(1, "owner-example", "token", "code", True, None)
 
         with self.assertRaises(FrozenInstanceError):
             user.email = "other"
+
+    def test_runtime_state_users_are_defensively_immutable(self):
+        users = {1: UserState(1, "owner-example", "token", "code", True, None)}
+        state = RuntimeState(1, 1, users)
+        users[2] = UserState(2, "member-example", "token-2", "code-2", True, None)
+
+        self.assertEqual(tuple(state.users), (1,))
+        with self.assertRaises(TypeError):
+            state.users[2] = users[2]
+
+    def test_prepared_release_paths_are_defensively_immutable(self):
+        public_paths = {"standard": Path("/public/clash-standard.yaml")}
+        release = PreparedRelease(
+            "2026-08-23T00-00-00Z-deadbeef",
+            public_paths,
+            Path("/private/manifest.json"),
+        )
+        public_paths["privacy"] = Path("/public/clash-privacy.yaml")
+
+        self.assertEqual(tuple(release.public_paths), ("standard",))
+        with self.assertRaises(TypeError):
+            release.public_paths["privacy"] = public_paths["privacy"]
 
     def test_rejects_unknown_key(self):
         self.write_config(extra="publisher-port: 25501\n")
@@ -115,6 +154,11 @@ class LightweightConfigTests(unittest.TestCase):
         self.write_config(mode=0o640)
 
         with self.assertRaisesRegex(ConfigError, "0600"):
+            load_config(self.path, self.root)
+
+    @patch("os.geteuid", return_value=0)
+    def test_root_service_rejects_unprivileged_owned_config(self, _geteuid):
+        with self.assertRaisesRegex(ConfigError, "root-owned"):
             load_config(self.path, self.root)
 
 
