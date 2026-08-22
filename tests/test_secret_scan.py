@@ -136,6 +136,79 @@ class TrackedPathRuleTests(ScannerTestCase):
 
 
 class TrackedContentRuleTests(ScannerTestCase):
+    def test_only_exact_final_subscription_routes_are_flagged_and_redacted(self):
+        final_path = "/s/%s/clash-balanced.yaml" % SUBSCRIPTION_TOKEN
+        near_misses = (
+            "/s/%s/clash-balanced.yaml.bak" % SUBSCRIPTION_TOKEN,
+            "/s/%s/clash-balanced.yml" % SUBSCRIPTION_TOKEN,
+            "/s/%s/clash-other.yaml" % SUBSCRIPTION_TOKEN,
+            "/s/<token>/clash-balanced.yaml",
+        )
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(
+                repository,
+                "final-link.txt",
+                "embedded: https://sub.example.test:8443%s?download=1\n" % final_path,
+            )
+            self.stage(repository, "near-misses.txt", "\n".join(near_misses) + "\n")
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 1)
+            report_lines = self.captured_report.splitlines()
+            self.assertIn("tracked-subscription-token: final-link.txt", report_lines)
+            self.assertNotIn("tracked-subscription-token: near-misses.txt", report_lines)
+            self.assertNotIn(SUBSCRIPTION_TOKEN, self.captured_report)
+            self.assertNotIn(final_path, self.captured_report)
+
+    def test_concrete_secret_categories_report_only_category_and_relative_path(self):
+        proxy_uri = "trojan" + "://realuser9:realpassword12345@203.0.113.9:443\n"
+        userinfo_url = "https" + "://realuser9:realpassword12345@portal.example.net/path\n"
+        pem = "-----BEGIN PRIVATE KEY-----\n" + ("A" * 64 + "\n") * 4
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(
+                repository,
+                "secrets.txt",
+                proxy_uri + userinfo_url + "uuid " + RANDOM_UUID_TEXT + "\n" + pem,
+            )
+            self.stage(repository, "generated/current.yaml", "synthetic\n")
+            self.stage(repository, "private/releases/7/manifest.json", "{}\n")
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 1)
+            report = self.captured_report
+            for category, relative in (
+                ("tracked-proxy-uri", "secrets.txt"),
+                ("tracked-url-userinfo", "secrets.txt"),
+                ("tracked-uuid", "secrets.txt"),
+                ("tracked-private-key-pem", "secrets.txt"),
+                ("tracked-generated-yaml", "generated/current.yaml"),
+                ("tracked-private-data", "private/releases/7/manifest.json"),
+            ):
+                self.assertIn("%s: %s" % (category, relative), report)
+            for value in (RANDOM_UUID_TEXT, "realpassword12345", "realuser9"):
+                self.assertNotIn(value, report)
+
+    def test_route_and_url_documentation_placeholders_remain_allowed(self):
+        documentation = "\n".join(
+            (
+                "route: /s/<token>/clash-balanced.yaml",
+                "alternate: /s/<other>/clash-standard.yaml",
+                "https://user:pass@192.0.2.9/s/<token>/clash-privacy.yaml",
+                "11111111-1111-4111-8111-111111111111",
+            )
+        )
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(repository, "documentation.txt", documentation + "\n")
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
+
     def test_concrete_proxy_uri_subscription_path_and_uuid_are_flagged(self):
         with TemporaryDirectory() as directory:
             repository = self.make_repository(Path(directory))
