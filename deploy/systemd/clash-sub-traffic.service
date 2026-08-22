@@ -15,4 +15,5 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub
+# Debian Nginx also needs its log and runtime directories under ProtectSystem=strict.
+ReadWritePaths=/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub /var/log/nginx /var/lib/nginx

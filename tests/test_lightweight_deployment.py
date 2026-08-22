@@ -43,6 +43,30 @@ def _unit_value(text, key):
     return re.findall(r"(?m)^%s=(.+)$" % re.escape(key), text)
 
 
+def _location_header(block):
+    return block.split("{", 1)[0].strip()
+
+
+def _selected_location(locations, uri):
+    exact = "location = %s" % uri
+    for location in locations:
+        if _location_header(location) == exact:
+            return location
+
+    prefixes = []
+    for location in locations:
+        header = _location_header(location)
+        if header.startswith("location ^~ "):
+            prefix = header.removeprefix("location ^~ ")
+        elif header.startswith("location "):
+            prefix = header.removeprefix("location ")
+        else:
+            continue
+        if uri.startswith(prefix):
+            prefixes.append((len(prefix), location))
+    return max(prefixes, default=(0, None))[1]
+
+
 def _server_with_name(servers, name):
     matches = [server for server in servers if _directive(server, "server_name") == [name]]
     if len(matches) != 1:
@@ -102,19 +126,29 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("return 404;", default)
         self.assertNotIn("proxy_pass", default)
 
-    def test_panel_proxies_only_the_random_base_path_to_validated_loopback(self):
+    def test_panel_base_path_has_an_exact_redirect_and_boundary_safe_child_proxy(self):
         panel = _server_with_name(self.servers, "panel.{{DOMAIN}}")
-        locations = _blocks(panel, "location")
-        proxied = [location for location in locations if _directive(location, "proxy_pass")]
-        self.assertEqual(len(proxied), 1)
-        self.assertIn("location ^~ {{PANEL_BASE_PATH}} {", proxied[0])
-        self.assertEqual(_directive(proxied[0], "proxy_pass"), ["http://{{PANEL_UPSTREAM}}"])
+        rendered = panel.replace("{{PANEL_BASE_PATH}}", "/secret").replace(
+            "{{PANEL_UPSTREAM}}", "127.0.0.1:2053"
+        )
+        locations = _blocks(rendered, "location")
+        self.assertEqual(
+            [_location_header(location) for location in locations],
+            ["location = /secret", "location ^~ /secret/", "location /"],
+        )
+        exact = _selected_location(locations, "/secret")
+        child = _selected_location(locations, "/secret/assets/app.js")
+        collision = _selected_location(locations, "/secret-extra")
+        self.assertIn("return 308 /secret/;", exact)
+        self.assertNotIn("proxy_pass", exact)
+        self.assertEqual(_directive(child, "proxy_pass"), ["http://127.0.0.1:2053/secret/"])
+        self.assertIn("return 404;", collision)
+        self.assertNotIn("proxy_pass", collision)
         self.assertIn("validated loopback", self.template)
-        unmatched = [location for location in locations if location not in proxied]
-        self.assertEqual(len(unmatched), 1)
-        self.assertIn("location / {", unmatched[0])
-        self.assertIn("return 404;", unmatched[0])
-        self.assertNotIn("proxy_pass", unmatched[0])
+        self.assertIn(
+            "PANEL_BASE_PATH contract: leading slash, one safe random component ([A-Za-z0-9_-]+), no trailing slash.",
+            self.template,
+        )
 
     def test_subscription_uses_only_generated_exact_routes_and_silent_404_fallbacks(self):
         subscription = _server_with_name(self.servers, "sub.{{DOMAIN}}")
@@ -135,6 +169,26 @@ class LightweightDeploymentTests(unittest.TestCase):
             self.assertIn("access_log off;", location)
             self.assertIn("log_not_found off;", location)
             self.assertIn("return 404;", location)
+
+    def test_included_task7_exact_routes_precede_the_subscription_prefix_fallback(self):
+        subscription = _server_with_name(self.servers, "sub.{{DOMAIN}}")
+        self.assertIn("include {{ROUTES_INCLUDE}};", subscription)
+        self.assertIn(
+            "Task 7 generated routes use exact-match locations, so they take precedence over the /s/ fallback.",
+            self.template,
+        )
+        with_generated_route = subscription.replace(
+            "include {{ROUTES_INCLUDE}};",
+            "location = /s/example-token/clash-standard.yaml {\n    return 200;\n}",
+        )
+        selected = _selected_location(
+            _blocks(with_generated_route, "location"),
+            "/s/example-token/clash-standard.yaml",
+        )
+        self.assertEqual(
+            _location_header(selected),
+            "location = /s/example-token/clash-standard.yaml",
+        )
 
     def test_nginx_template_has_no_legacy_or_broad_public_exposure(self):
         forbidden = (
@@ -173,7 +227,10 @@ class LightweightDeploymentTests(unittest.TestCase):
             "ProtectControlGroups": "true",
             "RestrictSUIDSGID": "true",
             "LockPersonality": "true",
-            "ReadWritePaths": "/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub",
+            "ReadWritePaths": (
+                "/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub "
+                "/var/log/nginx /var/lib/nginx"
+            ),
         }
         for key, value in required.items():
             with self.subTest(key=key):

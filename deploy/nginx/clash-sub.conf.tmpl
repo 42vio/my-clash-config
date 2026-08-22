@@ -1,6 +1,7 @@
 # Native host configuration. Edit the six placeholders manually, test with
 # nginx -t, then reload Nginx; this repository provides no installer.
 # PANEL_UPSTREAM must be a validated loopback host:port before this template is installed.
+# PANEL_BASE_PATH contract: leading slash, one safe random component ([A-Za-z0-9_-]+), no trailing slash.
 # Task 7 group contract: before first sync deployment must install -d -o root -g www-data -m 2750 /var/lib/clash-sub/public.
 # That setgid/group contract is required for Nginx to read 0640 release YAML. Task13 will provide the executable manual command.
 
@@ -47,8 +48,12 @@ server {
     ssl_certificate_key {{PRIVKEY_PATH}};
     ssl_protocols TLSv1.2 TLSv1.3;
 
-    location ^~ {{PANEL_BASE_PATH}} {
-        proxy_pass http://{{PANEL_UPSTREAM}};
+    location = {{PANEL_BASE_PATH}} {
+        return 308 {{PANEL_BASE_PATH}}/;
+    }
+
+    location ^~ {{PANEL_BASE_PATH}}/ {
+        proxy_pass http://{{PANEL_UPSTREAM}}{{PANEL_BASE_PATH}}/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -77,6 +82,7 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
 
     include {{ROUTES_INCLUDE}};
+    # Task 7 generated routes use exact-match locations, so they take precedence over the /s/ fallback.
 
     location ^~ /s/ {
         access_log off;
