@@ -39,9 +39,8 @@ def _authorized_sources(is_owner, xui, airport, home):
 def _render_variant(template_root, variant, sources):
     proxies = merge_proxy_sources(sources)
     template_text = (template_root / "clash.yaml.j2").read_text(encoding="utf-8")
-    variant_spec = load_variant(template_root, variant)
-    top_level = copy.deepcopy(dict(variant_spec.top_level))
-    _inject_proxy_names(top_level, variant_spec.inject_node_groups, proxies)
+    top_level, injections = _load_variant(template_root, variant)
+    _inject_proxy_names(top_level, injections, _source_proxy_names(sources, proxies))
     context = {"PROXIES_ROOT_YAML": dump_root_yaml("proxies", proxies)}
     for root_key, value in top_level.items():
         context[variant_root_marker(root_key)] = dump_root_yaml(root_key, value)
@@ -52,7 +51,35 @@ def _render_variant(template_root, variant, sources):
     return rendered if rendered.endswith("\n") else rendered + "\n"
 
 
-def _inject_proxy_names(top_level, group_names, proxies):
+def _load_variant(template_root, variant):
+    document = yaml.safe_load(
+        (template_root / "variants" / ("%s.yaml" % variant)).read_text(encoding="utf-8")
+    )
+    if not isinstance(document, dict):
+        raise ValueError("variant must be a mapping")
+    generator = document.get("_generator")
+    if not isinstance(generator, dict):
+        raise ValueError("variant metadata must be a mapping")
+    home_groups = generator.get("inject-home-node-groups", [])
+    if not isinstance(home_groups, list) or not all(isinstance(group, str) for group in home_groups):
+        raise ValueError("variant inject-home-node-groups must be a string list")
+    variant_spec = load_variant(template_root, variant)
+    injections = {group: "all" for group in variant_spec.inject_node_groups}
+    injections.update({group: "home" for group in home_groups})
+    return copy.deepcopy(dict(variant_spec.top_level)), injections
+
+
+def _source_proxy_names(sources, proxies):
+    names = {"all": [proxy["name"] for proxy in proxies]}
+    index = 0
+    for label, source in sources:
+        count = len(source)
+        names[label] = [proxy["name"] for proxy in proxies[index : index + count]]
+        index += count
+    return names
+
+
+def _inject_proxy_names(top_level, injections, source_names):
     groups = top_level.get("proxy-groups")
     if not isinstance(groups, list):
         raise ValueError("proxy-groups must exist before node injection")
@@ -61,17 +88,16 @@ def _inject_proxy_names(top_level, group_names, proxies):
         if not isinstance(group, dict) or not isinstance(group.get("name"), str):
             raise ValueError("proxy-groups entries must have names")
         indexes.setdefault(group["name"], []).append(index)
-    for group_name in group_names:
+    for group_name, source_name in injections.items():
         matching = indexes.get(group_name, [])
         if len(matching) != 1:
             raise ValueError("inject-node-group %r must exist exactly once" % group_name)
         targets = groups[matching[0]].setdefault("proxies", [])
         if not isinstance(targets, list):
             raise ValueError("inject-node-group %r must expose proxies" % group_name)
-        for proxy in proxies:
-            name = proxy.get("name")
-            if not isinstance(name, str) or not name:
-                raise ValueError("proxy entries must have names")
+        if source_name not in source_names:
+            raise ValueError("inject-node-group %r references unknown source" % group_name)
+        for name in source_names[source_name]:
             if name not in targets:
                 targets.append(name)
 

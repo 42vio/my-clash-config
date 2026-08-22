@@ -1,7 +1,10 @@
 _generator:
   inject-node-groups:
   - 加速线路
+  - ProxyServer
   - AI服务
+  inject-home-node-groups:
+  - HomeServer
 dns:
   enable: true
   ipv6: false

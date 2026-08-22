@@ -6,6 +6,8 @@ from tempfile import TemporaryDirectory
 import yaml
 from jinja2 import UndefinedError
 
+from clash_sub.checks import validate_clash
+
 try:
     from clash_sub.generator import render_user_bundle
 except ImportError:
@@ -37,6 +39,10 @@ def reality_proxy(name):
 
 def proxy_names(text):
     return [proxy["name"] for proxy in yaml.safe_load(text)["proxies"]]
+
+
+def proxy_groups(text):
+    return {group["name"]: group for group in yaml.safe_load(text)["proxy-groups"]}
 
 
 class LightweightGeneratorTests(unittest.TestCase):
@@ -104,3 +110,28 @@ class LightweightGeneratorTests(unittest.TestCase):
 
             with self.assertRaises(UndefinedError):
                 render_user_bundle(False, [reality_proxy("Member 3x-ui")], [], [], template_root)
+
+    def test_every_rendered_profile_validates_and_owner_groups_have_their_authorized_members(self):
+        self.assertIsNotNone(render_user_bundle)
+        owner = render_user_bundle(
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            [reality_proxy("Airport")],
+            [reality_proxy("Home")],
+            TEMPLATE_ROOT,
+        )
+        member = render_user_bundle(False, [reality_proxy("Member 3x-ui")], [], [], TEMPLATE_ROOT)
+
+        for text in (*owner.values(), *member.values()):
+            validate_clash(text, ())
+
+        for variant in ("balanced", "privacy"):
+            groups = proxy_groups(owner[variant])
+            self.assertEqual(groups["HomeServer"]["proxies"], ["🎯 Direct", "Home"])
+            self.assertEqual(
+                groups["ProxyServer"]["proxies"],
+                ["🎯 Direct", "HomeServer", "Owner 3x-ui", "Airport", "Home"],
+            )
+        standard_groups = proxy_groups(owner["standard"])
+        self.assertNotIn("HomeServer", standard_groups)
+        self.assertNotIn("ProxyServer", standard_groups)

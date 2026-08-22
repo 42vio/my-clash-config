@@ -1,3 +1,4 @@
+import copy
 import subprocess
 import unittest
 from pathlib import Path
@@ -161,7 +162,58 @@ class LightweightChecksTests(unittest.TestCase):
         with self.assertRaisesRegex(CheckError, "timed out") as timeout:
             MihomoValidator(Path("/opt/mihomo/mihomo"), runner=timeout_runner).validate(candidate)
         self.assertNotIn("private output", str(timeout.exception))
+        self.assertIsNone(timeout.exception.__cause__)
+        self.assertIsNone(timeout.exception.__context__)
 
         with self.assertRaisesRegex(CheckError, "failed") as failed:
             MihomoValidator(Path("/opt/mihomo/mihomo"), runner=failed_runner).validate(candidate)
         self.assertNotIn("private error", str(failed.exception))
+
+    def test_reality_values_require_their_expected_types_and_ranges(self):
+        self.assertIsNotNone(validate_clash)
+        invalid_values = (
+            (("tls",), False),
+            (("port",), True),
+            (("port",), 0),
+            (("port",), 65536),
+            (("port",), "443"),
+            (("server",), 123),
+            (("uuid",), 123),
+            (("network",), 123),
+            (("servername",), 123),
+            (("client-fingerprint",), 123),
+            (("reality-opts", "public-key"), 123),
+            (("reality-opts", "short-id"), 123),
+        )
+        for path, value in invalid_values:
+            with self.subTest(path=path, value=value):
+                document = copy.deepcopy(valid_document())
+                target = document["proxies"][0]
+                for key in path[:-1]:
+                    target = target[key]
+                target[path[-1]] = value
+
+                with self.assertRaisesRegex(CheckError, "REALITY"):
+                    validate_clash(dump(document), ())
+
+    def test_non_reality_proxy_fields_are_not_overvalidated(self):
+        self.assertIsNotNone(validate_clash)
+        document = valid_document()
+        document["proxies"][1]["tls"] = False
+        document["proxies"][1]["port"] = "not-a-reality-port"
+
+        validate_clash(dump(document), ())
+
+    def test_proxy_group_cycle_is_rejected_without_group_names_in_the_error(self):
+        self.assertIsNotNone(validate_clash)
+        document = valid_document()
+        document["proxy-groups"] = [
+            {"name": "First Secret Group", "type": "select", "proxies": ["Second Secret Group"]},
+            {"name": "Second Secret Group", "type": "select", "proxies": ["First Secret Group"]},
+        ]
+        document["rules"] = ["MATCH,First Secret Group"]
+
+        with self.assertRaisesRegex(CheckError, "recursive proxy group reference") as context:
+            validate_clash(dump(document), ())
+        self.assertNotIn("First Secret Group", str(context.exception))
+        self.assertNotIn("Second Secret Group", str(context.exception))

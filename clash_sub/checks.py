@@ -75,13 +75,20 @@ def _validate_reality(proxy):
         return
     if not _REALITY_FIELDS.issubset(proxy):
         raise CheckError("VLESS REALITY options are incomplete")
-    if not all(_valid_value(proxy[key]) for key in _REALITY_FIELDS - {"reality-opts"}):
+    if not all(
+        _nonempty_string(proxy[key])
+        for key in ("uuid", "server", "network", "servername", "client-fingerprint")
+    ):
+        raise CheckError("VLESS REALITY options are incomplete")
+    if type(proxy["port"]) is not int or not 1 <= proxy["port"] <= 65535:
+        raise CheckError("VLESS REALITY options are incomplete")
+    if proxy["tls"] is not True:
         raise CheckError("VLESS REALITY options are incomplete")
     options = proxy["reality-opts"]
     if (
         not isinstance(options, Mapping)
-        or not _valid_value(options.get("public-key"))
-        or not _valid_value(options.get("short-id"))
+        or not _nonempty_string(options.get("public-key"))
+        or not _nonempty_string(options.get("short-id"))
     ):
         raise CheckError("VLESS REALITY options are incomplete")
 
@@ -103,10 +110,16 @@ def _validate_groups(groups):
 
 
 def _validate_group_targets(groups, targets):
-    for group in groups:
+    indexes = {group["name"].strip(): index for index, group in enumerate(groups)}
+    references = {index: [] for index in range(len(groups))}
+    for index, group in enumerate(groups):
         for target in group.get("proxies", []):
             if not _valid_name(target) or target.strip() not in targets:
                 raise CheckError("proxy group references unknown target")
+            target_index = indexes.get(target.strip())
+            if target_index is not None:
+                references[index].append(target_index)
+    _validate_group_cycles(references)
 
 
 def _validate_rule_providers(providers):
@@ -145,6 +158,29 @@ def _valid_value(value):
     return value is not None and value != ""
 
 
+def _nonempty_string(value):
+    return isinstance(value, str) and bool(value)
+
+
+def _validate_group_cycles(references):
+    visiting = set()
+    visited = set()
+
+    def visit(index):
+        if index in visiting:
+            raise CheckError("recursive proxy group reference")
+        if index in visited:
+            return
+        visiting.add(index)
+        for target in references[index]:
+            visit(target)
+        visiting.remove(index)
+        visited.add(index)
+
+    for index in references:
+        visit(index)
+
+
 class MihomoValidator:
     def __init__(self, binary, runner=subprocess.run):
         self.binary = Path(binary)
@@ -153,6 +189,7 @@ class MihomoValidator:
     def validate(self, path):
         candidate = Path(path)
         arguments = [str(self.binary), "-t", "-f", str(candidate)]
+        failure = None
         try:
             result = self.runner(
                 arguments,
@@ -162,9 +199,11 @@ class MihomoValidator:
                 timeout=30,
                 check=False,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise CheckError("Mihomo validation timed out") from exc
-        except OSError as exc:
-            raise CheckError("Mihomo validation could not run") from exc
+        except subprocess.TimeoutExpired:
+            failure = CheckError("Mihomo validation timed out")
+        except OSError:
+            failure = CheckError("Mihomo validation could not run")
+        if failure is not None:
+            raise failure
         if result.returncode != 0:
             raise CheckError("Mihomo validation failed")
