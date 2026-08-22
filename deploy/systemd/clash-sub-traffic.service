@@ -1,0 +1,18 @@
+[Unit]
+Description=Update Clash subscription traffic headers
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/clash-sub traffic-update
+User=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub

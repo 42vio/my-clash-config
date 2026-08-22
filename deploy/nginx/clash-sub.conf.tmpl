@@ -1,0 +1,92 @@
+# Native host configuration. Edit the six placeholders manually, test with
+# nginx -t, then reload Nginx; this repository provides no installer.
+# PANEL_UPSTREAM must be a validated loopback host:port before this template is installed.
+# Task 7 group contract: before first sync deployment must install -d -o root -g www-data -m 2750 /var/lib/clash-sub/public.
+# That setgid/group contract is required for Nginx to read 0640 release YAML. Task13 will provide the executable manual command.
+
+limit_req_zone $binary_remote_addr zone=clash_subscription:10m rate=2r/s;
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    server_tokens off;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/clash-sub/acme;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen 8443 ssl default_server;
+    listen [::]:8443 ssl default_server;
+    server_name _;
+    server_tokens off;
+
+    ssl_certificate {{FULLCHAIN_PATH}};
+    ssl_certificate_key {{PRIVKEY_PATH}};
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen 8443 ssl;
+    listen [::]:8443 ssl;
+    server_name panel.{{DOMAIN}};
+    server_tokens off;
+
+    ssl_certificate {{FULLCHAIN_PATH}};
+    ssl_certificate_key {{PRIVKEY_PATH}};
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location ^~ {{PANEL_BASE_PATH}} {
+        proxy_pass http://{{PANEL_UPSTREAM}};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+        proxy_hide_header Server;
+        proxy_max_temp_file_size 0;
+    }
+
+    location / {
+        return 404;
+    }
+}
+
+server {
+    listen 8443 ssl;
+    listen [::]:8443 ssl;
+    server_name sub.{{DOMAIN}};
+    server_tokens off;
+
+    ssl_certificate {{FULLCHAIN_PATH}};
+    ssl_certificate_key {{PRIVKEY_PATH}};
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    include {{ROUTES_INCLUDE}};
+
+    location ^~ /s/ {
+        access_log off;
+        log_not_found off;
+        return 404;
+    }
+
+    location / {
+        access_log off;
+        log_not_found off;
+        return 404;
+    }
+}
