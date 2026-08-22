@@ -434,6 +434,17 @@ class ManagerTests(unittest.TestCase):
         payload = self.assert_error_code(result, "validation_failed")
         self.assertNotIn(self.friend_url, json.dumps(payload))
 
+    def test_invalid_operation_id_is_never_written_to_the_operation_log(self):
+        secret = "https://airport.example/temporary-secret"
+
+        result = self.run_manager(
+            ["build", "--operation-id", secret, "--user", "friend"]
+        )
+
+        self.assert_error_code(result, "operation_failed")
+        self.assertNotIn(secret, result.stdout)
+        self.assertNotIn(secret, self.operation_log_text())
+
     def test_publish_missing_candidate_returns_release_missing(self):
         result = self.run_manager(["publish", "--operation-id", "missing", "--user", "friend"])
 
@@ -505,6 +516,34 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(
             set(payload["entries"][0]),
             {"timestamp", "operation", "user_id", "release_id", "status"},
+        )
+
+    def test_logs_drop_unrecognized_fields_from_existing_log_entries(self):
+        secret = "https://airport.example/temporary-secret"
+        self.operation_log_path.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-08-21T12:00:00Z",
+                    "operation": "build",
+                    "user_id": "friend",
+                    "release_id": "op1",
+                    "status": "error",
+                    "error_code": "operation_failed",
+                    "unexpected": secret,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = self.run_manager(["logs"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(secret, result.stdout)
+        entry = json.loads(result.stdout)["entries"][0]
+        self.assertEqual(
+            set(entry),
+            {"timestamp", "operation", "user_id", "release_id", "status", "error_code"},
         )
 
     def test_rotate_token_persists_only_hash_and_returns_urls_once(self):

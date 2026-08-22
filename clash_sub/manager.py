@@ -17,6 +17,7 @@ from clash_sub.releases import (
     BuildError,
     MANIFEST_NAME,
     ReleaseBuilder,
+    SAFE_SLUG_RE,
     _hash_proxies,
     _hash_template_tree,
     list_history as release_list_history,
@@ -396,8 +397,13 @@ def _logs(runtime: ManagerRuntime, limit: int):
         for line in runtime.operation_log_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            payload = json.loads(line)
-            entries.append(payload)
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            entry = _sanitize_operation_log_entry(payload)
+            if entry is not None:
+                entries.append(entry)
     return {"entries": entries[-limit:]}
 
 
@@ -548,8 +554,8 @@ def _append_operation_log(
     entry = {
         "timestamp": _format_timestamp(runtime.clock()),
         "operation": operation,
-        "user_id": user_id,
-        "release_id": release_id,
+        "user_id": _safe_log_identifier(user_id),
+        "release_id": _safe_log_identifier(release_id),
         "status": status,
     }
     if error_code is not None:
@@ -562,6 +568,35 @@ def _append_operation_log(
     with os.fdopen(handle, "a", encoding="utf-8") as stream:
         stream.write(json.dumps(entry, sort_keys=True) + "\n")
     os.chmod(runtime.operation_log_path, 0o600)
+
+
+def _safe_log_identifier(value: Optional[str]) -> Optional[str]:
+    if isinstance(value, str) and SAFE_SLUG_RE.fullmatch(value):
+        return value
+    return None
+
+
+def _sanitize_operation_log_entry(payload):
+    if not isinstance(payload, dict):
+        return None
+    timestamp = payload.get("timestamp")
+    operation = payload.get("operation")
+    status = payload.get("status")
+    if not isinstance(timestamp, str) or not isinstance(operation, str):
+        return None
+    if status not in ("success", "error"):
+        return None
+    entry = {
+        "timestamp": timestamp,
+        "operation": operation,
+        "user_id": _safe_log_identifier(payload.get("user_id")),
+        "release_id": _safe_log_identifier(payload.get("release_id")),
+        "status": status,
+    }
+    error_code = payload.get("error_code")
+    if isinstance(error_code, str) and error_code:
+        entry["error_code"] = error_code
+    return entry
 
 
 def _read_manifest_metadata(path: Path):
