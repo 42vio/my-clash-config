@@ -13,7 +13,7 @@
 
 1. 每位普通用户只获得自己独立的 3x-ui 客户端节点。
 2. owner 的配置合并自己的 3x-ui 节点、机场节点快照和家庭节点。
-3. 一份基础模板派生 `balanced`、`portable`、`privacy` 三种配置。
+3. 一份基础模板派生 `balanced`、`standard`、`privacy` 三种配置。
 4. 对外只发布最后一次成功验证的静态 YAML。
 5. 平时不运行 Python、Mihomo、转换器或发布进程。
 6. 不要求管理员记住 `refresh`；日常管理统一从无参数 `clash-sub` 菜单进入。
@@ -93,7 +93,7 @@ REALITY 使用 VPS 公网 IP 的 TCP 443，不依赖域名证书。`panel.<domai
 `clash-sub sync` 不保存管理员 API Token。它以 SQLite 只读模式打开本机 3x-ui 数据库，只查询生成所需的最小字段：
 
 - 客户端数据库主键。
-- `email`（作为显示标识）。
+- `email`（仅作为内部管理员识别标记）。
 - `subId`。
 - 启用状态。
 - 配额和到期字段。
@@ -108,9 +108,9 @@ REALITY 使用 VPS 公网 IP 的 TCP 443，不依赖域名证书。`panel.<domai
 5. 每日流量任务失败时保留上一份响应头；YAML 仍可下载。
 6. 数据库只用于发现和关联客户端，节点格式仍以 3x-ui Clash 输出为准。
 
-客户端的稳定内部身份使用 3x-ui 客户端数据库主键。`email` 改名只更新显示标题，不更换公开 Token；`subId` 轮换只更新内部来源，不改变最终订阅地址。删除后重新创建的客户端视为新身份并获得新 Token。
+客户端的稳定内部身份使用 3x-ui 客户端数据库主键。`email` 改名只更新内部管理员显示，不更换公开 Token、URL、文件名或配置标题；`subId` 轮换只更新内部来源，不改变最终订阅地址。删除后重新创建的客户端视为新身份并获得新 Token。
 
-owner 在首次同步时由私有配置中的 `owner_email` 唯一匹配，随后持久化对应的 3x-ui 客户端数据库主键。以后修改 owner 的 `email` 只更新显示标题，不改变 owner 身份；删除该数据库客户端后必须由管理员重新确认新的 owner，不能仅凭相同 email 自动继承 owner 权限。
+owner 在首次同步时由私有配置中的 `owner_email` 唯一匹配，随后持久化对应的 3x-ui 客户端数据库主键。以后修改 owner 的 `email` 只更新内部管理员显示，不改变 owner 身份；删除该数据库客户端后必须由管理员重新确认新的 owner，不能仅凭相同 email 自动继承 owner 权限。
 
 ## 6. 自动构造回环 Clash 地址
 
@@ -142,7 +142,7 @@ templates/
   clash.yaml.j2
   variants/
     balanced.yaml
-    portable.yaml
+    standard.yaml
     privacy.yaml
 ```
 
@@ -151,10 +151,10 @@ templates/
 | variant | owner | 普通用户 | 用途 |
 | --- | --- | --- | --- |
 | `balanced` | owner 3x-ui + 机场 + 家庭节点 | 不发布 | 通用完整配置 |
-| `portable` | owner 3x-ui + 机场，不含家庭节点 | 仅本人 3x-ui | 跨平台、适合 Windows、默认发给其他用户 |
+| `standard` | owner 3x-ui + 机场，不含家庭节点 | 仅本人 3x-ui | 标准跨平台配置、适合 Windows、默认发给其他用户 |
 | `privacy` | owner 3x-ui + 机场 + 家庭节点 | 不发布 | 隐私优先配置 |
 
-`balanced-win` 全面改名为 `portable`，不保留兼容别名。不得使用 `public` 或 `shared` 命名，以免暗示带 UUID 的配置可以公开转发。
+`balanced-win` 全面改名为 `standard`，不保留兼容别名。不得使用 `public` 或 `shared` 命名，以免暗示带 UUID 的配置可以公开转发。
 
 公共结构只保存在基础模板；variant 文件只描述 DNS、规则或策略组等真实差异。用户来源隔离由数据模型决定，不靠模板注释或节点命名约定。
 
@@ -169,7 +169,7 @@ templates/
 5. 新快照写入后立即生成并验证 owner 的三个 variant。
 6. 下载、解析或任一 owner variant 校验失败时，旧机场快照和旧 owner 发布保持不变。
 
-家庭节点由 owner 在 VPS 私有文件中维护，只在 `balanced` 和 `privacy` 中注入。`portable` 明确排除家庭节点。
+家庭节点由 owner 在 VPS 私有文件中维护，只在 `balanced` 和 `privacy` 中注入。`standard` 明确排除家庭节点。
 
 不同来源出现同名节点时，只对冲突项追加稳定来源后缀；所有策略组引用同步使用最终名称。
 
@@ -180,18 +180,18 @@ templates/
 - 发现新增客户端。
 - 为其生成至少 32 字节密码学安全随机 Token。
 - 保存稳定用户映射。
-- 生成该用户的 `portable` 配置。
+- 生成该用户的 `standard` 配置。
 - 在 `clash-sub` 的链接列表中显示最终地址。
 
 公开路径不包含客户端名称：
 
 ```text
-普通用户：https://sub.<domain>:8443/s/<token>/portable.yaml
+普通用户：https://sub.<domain>:8443/s/<token>/clash-standard.yaml
 
 owner：
-https://sub.<domain>:8443/s/<token>/balanced.yaml
-https://sub.<domain>:8443/s/<token>/portable.yaml
-https://sub.<domain>:8443/s/<token>/privacy.yaml
+https://sub.<domain>:8443/s/<token>/clash-balanced.yaml
+https://sub.<domain>:8443/s/<token>/clash-standard.yaml
+https://sub.<domain>:8443/s/<token>/clash-privacy.yaml
 ```
 
 Token 是唯一授权凭据。为保持静态 Nginx 架构并允许管理员以后查看链接，Token 以明文保存在 VPS 的 root-only 私有状态中；它不进入 Git、普通日志或 Nginx access log。静态发布目录按 Token 隔离，禁止目录浏览和任意路径解析。
@@ -200,14 +200,14 @@ Token 是唯一授权凭据。为保持静态 Nginx 架构并允许管理员以�
 
 ## 10. 客户端显示名称
 
-用户名称不进入 URL。Nginx 对每个有效路径设置：
+用户名称不进入 URL、下载文件名或公开响应头。Nginx 按 variant 对每个有效路径设置固定名称：
 
 ```text
-Profile-Title: <sanitized-email>-<variant>
-Content-Disposition: attachment; filename="<sanitized-email>-<variant>.yaml"
+Profile-Title: Clash Standard
+Content-Disposition: attachment; filename="Clash-Standard.yaml"
 ```
 
-`email` 只用于响应标题和文件名，必须清除控制字符并限制为安全文件名字符。建议管理员在 3x-ui 中使用 `alice`、`bob` 等别名，而非真实电子邮箱。若客户端不支持这些响应头，它可能只显示 `portable`，用户可在客户端本地改名。
+另外两个 variant 对应 `Clash Balanced` / `Clash-Balanced.yaml` 和 `Clash Privacy` / `Clash-Privacy.yaml`。3x-ui 的 `email` 仅用于服务器内部身份匹配和管理员状态显示，不进入公开 URL 或响应。若客户端不支持这些响应头，它仍可从 URL 文件名识别配置类型。
 
 最终响应不转发 3x-ui 的 `Profile-Web-Page-Url`、`Support-Url`、`Announce`、Sub ID 或其他内部身份头，也不设置强制客户端更新间隔。
 
@@ -293,7 +293,7 @@ Subscription-Userinfo: upload=...; download=...; total=...; expire=...
 
 Nginx 直接读取最后一次成功发布的 YAML，不反向代理 Python publisher。订阅 location：
 
-- 只接受 `/s/<token>/<allowed-variant>.yaml` 固定形状。
+- 只接受 `/s/<token>/clash-<allowed-variant>.yaml` 固定形状。
 - 禁止目录列表、URL 解码绕过、点路径、反斜杠和额外段。
 - 未知 Token、未知 variant、已撤销用户和缺失文件返回相同通用 404。
 - 禁止在订阅 location 记录完整 URI。
@@ -350,11 +350,11 @@ Nginx 直接读取最后一次成功发布的 YAML，不反向代理 Python publ
 
 ### 功能
 
-- 一份基础模板生成 `balanced`、`portable`、`privacy`。
-- owner 三份配置包含正确来源，`portable` 不含家庭节点。
-- 普通用户只有 `portable`，且只包含自己的 3x-ui 节点。
+- 一份基础模板生成 `balanced`、`standard`、`privacy`。
+- owner 三份配置包含正确来源，`standard` 不含家庭节点。
+- 普通用户只有 `standard`，且只包含自己的 3x-ui 节点。
 - 新增 3x-ui 客户端后，一次手动同步自动生成最终链接。
-- URL 不包含用户名称；支持的客户端通过响应头显示 `<email>-<variant>`。
+- URL、下载文件名和响应头都不包含用户名称；客户端显示 `Clash Balanced`、`Clash Standard` 或 `Clash Privacy`。
 - 机场更新后自动发布 owner 三份新配置。
 - 每日任务和手动同步都能更新流量头而不创建无意义 release。
 
