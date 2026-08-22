@@ -26,6 +26,14 @@ class OperationLockTests(unittest.TestCase):
             with self.assertRaises(ServiceError) as caught: _OperationLock(root / "operation.lock").__enter__()
             self.assertEqual(caught.exception.code, "operation_lock_invalid")
 
+    def test_default_lock_rejects_a_symlink_component_without_creating_outside_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            real = Path(directory).resolve(); outside = real / "outside"; outside.mkdir()
+            linked = real / "linked"; linked.symlink_to(outside, target_is_directory=True)
+            with self.assertRaises(ServiceError) as caught: _OperationLock(linked / "operation.lock").__enter__()
+            self.assertEqual(caught.exception.code, "operation_lock_invalid")
+            self.assertFalse((outside / "operation.lock").exists())
+
 
 def token(byte, code):
     return base64.urlsafe_b64encode(byte * 32).decode().rstrip("=") + "-" + code
