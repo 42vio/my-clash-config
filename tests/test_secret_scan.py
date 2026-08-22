@@ -5,6 +5,7 @@ leak fails, that safe documentation examples pass, that binary files
 are skipped safely, and that its output never echoes the secret.
 """
 
+import base64
 import importlib.util
 import subprocess
 import unittest
@@ -26,7 +27,10 @@ PRIVATE_TOKEN_HASH = "9e107669" "6b24aa1f9b7d3fd3b5a2c0dc"
 PRIVATE_TOKEN_HASH_TEXT = (
     "9e1076696b24aa1f9b7d3fd3b5a2c0dc9e1076696b24aa1f9b7d3fd3b5a2c0dc"
 )
-SUBSCRIPTION_TOKEN = "e2eBearerToken0123456789abcdefghijklmnopqrstuv"
+SUBSCRIPTION_TOKEN = (
+    base64.urlsafe_b64encode(bytes(range(32))).decode("ascii").rstrip("=")
+    + "-ABC234"
+)
 
 
 def load_scanner():
@@ -143,7 +147,8 @@ class TrackedContentRuleTests(ScannerTestCase):
             self.stage(
                 repository,
                 "links.txt",
-                "https://sub.example.com:8443/s/%s/balanced.yaml\n" % SUBSCRIPTION_TOKEN,
+                "https://sub.example.com:8443/s/%s/clash-standard.yaml\n"
+                % SUBSCRIPTION_TOKEN,
             )
             self.stage(repository, "ids.txt", "client id %s\n" % RANDOM_UUID_TEXT)
 

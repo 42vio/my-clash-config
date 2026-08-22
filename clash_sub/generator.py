@@ -1,17 +1,47 @@
 import copy
+import re
 from pathlib import Path
 
 import yaml
+from jinja2 import Environment, StrictUndefined, meta
 
 from clash_sub.domain import MEMBER_VARIANTS
-from clash_sub.rendering import (
-    dump_root_yaml,
-    load_variant,
-    render_text,
-    template_markers,
-    variant_root_marker,
-)
 from clash_sub.sources import merge_proxy_sources
+
+
+_JINJA_PATTERN = re.compile(r"[^0-9A-Za-z]+")
+
+
+def _template_environment():
+    environment = Environment(undefined=StrictUndefined, autoescape=False)
+    environment.globals = {}
+    environment.filters = {}
+    environment.tests = {}
+    return environment
+
+
+def _variant_root_marker(root_key):
+    normalized = _JINJA_PATTERN.sub("_", root_key).strip("_").upper()
+    if not normalized:
+        raise ValueError("root key cannot be converted into a marker")
+    return "VARIANT_%s_ROOT_YAML" % normalized
+
+
+def _dump_root_yaml(root_key, value):
+    return yaml.safe_dump(
+        {root_key: value},
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    ).rstrip()
+
+
+def _template_markers(template_text):
+    return set(meta.find_undeclared_variables(_template_environment().parse(template_text)))
+
+
+def _render_text(template_text, context):
+    return _template_environment().from_string(template_text).render(dict(context))
 
 
 def render_user_bundle(is_owner, xui, airport, home, template_root):
@@ -41,10 +71,10 @@ def _render_variant(template_root, variant, sources):
     template_text = (template_root / "clash.yaml.j2").read_text(encoding="utf-8")
     top_level, injections = _load_variant(template_root, variant)
     _inject_proxy_names(top_level, injections, _source_proxy_names(sources, proxies))
-    context = {"PROXIES_ROOT_YAML": dump_root_yaml("proxies", proxies)}
+    context = {"PROXIES_ROOT_YAML": _dump_root_yaml("proxies", proxies)}
     for root_key, value in top_level.items():
-        context[variant_root_marker(root_key)] = dump_root_yaml(root_key, value)
-    rendered = render_text(template_text, context)
+        context[_variant_root_marker(root_key)] = _dump_root_yaml(root_key, value)
+    rendered = _render_text(template_text, context)
     _require_expected_markers(template_text, context)
     if not isinstance(yaml.safe_load(rendered), dict):
         raise ValueError("rendered template must be a mapping")
@@ -57,16 +87,21 @@ def _load_variant(template_root, variant):
     )
     if not isinstance(document, dict):
         raise ValueError("variant must be a mapping")
-    generator = document.get("_generator")
+    document = copy.deepcopy(document)
+    generator = document.pop("_generator", None)
     if not isinstance(generator, dict):
         raise ValueError("variant metadata must be a mapping")
+    node_groups = generator.get("inject-node-groups")
+    if not isinstance(node_groups, list) or not all(
+        isinstance(group, str) for group in node_groups
+    ):
+        raise ValueError("variant inject-node-groups must be a string list")
     home_groups = generator.get("inject-home-node-groups", [])
     if not isinstance(home_groups, list) or not all(isinstance(group, str) for group in home_groups):
         raise ValueError("variant inject-home-node-groups must be a string list")
-    variant_spec = load_variant(template_root, variant)
-    injections = {group: "all" for group in variant_spec.inject_node_groups}
+    injections = {group: "all" for group in node_groups}
     injections.update({group: "home" for group in home_groups})
-    return copy.deepcopy(dict(variant_spec.top_level)), injections
+    return document, injections
 
 
 def _source_proxy_names(sources, proxies):
@@ -103,6 +138,6 @@ def _inject_proxy_names(top_level, injections, source_names):
 
 
 def _require_expected_markers(template_text, context):
-    markers = template_markers(template_text)
+    markers = _template_markers(template_text)
     if markers != set(context):
         raise ValueError("template markers do not match rendering context")

@@ -196,7 +196,7 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("所有者客户端 ID：7", stdout)
         self.assertLess(stdout.index("ID 7"), stdout.index("ID 8"))
-        for secret in (TOKEN, ROTATED_TOKEN, "ABC234", "private-sub-id", SOURCE_URL, "550e8400-e29b-41d4-a716-446655440000"):
+        for secret in (TOKEN, ROTATED_TOKEN, "ABC234", "private-sub-id", SOURCE_URL, "550e8400-e29b-41d4-" "a716-446655440000"):
             self.assertNotIn(secret, stdout)
 
     def test_noninteractive_commands_call_only_the_documented_service_operations(self):

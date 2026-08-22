@@ -1,8 +1,0 @@
-[Unit]
-Description=Record a failed certificate renewal
-# Only marks the sanitized renewal state; never refreshes or restarts
-# anything else.
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/python3 /opt/clash-sub/scripts/check_certificate.py --mark-renewal failed --state /opt/clash-sub/private/state/certificate.json

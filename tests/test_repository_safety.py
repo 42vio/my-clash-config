@@ -1,3 +1,4 @@
+import importlib
 import subprocess
 import unittest
 from pathlib import Path
@@ -30,13 +31,117 @@ FORBIDDEN_SUBSTRINGS = (
 TRACKED_DOCUMENT_PATHS = (
     "templates/clash.yaml.j2",
     "templates/variants/balanced.yaml",
-    "templates/variants/balanced-win.yaml",
+    "templates/variants/standard.yaml",
     "templates/variants/privacy.yaml",
     "tests/fixtures/synthetic-users.yaml",
 )
 
+LEGACY_RUNTIME_PATHS = (
+    "Dockerfile",
+    "compose.yaml",
+    "config/subconverter/pref.ini",
+    "config/users.example.yaml",
+    "clash_sub/converter.py",
+    "clash_sub/host_cli.py",
+    "clash_sub/manager.py",
+    "clash_sub/models.py",
+    "clash_sub/publisher.py",
+    "clash_sub/reference_rules.py",
+    "clash_sub/releases.py",
+    "clash_sub/rendering.py",
+    "clash_sub/settings.py",
+    "clash_sub/traffic.py",
+    "clash_sub/validation.py",
+    "templates/variants/balanced-win.yaml",
+    "scripts/check_certificate.py",
+    "scripts/install-server.sh",
+    "scripts/install_server.py",
+    "scripts/migrate_reference_templates.py",
+    "scripts/server_preflight.py",
+    "deploy/nginx/00-acme-http.conf.tmpl",
+    "deploy/nginx/10-clash-domain.conf.tmpl",
+    "deploy/nginx/10-clash-ip.conf.tmpl",
+    "deploy/systemd/clash-sub-cert-check.service",
+    "deploy/systemd/clash-sub-cert-check.timer",
+    "deploy/systemd/clash-sub-cert-renew-failed.service",
+    "deploy/systemd/clash-sub-cert-renew.service",
+    "deploy/systemd/clash-sub-cert-renew.timer",
+)
+
+SUPPORTED_EXPORTS = (
+    "ServiceConfig",
+    "ConfigError",
+    "ClashSubService",
+    "ServiceError",
+)
+
+ACTIVE_RUNTIME_PATHS = (
+    "bin/clash-sub",
+    "clash_sub",
+    "config/service.example.yaml",
+    "deploy",
+    "scripts/check_reality_target.py",
+    "scripts/scan_tracked_secrets.py",
+    "templates/clash.yaml.j2",
+    "templates/variants",
+    "requirements.txt",
+)
+
+FORBIDDEN_RUNTIME_REFERENCES = (
+    "publisher",
+    "subconverter",
+    "balanced-win",
+    "refresh",
+    "Certbot",
+    "Docker",
+)
+
+RETAINED_TEST_NAMES = {
+    "test_repository_safety.py",
+    "test_secret_scan.py",
+    "test_reality_target.py",
+}
+
 
 class RepositorySafetyTests(unittest.TestCase):
+    def test_superseded_runtime_assets_and_tests_are_absent(self):
+        for relative in LEGACY_RUNTIME_PATHS:
+            self.assertFalse((ROOT / relative).exists(), relative)
+        self.assertEqual(
+            tuple((ROOT / "deploy/systemd").glob("clash-sub-cert-*")),
+            (),
+        )
+        legacy_tests = tuple(
+            path.name
+            for path in (ROOT / "tests").glob("test_*.py")
+            if not path.name.startswith("test_lightweight_")
+            and path.name not in RETAINED_TEST_NAMES
+        )
+        self.assertEqual(legacy_tests, ())
+
+    def test_supported_package_exports_are_exact(self):
+        package = importlib.import_module("clash_sub")
+
+        self.assertEqual(tuple(package.__all__), SUPPORTED_EXPORTS)
+        for name in SUPPORTED_EXPORTS:
+            self.assertTrue(hasattr(package, name), name)
+
+    def test_active_runtime_has_no_superseded_stack_references(self):
+        paths = [
+            str(ROOT / relative)
+            for relative in ACTIVE_RUNTIME_PATHS
+            if (ROOT / relative).exists()
+        ]
+        for reference in FORBIDDEN_RUNTIME_REFERENCES:
+            result = subprocess.run(
+                ["rg", "--fixed-strings", "--line-number", reference, "--", *paths],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
     def test_every_runtime_private_path_is_ignored(self):
         paths = (
             "private/config/service.yaml",
