@@ -1,7 +1,9 @@
 import importlib
+import py_compile
 import subprocess
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -57,6 +59,7 @@ LEGACY_RUNTIME_PATHS = (
     "scripts/install-server.sh",
     "scripts/install_server.py",
     "scripts/migrate_reference_templates.py",
+    "scripts/compare_reference_configs.py",
     "scripts/server_preflight.py",
     "deploy/nginx/00-acme-http.conf.tmpl",
     "deploy/nginx/10-clash-domain.conf.tmpl",
@@ -102,8 +105,27 @@ RETAINED_TEST_NAMES = {
     "test_reality_target.py",
 }
 
+RETAINED_SCRIPT_ENTRY_POINTS = {
+    "check_reality_target.py",
+    "scan_tracked_secrets.py",
+}
+
 
 class RepositorySafetyTests(unittest.TestCase):
+    def test_only_retained_script_entry_points_compile_without_execution(self):
+        scripts = ROOT / "scripts"
+        self.assertEqual(
+            {path.name for path in scripts.iterdir() if path.is_file()},
+            RETAINED_SCRIPT_ENTRY_POINTS,
+        )
+        with TemporaryDirectory() as directory:
+            for name in RETAINED_SCRIPT_ENTRY_POINTS:
+                py_compile.compile(
+                    str(scripts / name),
+                    cfile=str(Path(directory) / (name + "c")),
+                    doraise=True,
+                )
+
     def test_superseded_runtime_assets_and_tests_are_absent(self):
         for relative in LEGACY_RUNTIME_PATHS:
             self.assertFalse((ROOT / relative).exists(), relative)
