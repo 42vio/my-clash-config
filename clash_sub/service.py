@@ -42,7 +42,10 @@ class _OperationLock:
                 except OSError:pass
         try: fcntl.flock(self.descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            os.close(self.descriptor); self.descriptor = None; raise ServiceError("operation_busy") from None
+            try: os.close(self.descriptor)
+            except OSError: pass
+            finally: self.descriptor = None
+            raise ServiceError("operation_busy") from None
         return self
     def __exit__(self, exc_type, *_):
         if self.descriptor is None:return

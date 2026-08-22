@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from clash_sub.domain import PreparedRelease, RuntimeState, ServiceConfig, UserState, XuiClient, XuiSnapshot
 
@@ -33,6 +34,16 @@ class OperationLockTests(unittest.TestCase):
             with self.assertRaises(ServiceError) as caught: _OperationLock(linked / "operation.lock").__enter__()
             self.assertEqual(caught.exception.code, "operation_lock_invalid")
             self.assertFalse((outside / "operation.lock").exists())
+
+    def test_busy_lock_sanitizes_close_failure_and_clears_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "private"; root.mkdir(); os.chmod(root, 0o700)
+            lock = _OperationLock(root / "operation.lock")
+            with patch("clash_sub.service.fcntl.flock", side_effect=OSError("busy secret")), patch("clash_sub.service.os.close", side_effect=OSError("close secret")):
+                with self.assertRaises(ServiceError) as caught: lock.__enter__()
+            self.assertEqual(caught.exception.code, "operation_busy")
+            self.assertIsNone(lock.descriptor)
+            self.assertNotIn("secret", str(caught.exception))
 
 
 def token(byte, code):
