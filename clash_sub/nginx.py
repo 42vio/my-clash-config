@@ -12,7 +12,7 @@ from clash_sub.state import TOKEN_RE, _state_to_payload
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
 _ROUTE_MODE = 0o640
 _PRIVATE_MODE = 0o600
-_UNSAFE_PATH_CHARACTERS = frozenset(" \t\r\n;{}'\\\"")
+_UNSAFE_PATH_CHARACTERS = frozenset(" ;{}'\\\"#$" + "".join(chr(code) for code in range(0x20)) + chr(0x7F))
 _TITLES = {
     "balanced": ("Clash Balanced", "Clash-Balanced.yaml"),
     "standard": ("Clash Standard", "Clash-Standard.yaml"),
@@ -66,8 +66,8 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
             candidates.append((path, _write_candidate(path, contents, mode)))
         for path, candidate in candidates:
             os.replace(candidate, path)
-            _fsync_directory(path.parent)
             changed = True
+            _fsync_directory(path.parent)
 
         if not _command_ok(runner, (str(checked_config.nginx_binary), "-t")):
             if not _restore(snapshots):
@@ -278,7 +278,7 @@ def _safe_path(value, *, require_exists):
             raise NginxError("invalid service path")
     try:
         return path.resolve(strict=require_exists)
-    except OSError:
+    except (OSError, ValueError):
         raise NginxError("invalid service path") from None
 
 

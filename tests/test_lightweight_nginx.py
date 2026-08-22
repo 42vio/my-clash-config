@@ -131,7 +131,20 @@ class LightweightNginxTests(unittest.TestCase):
 
     def test_routes_reject_public_alias_metacharacters_or_symlinked_ancestors(self):
         self.assertIsNotNone(render_routes, "Nginx routes are not implemented")
-        for name in ("with space", "bad;alias", "bad{alias", "bad}alias", 'bad"alias', "bad'alias", "bad\\alias", "bad\nalias"):
+        invalid_names = (
+            "with space",
+            "bad;alias",
+            "bad{alias",
+            "bad}alias",
+            'bad"alias',
+            "bad'alias",
+            "bad\\alias",
+            "bad#alias",
+            "bad$alias",
+            *("bad%salias" % chr(code) for code in range(0x20)),
+            "bad%salias" % chr(0x7F),
+        )
+        for name in invalid_names:
             with self.subTest(name=name):
                 bad_config = replace(self.config, public_root=self.public_root.parent / name)
                 with self.assertRaisesRegex(NginxError, "service configuration") as error:
@@ -365,6 +378,35 @@ class LightweightNginxTests(unittest.TestCase):
 
         self.assertEqual(state_path.read_bytes(), old_state)
         self.assertEqual(self.routes.read_bytes(), old_routes)
+        self.assertEqual(tuple(self.private_root.glob(".*")), ())
+        self.assertEqual(tuple(self.routes.parent.glob(".*")), ())
+
+    def test_first_install_fsync_failure_restores_all_prior_artifacts_before_raising(self):
+        self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        old_state = state_path.read_bytes()
+        self.routes.write_bytes(b"old routes\n")
+        old_routes = self.routes.read_bytes()
+        os.chmod(self.routes, 0o644)
+        real_fsync_directory = nginx_module._fsync_directory
+        calls = 0
+
+        def fail_first_install_fsync(directory):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError("fsync failed")
+            return real_fsync_directory(directory)
+
+        with patch("clash_sub.nginx._fsync_directory", side_effect=fail_first_install_fsync):
+            with self.assertRaisesRegex(NginxError, "activation failed"):
+                activate_runtime(self.config, self.state, "new routes\n", FakeRunner())
+
+        self.assertEqual(state_path.read_bytes(), old_state)
+        self.assertEqual(self.routes.read_bytes(), old_routes)
+        self.assertEqual(stat.S_IMODE(state_path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.routes.stat().st_mode), 0o644)
         self.assertEqual(tuple(self.private_root.glob(".*")), ())
         self.assertEqual(tuple(self.routes.parent.glob(".*")), ())
 
