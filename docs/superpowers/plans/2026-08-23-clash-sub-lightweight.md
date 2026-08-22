@@ -665,6 +665,7 @@ Assert:
 - no `proxy_pass` exists in the subscription server;
 - no TCP 443/1443/8080, UDP, stream, Docker, publisher, subconverter, Certbot, directory listing, raw `/sub/`, `/json/`, or `/clash/` exposure exists;
 - timer runs `clash-sub traffic-update` once daily with `Persistent=true`, a small randomized delay, tight systemd hardening, and no config generation command;
+- deployment creates `/var/lib/clash-sub/public` as `root:www-data` mode `02750` before any release is generated, and asserts that this setgid/group contract is the prerequisite for Nginx to read `0640` release YAML;
 - requirements remain exactly Jinja2 and PyYAML pins.
 
 - [ ] **Step 2: Run and verify failure**
@@ -674,6 +675,8 @@ Run: `.venv/bin/python -m unittest tests.test_lightweight_deployment -v`
 - [ ] **Step 3: Implement static host assets**
 
 The Nginx template placeholders are exactly `{{DOMAIN}}`, `{{PANEL_BASE_PATH}}`, `{{PANEL_UPSTREAM}}`, `{{FULLCHAIN_PATH}}`, `{{PRIVKEY_PATH}}`, and `{{ROUTES_INCLUDE}}`. Do not add a render/install script; the deployment guide will use explicit `sed`/editor steps and `nginx -t` before reload.
+
+The manual deployment procedure must create `/var/lib/clash-sub/public` with owner/group `root:www-data` and mode `02750` before the first `clash-sub sync`. `ReleaseStore` inherits and verifies that numeric group for every public directory and release file; the Python runtime never calls `chown` or hardcodes a group name.
 
 The timer invokes:
 
