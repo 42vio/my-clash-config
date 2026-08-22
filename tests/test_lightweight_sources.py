@@ -4,8 +4,11 @@ import io
 import os
 import stat
 import tempfile
+import traceback
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+import urllib.request
 from urllib.request import Request
 
 from clash_sub.domain import Traffic
@@ -149,6 +152,42 @@ class SourceFetchingTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
 
+    def test_airport_error_never_echoes_url_in_its_traceback(self):
+        secret = "https://airport.example/private-five-minute-token"
+
+        def failing_opener(request, timeout):
+            raise OSError(secret)
+
+        with self.assertRaises(SourceError) as caught:
+            download_airport_proxies(secret, 1024, opener=failing_opener)
+
+        rendered = "".join(traceback.format_exception(caught.exception))
+        self.assertNotIn(secret, rendered)
+
+    def test_default_airport_downloader_installs_the_https_redirect_handler(self):
+        response = FakeResponse(proxy_yaml(), "https://airport.example/final")
+        captured = {}
+
+        class CapturingOpener:
+            def open(self, request, timeout):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                return response
+
+        def build_opener(*handlers):
+            captured["handlers"] = handlers
+            return CapturingOpener()
+
+        with patch("urllib.request.build_opener", side_effect=build_opener) as builder:
+            with patch.object(urllib.request.OpenerDirector, "open", return_value=response):
+                proxies = download_airport_proxies("https://airport.example/private-token", 1024)
+
+        self.assertEqual(proxies[0]["name"], "Example")
+        builder.assert_called_once()
+        self.assertEqual(len(captured["handlers"]), 1)
+        self.assertIsInstance(captured["handlers"][0], _HttpsRedirectHandler)
+        self.assertEqual(captured["timeout"], 15)
+
 
 class SnapshotAndMergeTests(unittest.TestCase):
     def test_snapshot_is_root_only_atomic_yaml_without_a_source_url(self):
@@ -187,6 +226,32 @@ class SnapshotAndMergeTests(unittest.TestCase):
             ["Shared [3x-ui]", "Only xui", "Shared [机场]", "Shared [家庭]"],
         )
         self.assertEqual((xui, airport, home), originals)
+
+    def test_merge_disambiguates_presuffixed_and_duplicate_source_names(self):
+        xui = [
+            {"name": "Shared", "type": "ss"},
+            {"name": "Shared [3x-ui]", "type": "ss"},
+            {"name": "Repeated", "type": "ss"},
+            {"name": "Repeated", "type": "ss"},
+        ]
+        airport = [{"name": "Shared", "type": "ss"}]
+        originals = copy.deepcopy((xui, airport))
+
+        merged = merge_proxy_sources((("3x-ui", xui), ("机场", airport)))
+        names = [proxy["name"] for proxy in merged]
+
+        self.assertEqual(
+            names,
+            [
+                "Shared [3x-ui]",
+                "Shared [3x-ui] [2]",
+                "Repeated [3x-ui]",
+                "Repeated [3x-ui] [2]",
+                "Shared [机场]",
+            ],
+        )
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual((xui, airport), originals)
 
 
 class TrafficHeaderTests(unittest.TestCase):

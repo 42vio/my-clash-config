@@ -2,11 +2,12 @@ import copy
 import os
 import stat
 import tempfile
+import urllib.request
 from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request
 
 import yaml
 
@@ -108,10 +109,19 @@ def merge_proxy_sources(labeled_sources):
                 names.append(proxy["name"])
         duplicates = Counter(names)
         merged = []
+        used_names = set()
         for label, proxy in entries:
             copied = copy.deepcopy(proxy)
-            if duplicates[copied["name"]] > 1:
-                copied["name"] = "%s [%s]" % (copied["name"], label)
+            name = copied["name"]
+            if duplicates[name] > 1:
+                name = "%s [%s]" % (name, label)
+            base_name = name
+            number = 2
+            while name in used_names:
+                name = "%s [%s]" % (base_name, number)
+                number += 1
+            copied["name"] = name
+            used_names.add(name)
             merged.append(copied)
         return merged
     except SourceError:
@@ -169,7 +179,11 @@ def _fetch_proxies(url, max_bytes, opener, valid_final_url, airport=False):
     try:
         active_opener = opener
         if active_opener is None:
-            active_opener = build_opener(_HttpsRedirectHandler()) if airport else build_opener()
+            active_opener = (
+                urllib.request.build_opener(_HttpsRedirectHandler())
+                if airport
+                else urllib.request.build_opener()
+            )
         response = _open(active_opener, request)
         with response:
             final_url = response.geturl()
@@ -182,7 +196,7 @@ def _fetch_proxies(url, max_bytes, opener, valid_final_url, airport=False):
     except SourceError:
         raise
     except Exception:
-        _source_fail()
+        raise SourceError(_SOURCE_ERROR) from None
 
 
 def _open(opener, request):
