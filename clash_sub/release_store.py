@@ -65,14 +65,16 @@ class ReleaseStore:
                 return None
 
         release_id = _release_id(self._clock(), self._suffix_factory())
-        private_staging_root = _private_directory(self._private_root, "staging")
-        private_stage = _new_directory(private_staging_root, release_id, 0o700)
-        public_releases = _public_directory(self._public_root, "releases")
-        public_client_root = _new_or_existing_directory(public_releases, client_name, 0o750)
-        public_stage = _new_directory(public_client_root, ".%s.tmp" % release_id, 0o750)
+        private_stage = None
+        public_stage = None
         private_release = None
-        public_release = public_client_root / release_id
+        public_release = None
         try:
+            private_staging_root = _private_directory(self._private_root, "staging")
+            private_stage = _new_directory(private_staging_root, release_id, 0o700)
+            public_releases = _public_directory(self._public_root, "releases")
+            public_client_root = _new_or_existing_directory(public_releases, client_name, 0o750)
+            public_stage = _new_directory(public_client_root, ".%s.tmp" % release_id, 0o750)
             manifest = {
                 "schema_version": 1,
                 "client_id": client_id,
@@ -84,7 +86,7 @@ class ReleaseStore:
             }
             for variant in variants:
                 _write_file(private_stage / _filename(variant), files[variant].encode("utf-8"), 0o600)
-                _write_file(public_stage / _filename(variant), files[variant].encode("utf-8"), 0o640)
+                _write_file(public_stage / _filename(variant), files[variant].encode("utf-8"), 0o600)
             manifest_path = private_stage / "manifest.json"
             _write_file(
                 manifest_path,
@@ -98,24 +100,31 @@ class ReleaseStore:
             )
 
             _verify_staged_release(private_stage, public_stage, manifest)
-            os.replace(public_stage, public_release)
+            public_target = public_client_root / release_id
+            if public_target.exists() or public_target.is_symlink():
+                raise ReleaseStoreError("release path is invalid")
+            for variant in variants:
+                os.chmod(public_stage / _filename(variant), 0o640)
+            os.replace(public_stage, public_target)
+            public_release = public_target
             private_releases = _private_directory(self._private_root, "releases")
             private_client_root = _new_or_existing_directory(private_releases, client_name, 0o700)
-            private_release = private_client_root / release_id
-            os.replace(private_stage, private_release)
+            private_target = private_client_root / release_id
+            if private_target.exists() or private_target.is_symlink():
+                raise ReleaseStoreError("release path is invalid")
+            os.replace(private_stage, private_target)
+            private_release = private_target
             return self.verify_release(client_id, release_id)
-        except (OSError, ValueError, TypeError) as exc:
-            _remove_owned_directory(public_stage)
-            _remove_owned_directory(public_release)
-            _remove_owned_directory(private_stage)
-            if private_release is not None:
-                _remove_owned_directory(private_release)
+        except (ReleaseStoreError, OSError, ValueError, TypeError) as exc:
+            for candidate in (public_stage, public_release, private_stage, private_release):
+                if candidate is not None:
+                    _remove_owned_directory(candidate)
             raise ReleaseStoreError("failed to prepare release") from exc
 
     def verify_release(self, client_id: int, release_id: str) -> PreparedRelease:
         client_name = _client_name(client_id)
         _validate_release_id(release_id)
-        private_release = _existing_release_directory(
+        private_release = _existing_private_release_directory(
             self._private_root, "releases", client_name, release_id
         )
         public_release = _existing_release_directory(
@@ -152,12 +161,10 @@ class ReleaseStore:
 
     def history(self, client_id: int) -> tuple[PreparedRelease, ...]:
         client_name = _client_name(client_id)
-        if self._private_root.is_symlink() or not self._private_root.is_dir():
+        if not _is_private_directory(self._private_root):
             return ()
         root = self._private_root / "releases" / client_name
-        if not root.exists() and not root.is_symlink():
-            return ()
-        if root.is_symlink() or not root.is_dir():
+        if not _is_private_directory(root):
             return ()
         releases = []
         try:
@@ -342,6 +349,27 @@ def _existing_release_directory(root: Path, *parts: str) -> Path:
         if path.is_symlink() or not path.is_dir():
             raise ReleaseStoreError("release path is invalid")
     return path
+
+
+def _existing_private_release_directory(root: Path, *parts: str) -> Path:
+    if not _is_private_directory(root):
+        _raise_private_directory_error(root)
+    path = root
+    for part in parts:
+        path = path / part
+        if not _is_private_directory(path):
+            _raise_private_directory_error(path)
+    return path
+
+
+def _is_private_directory(path: Path) -> bool:
+    return not path.is_symlink() and path.is_dir() and stat_mode(path) == 0o700
+
+
+def _raise_private_directory_error(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        raise ReleaseStoreError("release path is invalid")
+    raise ReleaseStoreError("release permissions are invalid")
 
 
 def _write_file(path: Path, contents: bytes, mode: int) -> None:
