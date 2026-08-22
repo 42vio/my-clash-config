@@ -427,7 +427,7 @@ git commit -m "feat: render isolated Clash variants"
 
 **Interfaces:**
 - Consumes: validated rendered bundles and current release ID.
-- Produces: `ReleaseStore.prepare(client_id, bundle, input_hashes) -> PreparedRelease | None`, `verify_release(client_id, release_id)`, `history(client_id)`, `prune(client_id, keep=5)`.
+- Produces: `ReleaseStore.prepare(client_id, bundle, input_hashes) -> PreparedRelease | None`, `current_artifact(client_id, release_id)`, `discard_unreferenced(client_id, release_id)`, `verify_release(client_id, release_id)`, `history(client_id)`, `prune(client_id, keep=5)`.
 
 - [ ] **Step 1: Write failing immutable-release tests**
 
@@ -574,7 +574,7 @@ Run: `.venv/bin/python -m unittest tests.test_lightweight_service -v`
 
 - [ ] **Step 3: Implement one transactional activation boundary**
 
-Define `ServiceError` with a stable `code` and no collaborator text. Build releases as immutable unreferenced candidates first, then construct candidate state and routes entirely in memory. Use `activate_runtime` once per operation. For airport update, pass the candidate snapshot as an `extra_replacements` entry so state, routes, and snapshot are installed and restored as one transaction around `nginx -t`/reload. Only after activation succeeds may the service prune old releases. Return sanitized result objects containing client ID/email, release ID, variant names, and stable error codes—but never token except from `links()`/successful `rotate_link()`.
+Define `ServiceError` with a stable `code` and no collaborator text. Build releases as immutable unreferenced candidates first, then construct candidate state and routes entirely in memory. Use `activate_runtime` once per operation, passing every prepared release's root-only `current_artifact` as an `extra_replacements` entry. For airport update, include the candidate snapshot in the same replacement set so state, routes, current release markers, and snapshot are installed and restored as one transaction around `nginx -t`/reload. Discard every failed unreferenced candidate. Only after activation succeeds may the service prune old releases. Return sanitized result objects containing client ID/email, release ID, variant names, and stable error codes—but never token except from `links()`/successful `rotate_link()`.
 
 - [ ] **Step 4: Run tests and commit**
 
