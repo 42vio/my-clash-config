@@ -46,6 +46,8 @@ def validate_clash(text, forbidden_values):
         raise CheckError("rendered config must not contain proxy-providers")
     proxy_names = _validate_proxies(document["proxies"])
     group_names = _validate_groups(document["proxy-groups"])
+    if proxy_names & group_names:
+        raise CheckError("proxy name conflicts with proxy group name")
     targets = proxy_names | group_names | _BUILTIN_TARGETS
     _validate_group_targets(document["proxy-groups"], targets)
     _validate_rule_providers(document["rule-providers"])
@@ -83,6 +85,8 @@ def _validate_reality(proxy):
     if type(proxy["port"]) is not int or not 1 <= proxy["port"] <= 65535:
         raise CheckError("VLESS REALITY options are incomplete")
     if proxy["tls"] is not True:
+        raise CheckError("VLESS REALITY options are incomplete")
+    if proxy["network"] != "tcp" or proxy["flow"] != "xtls-rprx-vision":
         raise CheckError("VLESS REALITY options are incomplete")
     options = proxy["reality-opts"]
     if (

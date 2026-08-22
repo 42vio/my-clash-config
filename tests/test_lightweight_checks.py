@@ -196,6 +196,24 @@ class LightweightChecksTests(unittest.TestCase):
                 with self.assertRaisesRegex(CheckError, "REALITY"):
                     validate_clash(dump(document), ())
 
+    def test_reality_requires_raw_tcp_vision_semantics(self):
+        self.assertIsNotNone(validate_clash)
+        invalid_values = (
+            (("network",), "ws"),
+            (("network",), ""),
+            (("network",), 123),
+            (("flow",), "xtls-rprx-origin"),
+            (("flow",), ""),
+            (("flow",), 123),
+        )
+        for path, value in invalid_values:
+            with self.subTest(path=path, value=value):
+                document = copy.deepcopy(valid_document())
+                document["proxies"][0][path[0]] = value
+
+                with self.assertRaisesRegex(CheckError, "REALITY"):
+                    validate_clash(dump(document), ())
+
     def test_non_reality_proxy_fields_are_not_overvalidated(self):
         self.assertIsNotNone(validate_clash)
         document = valid_document()
@@ -217,3 +235,15 @@ class LightweightChecksTests(unittest.TestCase):
             validate_clash(dump(document), ())
         self.assertNotIn("First Secret Group", str(context.exception))
         self.assertNotIn("Second Secret Group", str(context.exception))
+
+    def test_proxy_group_name_collision_is_rejected_before_cycle_analysis(self):
+        self.assertIsNotNone(validate_clash)
+        document = valid_document()
+        document["proxy-groups"] = [
+            {"name": "Owner 3x-ui", "type": "select", "proxies": ["DIRECT"]},
+        ]
+        document["rules"] = ["MATCH,DIRECT"]
+
+        with self.assertRaisesRegex(CheckError, "proxy name conflicts with proxy group name") as context:
+            validate_clash(dump(document), ())
+        self.assertNotIn("Owner 3x-ui", str(context.exception))
