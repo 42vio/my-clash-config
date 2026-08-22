@@ -228,6 +228,157 @@ class ReleaseStoreTests(unittest.TestCase):
         self.assertIsNone(second)
         self.assertEqual(tuple(item.release_id for item in self.store.history(7)), (first.release_id,))
 
+    def test_current_artifact_is_root_only_marker_installed_equivalently_by_mark_current(self):
+        release = self.prepare_member("token: secret-value\n")
+
+        marker_path, marker_bytes, marker_mode = self.store.current_artifact(
+            7, release.release_id
+        )
+
+        self.assertTrue(marker_path.is_absolute())
+        self.assertEqual(marker_path, (self.private_root / "current" / "7").absolute())
+        self.assertEqual(marker_bytes, (release.release_id + "\n").encode("ascii"))
+        self.assertEqual(marker_mode, 0o600)
+        self.assertNotIn(b"secret-value", marker_bytes)
+        self.assertNotIn(str(self.private_root).encode("utf-8"), marker_bytes)
+        self.assertNotIn(b"/", marker_bytes)
+        self.assertFalse(marker_path.exists())
+
+        self.store.mark_current(7, release.release_id)
+
+        self.assertFalse(marker_path.is_symlink())
+        self.assertTrue(marker_path.is_file())
+        self.assertEqual(marker_path.read_bytes(), marker_bytes)
+        self.assertEqual(stat.S_IMODE(marker_path.stat().st_mode), marker_mode)
+        self.assertEqual(self.store.current_release_id(7), release.release_id)
+        self.assertFalse((self.public_root / "current").exists())
+        self.assertFalse((self.public_root / "current").is_symlink())
+
+    def test_current_release_id_rejects_marker_and_private_ancestor_drift(self):
+        release = self.prepare_member()
+        self.store.mark_current(7, release.release_id)
+        marker = self.private_root / "current" / "7"
+        current_root = marker.parent
+
+        marker.unlink()
+        marker.symlink_to(release.manifest_path.parent, target_is_directory=True)
+        with self.assertRaisesRegex(ReleaseStoreError, "current release reference"):
+            self.store.current_release_id(7)
+
+        marker.unlink()
+        marker.write_bytes((release.release_id + "\n").encode("ascii"))
+        os.chmod(marker, 0o640)
+        with self.assertRaisesRegex(ReleaseStoreError, "current release reference"):
+            self.store.current_release_id(7)
+
+        for contents in (
+            release.release_id.encode("ascii"),
+            (release.release_id + "\n\n").encode("ascii"),
+            b"../escape\n",
+        ):
+            with self.subTest(contents=contents):
+                marker.write_bytes(contents)
+                os.chmod(marker, 0o600)
+                with self.assertRaisesRegex(ReleaseStoreError, "current release reference"):
+                    self.store.current_release_id(7)
+
+        marker.write_bytes((release.release_id + "\n").encode("ascii"))
+        os.chmod(marker, 0o600)
+        os.chmod(current_root, 0o750)
+        with self.assertRaisesRegex(ReleaseStoreError, "permissions"):
+            self.store.current_release_id(7)
+
+    def test_current_artifact_verifies_release_integrity(self):
+        release = self.prepare_member()
+        release.public_paths["standard"].write_text("tampered\n", encoding="utf-8")
+        os.chmod(release.public_paths["standard"], 0o640)
+
+        with self.assertRaisesRegex(ReleaseStoreError, "hash"):
+            self.store.current_artifact(7, release.release_id)
+
+    def test_mark_current_failure_preserves_prior_regular_marker(self):
+        current = self.prepare_member()
+        self.store.mark_current(7, current.release_id)
+        self.now += timedelta(seconds=1)
+        candidate = self.prepare_member("proxies: [candidate]\n")
+        marker = self.private_root / "current" / "7"
+        original = marker.read_bytes()
+
+        with patch("clash_sub.release_store.os.replace", side_effect=OSError("disk error")):
+            with self.assertRaisesRegex(ReleaseStoreError, "mark current"):
+                self.store.mark_current(7, candidate.release_id)
+
+        self.assertEqual(marker.read_bytes(), original)
+        self.assertEqual(stat.S_IMODE(marker.stat().st_mode), 0o600)
+        self.assertEqual(self.store.current_release_id(7), current.release_id)
+        self.assertFalse((marker.parent / ".7.tmp").exists())
+
+    def test_discard_unreferenced_removes_only_candidate_pair_and_history_entry(self):
+        current = self.prepare_member()
+        self.store.mark_current(7, current.release_id)
+        self.now += timedelta(seconds=1)
+        candidate = self.prepare_member("proxies: [candidate]\n")
+        candidate_private = candidate.manifest_path.parent
+        candidate_public = candidate.public_paths["standard"].parent
+
+        self.store.discard_unreferenced(7, candidate.release_id)
+
+        self.assertFalse(candidate_private.exists())
+        self.assertFalse(candidate_private.is_symlink())
+        self.assertFalse(candidate_public.exists())
+        self.assertFalse(candidate_public.is_symlink())
+        self.assertEqual(
+            tuple(item.release_id for item in self.store.history(7)),
+            (current.release_id,),
+        )
+        self.assert_prior_release_survives(current)
+
+    def test_discard_unreferenced_refuses_current_and_unsafe_ids(self):
+        current = self.prepare_member()
+        self.store.mark_current(7, current.release_id)
+
+        with self.assertRaisesRegex(ReleaseStoreError, "failed to discard release"):
+            self.store.discard_unreferenced(7, current.release_id)
+        with self.assertRaisesRegex(ReleaseStoreError, "client id"):
+            self.store.discard_unreferenced(0, current.release_id)
+        with self.assertRaisesRegex(ReleaseStoreError, "release id"):
+            self.store.discard_unreferenced(7, "../escape")
+
+        self.assert_prior_release_survives(current)
+
+    def test_discard_unreferenced_rejects_tampered_target_without_partial_removal(self):
+        current = self.prepare_member()
+        self.store.mark_current(7, current.release_id)
+        self.now += timedelta(seconds=1)
+        candidate = self.prepare_member("proxies: [candidate]\n")
+        candidate_private = candidate.manifest_path.parent
+        candidate_public = candidate.public_paths["standard"].parent
+        public_yaml = candidate.public_paths["standard"]
+        original_yaml = public_yaml.read_bytes()
+
+        public_yaml.write_bytes(b"tampered\n")
+        os.chmod(public_yaml, 0o640)
+        with self.assertRaisesRegex(ReleaseStoreError, "failed to discard release"):
+            self.store.discard_unreferenced(7, candidate.release_id)
+
+        self.assertTrue(candidate_private.is_dir())
+        self.assertTrue(candidate_public.is_dir())
+        self.assert_prior_release_survives(current)
+
+        public_yaml.write_bytes(original_yaml)
+        os.chmod(public_yaml, 0o640)
+        saved_private = candidate_private.with_name("saved-candidate")
+        candidate_private.rename(saved_private)
+        candidate_private.symlink_to(saved_private, target_is_directory=True)
+
+        with self.assertRaisesRegex(ReleaseStoreError, "failed to discard release"):
+            self.store.discard_unreferenced(7, candidate.release_id)
+
+        self.assertTrue(candidate_private.is_symlink())
+        self.assertTrue(saved_private.is_dir())
+        self.assertTrue(candidate_public.is_dir())
+        self.assert_prior_release_survives(current)
+
     def test_owner_release_requires_all_three_authorized_variants(self):
         with self.assertRaisesRegex(ReleaseStoreError, "variants"):
             self.store.prepare(

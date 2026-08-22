@@ -191,46 +191,68 @@ class ReleaseStore:
                 continue
         return tuple(sorted(releases, key=lambda item: item.release_id, reverse=True))
 
-    def mark_current(self, client_id: int, release_id: str) -> None:
+    def current_artifact(self, client_id: int, release_id: str) -> tuple[Path, bytes, int]:
         client_name = _client_name(client_id)
         verified = self.verify_release(client_id, release_id)
         current_root = _private_directory(self._private_root, "current")
-        current = current_root / client_name
-        temporary = current_root / (".%s.tmp" % client_name)
-        if temporary.exists() or temporary.is_symlink():
-            _remove_owned_path(temporary)
-        target = "../releases/%s/%s" % (client_name, verified.release_id)
-        os.symlink(target, temporary)
-        try:
-            os.replace(temporary, current)
-        except OSError as exc:
-            _remove_owned_path(temporary)
-            raise ReleaseStoreError("failed to mark current release") from exc
+        marker = (current_root / client_name).absolute()
+        return marker, (verified.release_id + "\n").encode("ascii"), 0o600
+
+    def mark_current(self, client_id: int, release_id: str) -> None:
+        marker, contents, mode = self.current_artifact(client_id, release_id)
+        _atomic_replace_file(marker, contents, mode, "failed to mark current release")
 
     def current_release_id(self, client_id: int) -> str | None:
         client_name = _client_name(client_id)
         current = self._private_root / "current" / client_name
         if not current.exists() and not current.is_symlink():
             return None
-        if not current.is_symlink():
-            raise ReleaseStoreError("current release reference is invalid")
         try:
-            target = os.readlink(current)
-        except OSError as exc:
-            raise ReleaseStoreError("current release reference is invalid") from exc
-        parts = Path(target).parts
-        if parts[:3] != ("..", "releases", client_name) or len(parts) != 4:
-            raise ReleaseStoreError("current release reference is invalid")
-        release_id = parts[3]
-        _validate_release_id(release_id)
-        try:
-            if current.resolve(strict=True) != (
-                self._private_root / "releases" / client_name / release_id
-            ).resolve(strict=True):
+            _existing_private_release_directory(self._private_root, "current")
+            _require_regular_file(current, "current release reference")
+            if stat_mode(current) != 0o600:
                 raise ReleaseStoreError("current release reference is invalid")
+            contents = current.read_bytes()
         except (OSError, ValueError) as exc:
             raise ReleaseStoreError("current release reference is invalid") from exc
+        try:
+            marker = contents.decode("ascii")
+        except UnicodeError as exc:
+            raise ReleaseStoreError("current release reference is invalid") from exc
+        if not marker.endswith("\n") or "\n" in marker[:-1]:
+            raise ReleaseStoreError("current release reference is invalid")
+        release_id = marker[:-1]
+        try:
+            _validate_release_id(release_id)
+        except ReleaseStoreError as exc:
+            raise ReleaseStoreError("current release reference is invalid") from exc
         return release_id
+
+    def discard_unreferenced(self, client_id: int, release_id: str) -> None:
+        client_name = _client_name(client_id)
+        _validate_release_id(release_id)
+        try:
+            verified = self.verify_release(client_id, release_id)
+            if self.current_release_id(client_id) == release_id:
+                raise ReleaseStoreError("release is current")
+            private_release = _existing_private_release_directory(
+                self._private_root, "releases", client_name, release_id
+            )
+            public_release, public_gid = _existing_public_release_directory(
+                self._public_root, "releases", client_name, release_id
+            )
+            public_directories = {path.parent for path in verified.public_paths.values()}
+            if verified.manifest_path.parent != private_release:
+                raise ReleaseStoreError("release path is invalid")
+            if public_directories != {public_release}:
+                raise ReleaseStoreError("release path is invalid")
+            if not _is_private_directory(private_release):
+                _raise_private_directory_error(private_release)
+            _require_public_directory(public_release, public_gid)
+            shutil.rmtree(public_release)
+            shutil.rmtree(private_release)
+        except (ReleaseStoreError, OSError, ValueError, TypeError) as exc:
+            raise ReleaseStoreError("failed to discard release") from exc
 
     def prune(self, client_id: int, keep: int = 5) -> tuple[str, ...]:
         _client_name(client_id)
@@ -426,6 +448,18 @@ def _write_file(path: Path, contents: bytes, mode: int) -> None:
         os.chmod(path, mode)
         handle.write(contents)
     os.chmod(path, mode)
+
+
+def _atomic_replace_file(path: Path, contents: bytes, mode: int, error: str) -> None:
+    temporary = path.with_name(".%s.tmp" % path.name)
+    try:
+        if temporary.exists() or temporary.is_symlink():
+            _remove_owned_path(temporary)
+        _write_file(temporary, contents, mode)
+        os.replace(temporary, path)
+    except (ReleaseStoreError, OSError) as exc:
+        _remove_owned_path(temporary)
+        raise ReleaseStoreError(error) from exc
 
 
 def _verify_public_staging(public_stage: Path, variants: tuple[str, ...], public_gid: int) -> None:
