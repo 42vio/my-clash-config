@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -31,9 +32,10 @@ _REQUIRED_SETTINGS = (
 )
 
 
-def read_xui_snapshot(path: Path) -> XuiSnapshot:
+def read_xui_snapshot(path: Path, now_ms: int | None = None) -> XuiSnapshot:
     """Read the supported 3x-ui client and Clash subscription snapshot."""
     try:
+        current_time_ms = _current_time_ms(now_ms)
         connection = sqlite3.connect(
             "file:%s?mode=ro" % quote(str(path)), uri=True, timeout=1.0
         )
@@ -41,7 +43,7 @@ def read_xui_snapshot(path: Path) -> XuiSnapshot:
             connection.execute("PRAGMA query_only=ON")
             _validate_schema(connection)
             listen, port, clash_path = _read_settings(connection)
-            clients = _read_clients(connection)
+            clients = _read_clients(connection, current_time_ms)
         finally:
             connection.close()
     except XuiCompatibilityError:
@@ -93,7 +95,7 @@ def _read_settings(connection) -> tuple[str, int, str]:
     return listen, port, _clash_path(values["subClashPath"])
 
 
-def _read_clients(connection) -> list[XuiClient]:
+def _read_clients(connection, current_time_ms: int) -> list[XuiClient]:
     rows = connection.execute(
         """
         SELECT clients.id, clients.email, clients.sub_id, clients.enable,
@@ -133,7 +135,7 @@ def _read_clients(connection) -> list[XuiClient]:
             upload=upload,
             download=download,
             total=total,
-            expiry_ms=max(expiry_ms, 0),
+            expiry_ms=_normalized_expiry(expiry_ms, current_time_ms),
         )
         clients.append(
             XuiClient(
@@ -159,6 +161,20 @@ def _port(value) -> int:
     ):
         _fail()
     return int(value)
+
+
+def _current_time_ms(now_ms: int | None) -> int:
+    if now_ms is None:
+        return time.time_ns() // 1_000_000
+    if not _nonnegative_integer(now_ms):
+        _fail()
+    return now_ms
+
+
+def _normalized_expiry(expiry_ms: int, current_time_ms: int) -> int:
+    if expiry_ms < 0:
+        return current_time_ms + -expiry_ms
+    return expiry_ms
 
 
 def _clash_path(value) -> str:

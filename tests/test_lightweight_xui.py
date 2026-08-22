@@ -57,6 +57,24 @@ class XuiSnapshotTests(unittest.TestCase):
         self.assertEqual([client.total for client in snapshot.clients], [1000, 2000])
         self.assertEqual([client.expiry_ms for client in snapshot.clients], [123456789, 0])
 
+    def test_normalizes_relative_expiry_against_injected_current_time(self):
+        with sqlite3.connect(self.database) as connection:
+            connection.execute("UPDATE clients SET expiry_time = ? WHERE id = ?", (-5000, 9))
+            connection.execute(
+                """
+                INSERT INTO clients (id, email, sub_id, enable, total_gb, expiry_time)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (11, "never@example.test", "never-sub-id", 1, 3000, 0),
+            )
+
+        snapshot = read_xui_snapshot(self.database, now_ms=1700000000000)
+
+        self.assertEqual(
+            [client.expiry_ms for client in snapshot.clients],
+            [123456789, 1700000005000, 0],
+        )
+
     def test_uses_read_only_uri_and_query_only_without_write_sql(self):
         real_connect = sqlite3.connect
         calls = []
@@ -142,6 +160,10 @@ class XuiSnapshotTests(unittest.TestCase):
                 "empty sub id",
                 ((3, "first@example.test", "", 1, 1, 1),),
             ),
+            (
+                "empty email",
+                ((3, "", "first", 1, 1, 1),),
+            ),
         )
         for label, rows in cases:
             with self.subTest(label):
@@ -179,7 +201,7 @@ class XuiSnapshotTests(unittest.TestCase):
                 """,
                 (
                     (3, "member@example.test", "member-sub-id", 1, 1000, 123456789),
-                    (9, "disabled@example.test", "disabled-sub-id", 0, 2000, -1),
+                    (9, "disabled@example.test", "disabled-sub-id", 0, 2000, 0),
                 ),
             )
             connection.execute(
