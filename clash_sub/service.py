@@ -1,6 +1,7 @@
 import fcntl
 import json
 import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, RuntimeState
@@ -11,8 +12,21 @@ class ServiceError(RuntimeError):
 class _OperationLock:
     def __init__(self, path): self.path, self.handle = Path(path), None
     def __enter__(self):
-        if self.path.is_symlink(): raise ServiceError("operation_busy")
-        self.handle = open(self.path, "a+b"); os.chmod(self.path, 0o600)
+        root=self.path.parent
+        if not root.is_absolute() or root.is_symlink() or not root.is_dir() or stat.S_IMODE(root.stat().st_mode)!=0o700 or root.stat().st_uid not in {0,os.geteuid()}: raise ServiceError("operation_lock_invalid")
+        ancestor=Path(root.anchor)
+        for part in root.parts[1:]:
+            ancestor/=part
+            if ancestor.is_symlink(): raise ServiceError("operation_lock_invalid")
+        flags=os.O_RDWR|os.O_CREAT|getattr(os,"O_NOFOLLOW",0)
+        try:
+            descriptor=os.open(self.path,flags,0o600); os.fchmod(descriptor,0o600); details=os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode) or stat.S_IMODE(details.st_mode)!=0o600 or details.st_nlink!=1 or details.st_uid not in {0,os.geteuid()}: raise OSError
+            self.handle=os.fdopen(descriptor,"r+b",closefd=True)
+        except OSError:
+            try: os.close(descriptor)
+            except (OSError,UnboundLocalError): pass
+            raise ServiceError("operation_lock_invalid") from None
         try: fcntl.flock(self.handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             self.handle.close(); self.handle = None; raise ServiceError("operation_busy") from None
@@ -31,9 +45,10 @@ class ClashSubService:
                 if not user or not client.enabled: continue
                 if owner and bad_owner: errors.append(_error(client,"owner_update_failed")); continue
                 try:
-                    release=self._prepare(client,owner,snapshot.source_url(client),airport if owner else (),home if owner else (),tokens)
-                    if release: candidates.append((client.client_id,release)); next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
-                except Exception: errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
+                    release=self._prepare(client,owner,snapshot.source_url(client),airport if owner else (),home if owner else (),tokens,candidates=candidates)
+                    if release: next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
+                except Exception:
+                    owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
             try: self._activate(snapshot.clients,next_state,candidates)
             except ServiceError: self._discard(candidates); raise
             return self._finish(next_state,candidates,updated,errors)
@@ -41,8 +56,7 @@ class ClashSubService:
         with self._lock():
             snapshot,state=self._reconciled(); candidates=[]
             try:
-                owner=_client(snapshot.clients,state.owner_client_id); home=self._load_proxy(_home_path(self.config)); airport=self._download(url,self.config.max_source_bytes); release=self._prepare(owner,True,snapshot.source_url(owner),airport,home,tuple(u.token for u in state.users.values()),url); next_state=state if not release else _with_release(state,owner.client_id,release.release_id)
-                if release: candidates.append((owner.client_id,release))
+                owner=_client(snapshot.clients,state.owner_client_id); home=self._load_proxy(_home_path(self.config)); airport=self._download(url,self.config.max_source_bytes); release=self._prepare(owner,True,snapshot.source_url(owner),airport,home,tuple(u.token for u in state.users.values()),url,candidates); next_state=state if not release else _with_release(state,owner.client_id,release.release_id)
                 self._activate(snapshot.clients,next_state,candidates,[( _airport_path(self.config),self._encode(airport),0o600)])
             except Exception: self._discard(candidates); raise ServiceError("airport_activation_failed") from None
             return self._finish(next_state,candidates,[_result(owner,release)] if release else [],[])
@@ -73,11 +87,12 @@ class ClashSubService:
     def status(self):
         _,state=self._reconciled(); return {"owner_client_id":state.owner_client_id,"users":tuple({"client_id":u.client_id,"email":u.email,"active":u.active,"current_release":u.current_release} for u in sorted(state.users.values(),key=lambda u:u.client_id))}
     def history(self,user): return tuple({"release_id":r.release_id,"variants":tuple(r.public_paths)} for r in self._releases.history(_client_id(user)))
-    def _prepare(self,client,owner,url,airport,home,tokens,transient=None):
+    def _prepare(self,client,owner,url,airport,home,tokens,transient=None,candidates=None):
         xui=self._fetch(url,self.config.max_source_bytes); bundle=self._render(owner,xui,airport,home,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
         for text in bundle.values(): self._validate(text,forbidden)
         release=self._releases.prepare(client.client_id,bundle,{"inputs":_digest(xui,airport,home)})
         if release:
+            if candidates is not None: candidates.append((client.client_id,release))
             for path in release.public_paths.values(): self._mihomo.validate(path)
         return release
     def _activate(self,clients,state,candidates,extra=()):

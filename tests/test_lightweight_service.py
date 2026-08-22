@@ -1,5 +1,8 @@
 import base64
 import contextlib
+import os
+import stat
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -7,10 +10,21 @@ from pathlib import Path
 from clash_sub.domain import PreparedRelease, RuntimeState, ServiceConfig, UserState, XuiClient, XuiSnapshot
 
 try:
-    from clash_sub.service import ClashSubService, ServiceError
+    from clash_sub.service import ClashSubService, ServiceError, _OperationLock
 except ImportError:
     ClashSubService = None
     ServiceError = RuntimeError
+
+
+class OperationLockTests(unittest.TestCase):
+    def test_default_lock_requires_root_only_real_directory_and_rejects_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / "private"; root.mkdir(); os.chmod(root, 0o700)
+            with _OperationLock(root / "operation.lock"):
+                self.assertEqual(stat.S_IMODE((root / "operation.lock").stat().st_mode), 0o600)
+            os.chmod(root, 0o755)
+            with self.assertRaises(ServiceError) as caught: _OperationLock(root / "operation.lock").__enter__()
+            self.assertEqual(caught.exception.code, "operation_lock_invalid")
 
 
 def token(byte, code):
@@ -171,6 +185,21 @@ class ServiceTests(unittest.TestCase):
         self.activator.fail = False
         self.service.sync_all()
         self.assertEqual(len(self.mihomo_calls), 8)
+
+    def test_mihomo_failure_discards_owned_sync_candidate_before_route_activation(self):
+        self.service._mihomo.validate = lambda _: (_ for _ in ()).throw(RuntimeError("private"))
+        result = self.service.sync_all()
+        self.assertEqual(len(self.store.discarded), 2)
+        self.assertEqual(self.store.history(7), ())
+        self.assertEqual(self.store.history(8), ())
+        self.assertEqual(len(self.activator.calls), 1)
+
+    def test_mihomo_failure_discards_owned_airport_candidate(self):
+        self.service.sync_all()
+        self.service._render = lambda owner, xui, airport, home, root: {"balanced": "new balanced", "standard": "new standard", "privacy": "new privacy"}
+        self.service._mihomo.validate = lambda _: (_ for _ in ()).throw(RuntimeError("private"))
+        with self.assertRaises(ServiceError): self.service.update_airport("https://airport.example/new")
+        self.assertEqual(len(self.store.discarded), 1)
 
     def test_traffic_uses_existing_state_without_reconciliation_or_minting(self):
         self.service.sync_all()
