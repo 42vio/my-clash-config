@@ -13,6 +13,7 @@ from clash_sub.state import (
     generate_token,
     load_state,
     reconcile_state,
+    reinitialize_owner,
     rotate_user_token,
     save_state,
 )
@@ -108,6 +109,19 @@ class LightweightStateTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             loaded.users[9] = self.state.users[8]
 
+    def test_load_rejects_a_hard_linked_state_file(self):
+        save_state(self.path, self.state)
+        os.link(self.path, self.path.with_name("state-linked.json"))
+
+        with self.assertRaisesRegex(StateError, "invalid state"):
+            load_state(self.path)
+
+    def test_load_rejects_a_broken_state_symlink_instead_of_treating_it_as_missing(self):
+        self.path.symlink_to(self.path.with_name("missing-state.json"))
+
+        with self.assertRaisesRegex(StateError, "invalid state"):
+            load_state(self.path)
+
     def test_failed_atomic_replacement_preserves_existing_state(self):
         save_state(self.path, self.state)
         updated = rotate_user_token(self.state, 8)
@@ -164,8 +178,35 @@ class LightweightStateTests(unittest.TestCase):
             reconcile_state(None, [client(7, "owner", "shared"), client(8, "member", "shared")], "owner")
 
     def test_missing_persisted_owner_requires_explicit_reinitialization(self):
-        with self.assertRaisesRegex(StateError, "reinitialization"):
+        with self.assertRaisesRegex(StateError, "owner_reinitialization_required"):
             reconcile_state(self.state, [client(8, "member")], "old-owner")
+
+    def test_explicit_owner_reinitialization_revokes_missing_owner_and_preserves_unchanged_ids(self):
+        replacement_owner = client(9, "old-owner", "owner-recreated")
+        member = client(8, "member")
+
+        updated = reinitialize_owner(
+            self.state,
+            [replacement_owner, member],
+            "old-owner",
+            9,
+        )
+
+        self.assertEqual(updated.owner_client_id, 9)
+        self.assertNotIn(7, updated.users)
+        self.assertEqual(updated.users[8], self.state.users[8])
+        self.assertTrue(updated.users[9].active)
+        self.assertIsNone(updated.users[9].current_release)
+        self.assertNotEqual(updated.users[9].token, self.state.users[7].token)
+
+    def test_explicit_owner_reinitialization_requires_the_exact_configured_owner_email(self):
+        with self.assertRaisesRegex(StateError, "owner_reinitialization_required"):
+            reinitialize_owner(
+                self.state,
+                [client(9, "other-owner"), client(8, "member")],
+                "old-owner",
+                9,
+            )
 
     def test_rotate_user_token_changes_only_requested_identity(self):
         rotated = rotate_user_token(self.state, 8)

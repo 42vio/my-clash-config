@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from clash_sub.domain import PreparedRelease, RuntimeState, ServiceConfig, UserState, XuiClient, XuiSnapshot
+from clash_sub.state import StateError
 
 try:
     from clash_sub.service import ClashSubService, ServiceError, _OperationLock
@@ -509,6 +510,48 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.generator_calls, [])
         self.assertEqual(self.mihomo_calls, [])
         self.assertEqual(self.store.prepared, [])
+
+    def test_missing_persisted_owner_surfaces_a_distinct_sanitized_reinitialization_code(self):
+        self.service._reconcile = lambda *_: (_ for _ in ()).throw(
+            StateError("owner_reinitialization_required")
+        )
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.status()
+
+        self.assertEqual(caught.exception.code, "owner_reinitialization_required")
+        self.assertNotIn("owner@example.test", str(caught.exception))
+
+    def test_reinitialize_owner_revokes_missing_mapping_and_leaves_the_new_owner_pending(self):
+        self.service.sync_all()
+        old_state = self.state
+        self.clients = [client(9, "owner@example.test"), self.member]
+
+        def reinitialize(previous, clients, owner_email, client_id):
+            self.assertEqual(previous, old_state)
+            self.assertEqual(client_id, 9)
+            self.assertEqual(owner_email, "owner@example.test")
+            return RuntimeState(
+                1,
+                9,
+                {
+                    8: previous.users[8],
+                    9: UserState(9, "owner@example.test", token(b"n", "PQRSTU"), "PQRSTU", True, None),
+                },
+            )
+
+        self.service._reinitialize = reinitialize
+        before_prepared = tuple(self.store.prepared)
+
+        result = self.service.reinitialize_owner(9)
+
+        self.assertEqual(result, {"owner_client_id": 9})
+        self.assertEqual(self.state.owner_client_id, 9)
+        self.assertNotIn(7, self.state.users)
+        self.assertEqual(self.state.users[8], old_state.users[8])
+        self.assertIsNone(self.state.users[9].current_release)
+        self.assertEqual(tuple(self.store.prepared), before_prepared)
+        self.assertEqual(self.activator.calls[-1][0], self.state)
 
     def test_rollback_and_rotation_do_not_fetch_and_rotation_returns_all_urls(self):
         self.service.sync_all(); release = self.state.users[7].current_release

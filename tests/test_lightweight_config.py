@@ -158,8 +158,15 @@ class LightweightConfigTests(unittest.TestCase):
 
     @patch("os.geteuid", return_value=0)
     def test_root_service_rejects_unprivileged_owned_config(self, _geteuid):
-        with self.assertRaisesRegex(ConfigError, "root-owned"):
-            load_config(self.path, self.root)
+        original_uid = self.path.stat().st_uid
+        if original_uid == 0:
+            os.chown(self.path, 1, -1)
+        try:
+            with self.assertRaisesRegex(ConfigError, "root-owned"):
+                load_config(self.path, self.root)
+        finally:
+            if original_uid == 0:
+                os.chown(self.path, original_uid, -1)
 
 
 if __name__ == "__main__":

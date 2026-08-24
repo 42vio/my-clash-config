@@ -1,6 +1,7 @@
 """Small, secret-safe management interface for ``clash-sub``."""
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 from clash_sub.checks import MihomoValidator, validate_clash
 from clash_sub.config import load_config
 from clash_sub.generator import render_user_bundle
-from clash_sub.nginx import activate_runtime, render_routes
+from clash_sub.nginx import activate_runtime, recover_runtime, render_routes
 from clash_sub.release_store import ReleaseStore
 from clash_sub.service import ClashSubService, ServiceError
 from clash_sub.sources import (
@@ -19,7 +20,7 @@ from clash_sub.sources import (
     fetch_xui_proxies,
     load_proxy_snapshot,
 )
-from clash_sub.state import load_state, reconcile_state, rotate_user_token
+from clash_sub.state import load_state, reconcile_state, reinitialize_owner, rotate_user_token
 from clash_sub.xui import read_xui_snapshot
 
 
@@ -99,12 +100,15 @@ def _parser():
     rollback.add_argument("release")
     rotate = commands.add_parser("rotate-link", add_help=False)
     rotate.add_argument("user")
+    reinitialize = commands.add_parser("reinitialize-owner", add_help=False)
+    reinitialize.add_argument("user")
+    commands.add_parser("recover", add_help=False)
     return parser
 
 
 def _run_command(parsed, stdout, stderr, factory):
     command = parsed.command
-    if command in {"history", "rollback", "rotate-link"}:
+    if command in {"history", "rollback", "rotate-link", "reinitialize-owner"}:
         user = _user_id(parsed.user)
         if user is None:
             return _error(stderr, "invalid_command", 2)
@@ -124,6 +128,10 @@ def _run_command(parsed, stdout, stderr, factory):
         return _call("rollback", (user, parsed.release), stdout, stderr, factory)
     if command == "rotate-link":
         return _call("rotate", user, stdout, stderr, factory)
+    if command == "reinitialize-owner":
+        return _call("reinitialize", user, stdout, stderr, factory)
+    if command == "recover":
+        return _recover(stdout, stderr)
     return _error(stderr, "invalid_command", 2)
 
 
@@ -163,6 +171,9 @@ def _call(operation, value, stdout, stderr, factory, *, include_history=False):
             stdout.write("订阅链接已轮换：\n")
             for url in result["urls"]:
                 stdout.write("%s\n" % url)
+        elif operation == "reinitialize":
+            service.reinitialize_owner(value)
+            stdout.write("所有者已重新初始化；请更新机场订阅后执行 sync。\n")
         else:
             return _error(stderr, "invalid_command", 2)
     except ServiceError as error:
@@ -222,11 +233,12 @@ def _write_history(stdout, user, history):
 
 
 def _user_id(value):
-    try:
-        user = int(value)
-    except (TypeError, ValueError):
+    if not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]*", value):
         return None
-    return user if user > 0 else None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def _looks_like_url(value):
@@ -236,6 +248,19 @@ def _looks_like_url(value):
 def _error(stderr, code, status):
     stderr.write(_ERROR_TEMPLATE % code)
     return status
+
+
+def _recover(stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "recovery_not_authorized", 1)
+    try:
+        repo_root = Path(__file__).resolve().parents[1]
+        config = load_config(repo_root / "private" / "config" / "service.yaml", repo_root)
+        recover_runtime(config, subprocess.run, reload=False)
+    except Exception:
+        return _error(stderr, "runtime_recovery_failed", 1)
+    stdout.write("运行时恢复已完成。\n")
+    return 0
 
 
 def _default_service_factory():
@@ -248,14 +273,20 @@ def _default_service_factory():
         load_state=load_state,
         reconcile_state=reconcile_state,
         rotate_user_token=rotate_user_token,
+        reinitialize_owner=reinitialize_owner,
         fetch_xui_proxies=fetch_xui_proxies,
         download_airport_proxies=download_airport_proxies,
         load_proxy_snapshot=load_proxy_snapshot,
         render_user_bundle=render_user_bundle,
         validate_clash=validate_clash,
         mihomo_validator=MihomoValidator(config.mihomo_binary, runner=runner),
-        release_store=ReleaseStore(config.private_root, config.public_root),
+        release_store=ReleaseStore(
+            config.private_root,
+            config.public_root,
+            activation_paths=(config.nginx_routes,),
+        ),
         render_routes=render_routes,
         activate_runtime=activate_runtime,
+        recover_runtime=recover_runtime,
         runner=runner,
     )

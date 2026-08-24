@@ -3,6 +3,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import tempfile
 from pathlib import Path
 
@@ -35,9 +36,12 @@ def generate_token(existing_codes, *, random_bytes=secrets.token_bytes, choose=s
 
 def load_state(path):
     path = Path(path)
+    if path.is_symlink():
+        raise StateError("invalid state")
     if not path.exists():
         return None
     try:
+        _require_state_file(path)
         payload = json.loads(path.read_text(encoding="utf-8"))
         return _state_from_payload(payload)
     except StateError:
@@ -66,6 +70,7 @@ def save_state(path, state):
         os.replace(temporary_path, path)
         temporary_path = None
         _fsync_directory(path.parent)
+        _require_state_file(path)
     except StateError:
         raise
     except Exception as error:
@@ -83,14 +88,14 @@ def reconcile_state(previous, clients, owner_email):
     if previous is None:
         owner_ids = [client_id for client_id, client in clients_by_id.items() if client.email == owner_email]
         if len(owner_ids) != 1:
-            raise StateError("owner reinitialization required")
+            raise StateError("owner_reinitialization_required")
         owner_client_id = owner_ids[0]
         retained_users = {}
     else:
         _validate_runtime_state(previous)
         owner_client_id = previous.owner_client_id
         if owner_client_id not in clients_by_id:
-            raise StateError("owner reinitialization required")
+            raise StateError("owner_reinitialization_required")
         retained_users = dict(previous.users)
 
     existing_codes = {user.readable_code for user in retained_users.values()}
@@ -105,6 +110,56 @@ def reconcile_state(previous, clients, owner_email):
         )
         for client_id, user in retained_users.items()
     }
+    for client_id in sorted(clients_by_id):
+        client = clients_by_id[client_id]
+        existing = retained_users.get(client_id)
+        if existing is None:
+            token, code = generate_token(existing_codes)
+            existing_codes.add(code)
+            users[client_id] = UserState(
+                client_id=client_id,
+                email=client.email,
+                token=token,
+                readable_code=code,
+                active=client.enabled,
+                current_release=None,
+            )
+        else:
+            users[client_id] = UserState(
+                client_id=client_id,
+                email=client.email,
+                token=existing.token,
+                readable_code=existing.readable_code,
+                active=client.enabled,
+                current_release=existing.current_release,
+            )
+    return RuntimeState(1, owner_client_id, users)
+
+
+def reinitialize_owner(previous, clients, owner_email, owner_client_id):
+    """Replace a vanished owner only after an administrator names its new ID.
+
+    This intentionally does not infer identity from a subscription ID or a
+    display name.  Existing database IDs retain their mappings; the replaced
+    owner gets a fresh token and must be synchronised before it becomes routable.
+    """
+    _validate_runtime_state(previous)
+    if isinstance(owner_client_id, bool) or not isinstance(owner_client_id, int) or owner_client_id < 1:
+        raise StateError("owner_reinitialization_required")
+    clients_by_id = _validate_clients(clients)
+    if previous.owner_client_id in clients_by_id:
+        raise StateError("owner_reinitialization_required")
+    owner = clients_by_id.get(owner_client_id)
+    if owner is None or owner.email != owner_email:
+        raise StateError("owner_reinitialization_required")
+
+    retained_users = {
+        client_id: user
+        for client_id, user in previous.users.items()
+        if client_id in clients_by_id and client_id != owner_client_id
+    }
+    existing_codes = {user.readable_code for user in retained_users.values()}
+    users = {}
     for client_id in sorted(clients_by_id):
         client = clients_by_id[client_id]
         existing = retained_users.get(client_id)
@@ -290,3 +345,19 @@ def _fsync_directory(directory):
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _require_state_file(path):
+    try:
+        details = Path(path).stat()
+    except OSError:
+        raise StateError("invalid state") from None
+    expected_uid = 0 if os.geteuid() == 0 else os.geteuid()
+    if (
+        Path(path).is_symlink()
+        or not stat.S_ISREG(details.st_mode)
+        or (details.st_mode & 0o777) != 0o600
+        or details.st_uid != expected_uid
+        or details.st_nlink != 1
+    ):
+        raise StateError("invalid state")

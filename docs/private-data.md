@@ -14,6 +14,7 @@
 | `<private-root>/home.yaml` | owner 自维护家庭节点 | `0600` root:root |
 | `<private-root>/releases/<user>/…` | 每用户最近五个成功版本（manifest + 来源哈希） | 目录 `0700` |
 | `<private-root>/operation.lock` | 同步互斥锁 | root:root |
+| `<private-root>/.activation-journal.json` | 仅在运行时激活被中断时存在的旧工件快照；必须先由 `clash-sub recover` 处理 | `0600` root:root |
 | `<private-root>/reference-configs/…` | 三份原始参考配置，**永久记录**，永不参与版本清理 | `0600` root:root |
 | `<public-root>/releases/<user>/…` | 当前静态发布 YAML（Nginx 直接读取） | 目录 `2750` root:www-data，文件 `0640` |
 
@@ -39,3 +40,6 @@ root-only 的 `state.json` 中即等价于「文件系统权限保护」， Git�
 - Git 与普通备份介质不得携带私有数据；若凭据曾被推送到远程仓库，仅删除
   文件无法撤回历史，必须轮换凭据（令牌用 `rotate-link`，节点凭据在
   3x-ui 重建）。
+- release 的正常 pruning 仅针对可验证且成对的成功版本；异常断电留下的
+  损坏/未配对工件不自动删除。按 [operations.md](operations.md) 的只读盘点流程
+  备份、恢复 prepared journal 后再人工判断，避免删除仍被 state 或路由引用的文件。

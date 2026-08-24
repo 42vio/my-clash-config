@@ -50,6 +50,7 @@ esac
 printf '%s\n' "$DEPLOY_DOMAIN" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$' || { printf 'invalid domain\n' >&2; validation_failed=1; }
 printf '%s\n' "$DEPLOY_VPS_IP" | grep -Eq '^[0-9]{1,3}([.][0-9]{1,3}){3}$' || { printf 'invalid IPv4 address\n' >&2; validation_failed=1; }
 case "$DEPLOY_PRIVATE_ROOT" in /*) ;; *) printf 'private root must be absolute\n' >&2; validation_failed=1 ;; esac
+test "$DEPLOY_PRIVATE_ROOT" = "/var/lib/clash-sub/private" || { printf 'this deployment supports only /var/lib/clash-sub/private\n' >&2; validation_failed=1; }
 case "$DEPLOY_DOMAIN:$DEPLOY_VPS_IP:$DEPLOY_REPOSITORY_URL:$DEPLOY_MIHOMO_URL:$DEPLOY_MIHOMO_SHA256:$DEPLOY_PANEL_BASE_PATH:$DEPLOY_PRIVATE_ROOT" in
   *example.invalid* | *192.0.2.10* | *0000000000000000000000000000000000000000000000000000000000000000* | */replace-me*)
     printf 'replace every DEPLOY sample before continuing\n' >&2
@@ -188,15 +189,16 @@ Xray-core 26.6.27、强密码、2FA、随机 Web Base Path、回环面板/订阅
 VLESS + RAW/TCP + REALITY 443 入站和每人一个客户端。本仓库脚本不会下载、
 安装或修改 3x-ui。
 
-完成后只读检查：443 只属于 Xray，面板和订阅仅在 127.0.0.1，且 3x-ui 环境的
-acme.sh 已存在。若 acme.sh 不可执行，停止并完成该人工初始化；不能提前签发。
+完成后只读检查：443 只属于 Xray，面板和订阅仅在 127.0.0.1。不要依赖 3x-ui
+是否附带 acme.sh；本指南会在 HTTP-01 bootstrap 后以 root-only 家目录安装并核对
+独立的 acme.sh，且不会为 3x-ui 面板申请或绑定证书。
 
 ~~~bash
 ss -H -lntp | grep -E ":(443|$DEPLOY_PANEL_PORT|$DEPLOY_SUBSCRIPTION_PORT)"
 ~~~
 
 ~~~bash
-systemctl is-active x-ui; ~/.acme.sh/acme.sh --version
+systemctl is-active x-ui
 ~~~
 
 ## 4. 检出仓库并建立 Python 环境
@@ -318,6 +320,17 @@ clash-sub status || true
 
 依次创建运行目录：private 树是 0700 root-only；public 树归组 www-data 且 setgid
 2750，发布 YAML 才能是 0640；ACME webroot 同样归组 www-data。
+
+仓库自己的私有配置目录不属于运行 private root，也必须先显式建立；否则后续
+service.yaml 的安装会因父目录不存在而失败。
+
+~~~bash
+stat -c '%a %U:%G %n' /opt/clash-sub/private/config 2>/dev/null || true
+~~~
+
+~~~bash
+install -d -o root -g root -m 0700 /opt/clash-sub/private/config
+~~~
 
 ~~~bash
 stat -c '%a %U:%G %n' /var/lib/clash-sub/private 2>/dev/null || true
@@ -492,7 +505,55 @@ test -f /var/lib/clash-sub/acme/.well-known/acme-challenge/clash-sub-probe
 rm /var/lib/clash-sub/acme/.well-known/acme-challenge/clash-sub-probe
 ~~~
 
-## 8. SAN 证书（HTTP-01；DNS-01 可选）
+## 8. acme.sh official release 自举与 SAN 证书（HTTP-01；DNS-01 可选）
+
+此处才安装独立 ACME 客户端。使用发布页中人工核对过的**官方 acme.sh release**
+tag 与 commit；不要执行 `curl | sh`，不要复用 3x-ui 的安装脚本，也不要把证书
+绑定到 3x-ui 面板。下列变量需在 root shell 中由管理员从
+`https://github.com/acmesh-official/acme.sh/releases` 的已审核 release 填入；commit
+必须是该 tag 对应的 commit。`ACME_SH_VERSION` 与 `ACME_SH_COMMIT` 是显式 pin，
+下载后会先检查、审阅再安装。
+
+~~~bash
+readonly ACME_SH_VERSION="3.1.4"
+readonly ACME_SH_COMMIT="replace-with-reviewed-official-release-commit"
+readonly ACME_ACCOUNT_EMAIL="replace-me@example.invalid"
+test "$ACME_SH_COMMIT" != "replace-with-reviewed-official-release-commit" || { printf 'set reviewed acme.sh commit\n' >&2; false; }
+test "$ACME_ACCOUNT_EMAIL" != "replace-me@example.invalid" || { printf 'set ACME account email\n' >&2; false; }
+~~~
+
+先下载到临时 Git worktree，不把网络响应传给 shell。确认 tag、commit、来源与
+源码内容后，才允许下面的本地 install 命令执行。
+
+~~~bash
+test ! -e "/tmp/acme.sh-$ACME_SH_VERSION"; git clone --filter=blob:none --no-checkout https://github.com/acmesh-official/acme.sh.git "/tmp/acme.sh-$ACME_SH_VERSION"
+~~~
+
+~~~bash
+git -C "/tmp/acme.sh-$ACME_SH_VERSION" fetch --depth 1 origin "$ACME_SH_COMMIT"; git -C "/tmp/acme.sh-$ACME_SH_VERSION" checkout --detach "$ACME_SH_COMMIT"; test "$(git -C "/tmp/acme.sh-$ACME_SH_VERSION" rev-parse HEAD)" = "$ACME_SH_COMMIT"
+~~~
+
+~~~bash
+git -C "/tmp/acme.sh-$ACME_SH_VERSION" show --no-ext-diff --stat --oneline HEAD; git -C "/tmp/acme.sh-$ACME_SH_VERSION" status --short; sed -n '1,120p' "/tmp/acme.sh-$ACME_SH_VERSION/acme.sh"
+~~~
+
+审阅通过后，root 执行这条**本地文件**命令；官方 installer 默认把工作目录放在
+root-only 的 `/root/.acme.sh`，并安装 renewal cron。它不签发证书也不触及 3x-ui。
+
+~~~bash
+HOME=/root "/tmp/acme.sh-$ACME_SH_VERSION/acme.sh" --install -m "$ACME_ACCOUNT_EMAIL"
+~~~
+
+先确认安装、账户配置、明确设置的 default CA 与 renewal cron/job；任何一项失败时
+不要继续 HTTP-01 签发。
+
+~~~bash
+/root/.acme.sh/acme.sh --version; /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt; /root/.acme.sh/acme.sh --info
+~~~
+
+~~~bash
+test -d /root/.acme.sh; stat -c '%a %U:%G %n' /root/.acme.sh; crontab -l -u root | grep -F '/root/.acme.sh/acme.sh --cron --home /root/.acme.sh'
+~~~
 
 先只读重复确认两条 A 记录、正在运行的 bootstrap Nginx 和 acme.sh。此顺序保证
 签发不依赖尚未存在的 Nginx。
@@ -605,7 +666,27 @@ curl --fail --resolve "panel.$DEPLOY_DOMAIN:8443:$DEPLOY_VPS_IP" "https://panel.
 ss -H -lntp | grep -E ":(443|8443|$DEPLOY_PANEL_PORT|$DEPLOY_SUBSCRIPTION_PORT)"
 ~~~
 
-## 10. 每日流量 timer
+## 10. 启动恢复 unit 与每日流量 timer
+
+恢复 unit 是一次性的 `Type=oneshot`：若断电/终止恰好发生在运行时状态、路由或
+私有快照替换之间，它会在 Nginx 每次启动前先恢复 prepared journal。它不是常驻
+Python 服务。先安装 unit 与 Nginx dependency drop-in，再让 systemd 校验配置。
+
+~~~bash
+test -f /opt/clash-sub/deploy/systemd/clash-sub-recover.service; test -f /opt/clash-sub/deploy/systemd/nginx.service.d/clash-sub-recover.conf; test ! -e /etc/systemd/system/clash-sub-recover.service
+~~~
+
+~~~bash
+install -o root -g root -m 0644 /opt/clash-sub/deploy/systemd/clash-sub-recover.service /etc/systemd/system/clash-sub-recover.service
+~~~
+
+~~~bash
+install -d -o root -g root -m 0755 /etc/systemd/system/nginx.service.d; install -o root -g root -m 0644 /opt/clash-sub/deploy/systemd/nginx.service.d/clash-sub-recover.conf /etc/systemd/system/nginx.service.d/clash-sub-recover.conf
+~~~
+
+~~~bash
+systemd-analyze verify /etc/systemd/system/clash-sub-recover.service /etc/systemd/system/nginx.service.d/clash-sub-recover.conf
+~~~
 
 先确认 unit 源与目标状态，再分别安装 service 和 timer。
 
@@ -628,11 +709,22 @@ install -o root -g root -m 0644 /opt/clash-sub/deploy/systemd/clash-sub-traffic.
 先做只读 unit 验证，再让 systemd 重新加载。
 
 ~~~bash
-systemd-analyze verify /etc/systemd/system/clash-sub-traffic.service /etc/systemd/system/clash-sub-traffic.timer
+systemd-analyze verify /etc/systemd/system/clash-sub-recover.service /etc/systemd/system/clash-sub-traffic.service /etc/systemd/system/clash-sub-traffic.timer
 ~~~
 
 ~~~bash
 systemctl daemon-reload
+~~~
+
+先手动运行一次 disk-only recovery；无 journal 时它应成功退出，且不要求 Nginx
+已经运行。随后确认 Nginx 的 dependency 已加载。
+
+~~~bash
+systemctl start clash-sub-recover.service
+~~~
+
+~~~bash
+systemctl show -p Requires -p After nginx.service
 ~~~
 
 先检查 timer 尚未启用，再启用；它只运行 clash-sub traffic-update，不生成 YAML。

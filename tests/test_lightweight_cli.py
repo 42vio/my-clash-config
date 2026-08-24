@@ -91,6 +91,10 @@ class FakeService:
             "urls": ("https://sub.example.test:8443/s/%s/clash-standard.yaml" % ROTATED_TOKEN,),
         }
 
+    def reinitialize_owner(self, user):
+        self._call("reinitialize_owner", user)
+        return {"owner_client_id": user}
+
 
 def run_cli(argv, service, *, stdin_text="", getpass_value=AIRPORT_URL):
     stdout = io.StringIO()
@@ -265,6 +269,7 @@ class LightweightCliTests(unittest.TestCase):
             (["history", "7"], "history", (7,)),
             (["rollback", "7", "release-7"], "rollback", (7, "release-7")),
             (["rotate-link", "7"], "rotate_link", (7,)),
+            (["reinitialize-owner", "9"], "reinitialize_owner", (9,)),
         )
         for argv, method, arguments in cases:
             with self.subTest(argv=argv):
@@ -273,6 +278,39 @@ class LightweightCliTests(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(stderr, "")
                 self.assertEqual(service.calls[0], (method, arguments))
+
+    def test_reinitialize_owner_is_noninteractive_and_never_appears_in_the_daily_menu(self):
+        code, stdout, stderr = run_cli(["reinitialize-owner", "9"], self.service)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout, "所有者已重新初始化；请更新机场订阅后执行 sync。\n")
+        self.assertNotIn("重新初始化", MENU)
+
+    def test_reinitialize_owner_requires_a_canonical_decimal_database_id(self):
+        code, stdout, stderr = run_cli(["reinitialize-owner", "+9"], self.service)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "操作失败（错误代码：invalid_command）\n")
+        self.assertEqual(self.service.calls, [])
+
+    def test_root_only_recover_uses_disk_recovery_without_requiring_running_nginx(self):
+        config = ServiceConfig(
+            "owner", "sub.example.test:8443", Path("/xui"), Path("/private"), Path("/public"),
+            Path("/routes"), Path("/mihomo"), Path("/nginx"), Path("/systemctl"), Path("/templates"),
+        )
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch(
+            "clash_sub.cli.load_config", return_value=config
+        ), patch("clash_sub.cli.recover_runtime") as recover:
+            code, stdout, stderr = run_cli(["recover"], self.service)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout, "运行时恢复已完成。\n")
+        self.assertEqual(stderr, "")
+        self.assertEqual(recover.call_args.args, (config, subprocess.run))
+        self.assertEqual(recover.call_args.kwargs, {"reload": False})
+        self.assertEqual(self.service.calls, [])
 
     def test_rejects_legacy_unknown_and_airport_url_arguments_without_echoing_them(self):
         rejected = (

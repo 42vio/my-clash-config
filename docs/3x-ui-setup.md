@@ -66,7 +66,8 @@
    `2053`）。该回环地址稍后填入 Nginx 模板的 `{{PANEL_UPSTREAM}}`。
 4. **原始订阅服务**：监听 `127.0.0.1:<订阅端口>`（示例 `2096`），并在
    面板中**启用 Clash 输出**——`clash-sub` 只从该回环 Clash 接口获取节点
-   与流量，不使用 `/sub/` 或 `/json/` 原始输出。
+   YAML，不使用 `/sub/` 或 `/json/` 原始输出；流量与到期数据由只读
+   `x-ui.db` 查询提供。
 5. **固定 Xray 版本**：在 3x-ui 中选择 Xray-core 26.6.27，用
    `<xray-二进制路径> version` 核对，并**关闭自动核心升级**。
 6. **创建唯一公网入站**：协议 VLESS、传输 RAW/TCP、安全 REALITY、端口
@@ -109,7 +110,7 @@
    email 标识、subId、启用状态、配额/到期与订阅服务设置；表或字段结构与
    固定预期不符时全局失败关闭，不修改任何已发布配置。
 2. 通过已验证的回环地址 `http://127.0.0.1:<订阅端口>/<订阅路径>/<subId>`
-   获取 Clash YAML 与 `Subscription-Userinfo` 流量头。
+   仅获取 Clash YAML；`Subscription-Userinfo` 由读取 SQLite 的流量任务生成。
 
 ## 秘密边界
 

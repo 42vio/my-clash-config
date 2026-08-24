@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, RuntimeState
+from clash_sub.state import StateError
 
 class ServiceError(RuntimeError):
     def __init__(self, code): self.code = code; super().__init__(code)
@@ -61,10 +62,11 @@ class _OperationLock:
         if error and exc_type is None: raise ServiceError("operation_lock_invalid")
 
 class ClashSubService:
-    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_proxies, load_proxy_snapshot, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, snapshot_encoder=None, state_sink=None, lock_factory=None, clock=None):
-        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_proxies; self._load_proxy=load_proxy_snapshot; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._encode=snapshot_encoder or _snapshot_bytes; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time
+    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_proxies, load_proxy_snapshot, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, snapshot_encoder=None, state_sink=None, lock_factory=None, clock=None, reinitialize_owner=None, recover_runtime=None):
+        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_proxies; self._load_proxy=load_proxy_snapshot; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._encode=snapshot_encoder or _snapshot_bytes; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time; self._reinitialize=reinitialize_owner; self._recover_runtime=recover_runtime or (lambda *_, **__: None)
     def sync_all(self):
         with self._lock():
+            self._recover()
             snapshot,state=self._reconciled(); airport,home,bad_owner=self._owner_sources(); next_state=state; candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in state.users.values())
             for client in snapshot.clients:
                 user=state.users.get(client.client_id); owner=client.client_id==state.owner_client_id
@@ -80,6 +82,7 @@ class ClashSubService:
             return self._finish(next_state,candidates,updated,errors)
     def update_airport(self,url):
         with self._lock():
+            self._recover()
             snapshot,state=self._reconciled(); candidates=[]
             try:
                 owner=_client(snapshot.clients,state.owner_client_id); home=self._load_proxy(_home_path(self.config)); airport=self._download(url,self.config.max_source_bytes); release=self._prepare(owner,True,snapshot.source_url(owner),airport,home,tuple(u.token for u in state.users.values()),url,candidates); next_state=state if not release else _with_release(state,owner.client_id,release.release_id)
@@ -88,6 +91,7 @@ class ClashSubService:
             return self._finish(next_state,candidates,[_result(owner,release)] if release else [],[])
     def traffic_update(self):
         with self._lock():
+            self._recover()
             try:
                 snapshot=self._read_snapshot(self.config.xui_database); state=self._load_state(_state_path(self.config))
                 if state is None or not _traffic_matches_state(snapshot.clients,state): raise ValueError
@@ -96,6 +100,7 @@ class ClashSubService:
             return self._finish(state,[],[],[])
     def rollback(self,user,release):
         with self._lock():
+            self._recover()
             client_id=_client_id(user); snapshot,state=self._reconciled()
             identity=state.users.get(client_id); client=_find(snapshot.clients,client_id)
             if not identity or not identity.active or not identity.current_release or not client or not client.enabled: raise ServiceError("rollback_release_invalid")
@@ -105,17 +110,37 @@ class ClashSubService:
             self._observe(next_state); return _result(client,verified)
     def rotate_link(self,user):
         with self._lock():
+            self._recover()
             client_id=_client_id(user); snapshot,state=self._reconciled(); identity=state.users.get(client_id); client=_find(snapshot.clients,client_id)
             if not identity or not identity.active or not identity.current_release or not client or not client.enabled: raise ServiceError("rotation_not_allowed")
             try: next_state=self._rotate(state,client_id); self._activate(snapshot.clients,next_state,[])
             except Exception: raise ServiceError("rotation_activation_failed") from None
             self._observe(next_state); user=next_state.users[client_id]; return {"client_id":client_id,"token":user.token,"urls":tuple(_urls(self.config,user.token,client_id==next_state.owner_client_id))}
     def links(self):
-        snapshot,state=self._reconciled(); clients={c.client_id:c for c in snapshot.clients}; return tuple({"client_id":u.client_id,"email":u.email,"readable_code":u.readable_code,"urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id))} for u in sorted(state.users.values(),key=lambda u:u.client_id) if u.active and u.current_release and clients.get(u.client_id) and clients[u.client_id].enabled)
+        with self._lock():
+            self._recover()
+            snapshot,state=self._reconciled(); clients={c.client_id:c for c in snapshot.clients}; return tuple({"client_id":u.client_id,"email":u.email,"readable_code":u.readable_code,"urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id))} for u in sorted(state.users.values(),key=lambda u:u.client_id) if u.active and u.current_release and clients.get(u.client_id) and clients[u.client_id].enabled)
     def status(self):
-        snapshot,state=self._reconciled(); journal=self._read_journal(); pending=tuple({"client_id":c.client_id,"email":c.email} for c in sorted(snapshot.clients,key=lambda c:c.client_id) if _pending_source(state.users.get(c.client_id),c))
-        return {"owner_client_id":state.owner_client_id,"last_success":journal["last_success"],"last_errors":journal["last_errors"],"pending":pending,"users":tuple({"client_id":u.client_id,"email":u.email,"active":u.active,"current_release":u.current_release} for u in sorted(state.users.values(),key=lambda u:u.client_id))}
-    def history(self,user): return tuple({"release_id":r.release_id,"variants":tuple(r.public_paths)} for r in self._releases.history(_client_id(user)))
+        with self._lock():
+            self._recover()
+            snapshot,state=self._reconciled(); journal=self._read_journal(); pending=tuple({"client_id":c.client_id,"email":c.email} for c in sorted(snapshot.clients,key=lambda c:c.client_id) if _pending_source(state.users.get(c.client_id),c))
+            return {"owner_client_id":state.owner_client_id,"last_success":journal["last_success"],"last_errors":journal["last_errors"],"pending":pending,"users":tuple({"client_id":u.client_id,"email":u.email,"active":u.active,"current_release":u.current_release} for u in sorted(state.users.values(),key=lambda u:u.client_id))}
+    def history(self,user):
+        with self._lock():
+            self._recover()
+            return tuple({"release_id":r.release_id,"variants":tuple(r.public_paths)} for r in self._releases.history(_client_id(user)))
+    def reinitialize_owner(self,user):
+        with self._lock():
+            self._recover()
+            try:
+                client_id=_client_id(user); snapshot=self._read_snapshot(self.config.xui_database); previous=self._load_state(_state_path(self.config))
+                if previous is None or self._reinitialize is None: raise ValueError
+                next_state=self._reinitialize(previous,snapshot.clients,self.config.owner_email,client_id)
+                self._activate(snapshot.clients,next_state,[])
+            except Exception:
+                raise ServiceError("owner_reinitialization_failed") from None
+            self._observe(next_state); self._journal(self._clock(),())
+            return {"owner_client_id":client_id}
     def _prepare(self,client,owner,url,airport,home,tokens,transient=None,candidates=None):
         xui=self._fetch(url,self.config.max_source_bytes); bundle=self._render(owner,xui,airport,home,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
         for text in bundle.values(): self._validate(text,forbidden)
@@ -143,7 +168,14 @@ class ClashSubService:
     def _reconciled(self):
         try:
             snapshot=self._read_snapshot(self.config.xui_database); return snapshot,self._reconcile(self._load_state(_state_path(self.config)),snapshot.clients,self.config.owner_email)
-        except Exception:raise ServiceError("xui_snapshot_failed") from None
+        except StateError as error:
+            if str(error)=="owner_reinitialization_required": raise ServiceError("owner_reinitialization_required") from None
+            raise ServiceError("xui_snapshot_failed") from None
+        except Exception:
+            raise ServiceError("xui_snapshot_failed") from None
+    def _recover(self):
+        try:self._recover_runtime(self.config,self._runner,reload=True)
+        except Exception:raise ServiceError("runtime_recovery_failed") from None
     def _owner_sources(self):
         try:return self._load_proxy(_airport_path(self.config)),self._load_proxy(_home_path(self.config)),False
         except Exception:return (),(),True

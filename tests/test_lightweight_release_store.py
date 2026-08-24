@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from clash_sub.domain import PreparedRelease
@@ -54,13 +55,19 @@ class ReleaseStoreTests(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def make_store(self):
+    def make_store(self, **kwargs):
         self.assertIsNotNone(ReleaseStore, "ReleaseStore is not implemented")
+        options = {
+            "expected_uid": os.geteuid(),
+            "expected_public_gid": os.getegid(),
+        }
+        options.update(kwargs)
         return ReleaseStore(
             self.private_root,
             self.public_root,
             clock=lambda: self.now,
             suffix_factory=lambda: next(self.suffixes),
+            **options,
         )
 
     def prepare_member(self, text="proxies: []\n"):
@@ -283,7 +290,7 @@ class ReleaseStoreTests(unittest.TestCase):
         observed_groups = []
         real_verify = release_store_module._verify_staged_release
 
-        def verify_with_mode_probe(private_stage, public_stage, manifest):
+        def verify_with_mode_probe(private_stage, public_stage, manifest, *_):
             observed_modes.extend(
                 stat.S_IMODE((public_stage / ("clash-%s.yaml" % variant)).stat().st_mode)
                 for variant in manifest["variants"]
@@ -355,6 +362,80 @@ class ReleaseStoreTests(unittest.TestCase):
 
         with self.assertRaises(ReleaseStoreError):
             self.store.verify_release(7, release.release_id)
+
+    def test_explicit_production_ownership_expectations_reject_wrong_root_owner_and_www_data_group(self):
+        impossible_owner = os.geteuid() + 1
+        wrong_owner_store = self.make_store(
+            expected_uid=impossible_owner,
+            expected_public_gid=os.getegid(),
+        )
+        with self.assertRaises(ReleaseStoreError):
+            wrong_owner_store.prepare(7, self.member_bundle, {"xui": "a" * 64})
+
+        wrong_group_store = self.make_store(
+            expected_uid=os.geteuid(),
+            expected_public_gid=os.getegid() + 1,
+        )
+        with self.assertRaises(ReleaseStoreError):
+            wrong_group_store.prepare(7, self.member_bundle, {"xui": "a" * 64})
+
+    def test_verify_release_rejects_a_hard_linked_public_yaml(self):
+        release = self.prepare_member()
+        linked = release.public_paths["standard"].with_name("linked.yaml")
+        os.link(release.public_paths["standard"], linked)
+
+        with self.assertRaisesRegex(ReleaseStoreError, "release"):
+            self.store.verify_release(7, release.release_id)
+
+    def test_space_preflight_rejects_before_creating_private_staging_or_public_release_entries(self):
+        before_public = tuple(self.public_root.iterdir())
+        no_space = SimpleNamespace(f_frsize=1, f_bavail=0)
+
+        with patch("clash_sub.release_store.os.statvfs", return_value=no_space):
+            with self.assertRaisesRegex(ReleaseStoreError, "space"):
+                self.prepare_member()
+
+        self.assertFalse(self.private_root.exists())
+        self.assertEqual(tuple(self.public_root.iterdir()), before_public)
+
+    def test_space_preflight_counts_headroom_once_on_a_shared_filesystem_at_the_exact_boundary(self):
+        private = Path("/private")
+        public = Path("/public")
+        exact_required_bytes = 1376258
+        space = SimpleNamespace(f_frsize=1, f_bavail=exact_required_bytes)
+
+        with patch(
+            "clash_sub.release_store._existing_filesystem_ancestor",
+            return_value=(private, 1),
+        ), patch("clash_sub.release_store.os.statvfs", return_value=space) as statvfs:
+            release_store_module._preflight_space(
+                private,
+                public,
+                {"standard": "x"},
+                (private / "state.json", private / "current"),
+            )
+
+        self.assertEqual(statvfs.call_count, 1)
+
+    def test_space_preflight_checks_each_distinct_filesystem_without_double_counting_headroom(self):
+        private = Path("/private")
+        public = Path("/public")
+        space = SimpleNamespace(f_frsize=1, f_bavail=2_000_000)
+
+        def filesystem(path):
+            return (public, 2) if Path(path) == public else (private, 1)
+
+        with patch(
+            "clash_sub.release_store._existing_filesystem_ancestor", side_effect=filesystem
+        ), patch("clash_sub.release_store.os.statvfs", return_value=space) as statvfs:
+            release_store_module._preflight_space(
+                private,
+                public,
+                {"standard": "x"},
+                (private / "state.json", private / "current"),
+            )
+
+        self.assertEqual(statvfs.call_count, 2)
 
     def test_identical_bundle_returns_no_new_release_when_current_output_hashes_match(self):
         first = self.prepare_member()

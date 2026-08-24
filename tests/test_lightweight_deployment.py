@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 NGINX_TEMPLATE = ROOT / "deploy" / "nginx" / "clash-sub.conf.tmpl"
 TRAFFIC_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-traffic.service"
 TRAFFIC_TIMER = ROOT / "deploy" / "systemd" / "clash-sub-traffic.timer"
+RECOVERY_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-recover.service"
+RECOVERY_DROP_IN = ROOT / "deploy" / "systemd" / "nginx.service.d" / "clash-sub-recover.conf"
 REQUIREMENTS = ROOT / "requirements.txt"
 
 
@@ -279,6 +281,32 @@ class DocumentationCoverageTests(unittest.TestCase):
             0,
         )
 
+    def test_deployment_validation_accepts_only_the_shipped_private_root(self):
+        values = dict(VALID_DEPLOY_VALUES, DEPLOY_PRIVATE_ROOT="/opt/other/private")
+        self.assertNotEqual(_validation_exit_status(self.texts["deployment"], values), 0)
+
+    def test_deployment_creates_the_repository_private_config_parent_before_installing_service_yaml(self):
+        self.assertIn(
+            "install -d -o root -g root -m 0700 /opt/clash-sub/private/config",
+            self.texts["deployment"],
+        )
+
+    def test_deployment_documents_a_reviewed_acme_bootstrap_before_http01_issuance(self):
+        deployment = self.texts["deployment"]
+        for phrase in (
+            "acme.sh official release",
+            "ACME_SH_VERSION",
+            "sha256sum -c -",
+            "/root/.acme.sh",
+            "default CA",
+            "renewal cron",
+        ):
+            self.assertIn(phrase, deployment)
+        self.assertLess(
+            deployment.index("acme.sh official release"),
+            deployment.index("acme.sh --issue --webroot"),
+        )
+
     def test_owner_home_example_is_a_type_correct_synthetic_ss_proxy(self):
         deployment = self.texts["deployment"]
         examples = [
@@ -449,6 +477,19 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("limit_req zone=clash_panel burst=20 nodelay;", child)
         self.assertNotIn("clash_subscription", child)
 
+    def test_panel_paths_disable_access_logging_and_subscription_404_paths_share_response_hardening(self):
+        panel = _server_with_name(self.servers, "panel.{{DOMAIN}}")
+        rendered = panel.replace("{{PANEL_BASE_PATH}}", "/secret")
+        locations = _blocks(rendered, "location")
+        for uri in ("/secret", "/secret/assets/app.js"):
+            self.assertIn("access_log off;", _selected_location(locations, uri))
+
+        subscription = _server_with_name(self.servers, "sub.{{DOMAIN}}")
+        for location in _blocks(subscription, "location"):
+            self.assertIn('default_type "text/yaml; charset=utf-8";', location)
+            self.assertIn("add_header X-Content-Type-Options nosniff always;", location)
+            self.assertIn("add_header Cache-Control no-store always;", location)
+
     def test_subscription_uses_only_generated_exact_routes_and_silent_404_fallbacks(self):
         subscription = _server_with_name(self.servers, "sub.{{DOMAIN}}")
         self.assertIn(
@@ -545,6 +586,17 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertEqual(_unit_value(timer, "Persistent"), ["true"])
         self.assertIn("WantedBy=timers.target", timer)
         self.assertNotRegex(timer, r"\b(?:sync|airport|generate|render)\b")
+
+    def test_recovery_oneshot_runs_before_nginx_without_adding_a_resident_service(self):
+        service = RECOVERY_SERVICE.read_text(encoding="utf-8")
+        drop_in = RECOVERY_DROP_IN.read_text(encoding="utf-8")
+        self.assertEqual(_unit_value(service, "Type"), ["oneshot"])
+        self.assertEqual(_unit_value(service, "ExecStart"), ["/usr/local/bin/clash-sub recover"])
+        self.assertEqual(_unit_value(service, "User"), ["root"])
+        self.assertIn("Before=nginx.service", service)
+        self.assertIn("Requires=clash-sub-recover.service", drop_in)
+        self.assertIn("After=clash-sub-recover.service", drop_in)
+        self.assertNotIn("[Install]", service)
 
     def test_task7_group_contract_is_documented_without_an_installer_mutation(self):
         self.assertIn(

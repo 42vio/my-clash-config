@@ -1,4 +1,5 @@
 import base64
+import grp
 import os
 import stat
 import subprocess
@@ -13,10 +14,11 @@ from clash_sub.state import load_state, save_state
 import clash_sub.nginx as nginx_module
 
 try:
-    from clash_sub.nginx import NginxError, activate_runtime, render_routes
+    from clash_sub.nginx import NginxError, activate_runtime, recover_runtime, render_routes
 except ImportError:
     NginxError = RuntimeError
     activate_runtime = None
+    recover_runtime = None
     render_routes = None
 
 
@@ -78,6 +80,13 @@ class LightweightNginxTests(unittest.TestCase):
                 path = directory / ("clash-%s.yaml" % variant)
                 path.write_text("proxies: []\n", encoding="utf-8")
                 os.chmod(path, 0o640)
+        public_gid = grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid()
+        for directory in (self.public_root, *self.public_root.rglob("*")):
+            if directory.is_dir():
+                os.chown(directory, -1, public_gid)
+                os.chmod(directory, 0o2750)
+        for path in self.public_root.rglob("*.yaml"):
+            os.chown(path, -1, public_gid)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -137,6 +146,21 @@ class LightweightNginxTests(unittest.TestCase):
         saved = self.public_root / "saved-releases"
         releases.rename(saved)
         releases.symlink_to(saved, target_is_directory=True)
+
+        with self.assertRaisesRegex(NginxError, "release path") as error:
+            render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
+
+        self.assertNotIn(self.member_token, str(error.exception))
+
+    def test_routes_reject_a_hard_linked_release_alias_without_exposing_the_token(self):
+        path = (
+            self.public_root
+            / "releases"
+            / "8"
+            / self.state.users[8].current_release
+            / "clash-standard.yaml"
+        )
+        os.link(path, path.with_name("linked.yaml"))
 
         with self.assertRaisesRegex(NginxError, "release path") as error:
             render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
@@ -209,7 +233,7 @@ class LightweightNginxTests(unittest.TestCase):
             self.assertEqual(kwargs["timeout"], 30)
             self.assertFalse(kwargs["check"])
 
-    def test_failed_nginx_test_restores_prior_bytes_and_never_reloads(self):
+    def test_failed_nginx_test_restores_prior_bytes_then_revalidates_and_reloads_old_runtime(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
         save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
@@ -230,7 +254,14 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertEqual(state_path.read_bytes(), old_state)
         self.assertEqual(self.routes.read_bytes(), b"old routes\n")
         self.assertFalse(extra_path.exists())
-        self.assertEqual([call[0] for call in runner.calls], [("/usr/sbin/nginx", "-t")])
+        self.assertEqual(
+            [call[0] for call in runner.calls],
+            [
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/bin/systemctl", "reload", "nginx"),
+            ],
+        )
         self.assertNotIn(self.member_token, str(error.exception))
         self.assertNotIn("new routes", str(error.exception))
 
@@ -278,6 +309,7 @@ class LightweightNginxTests(unittest.TestCase):
         with self.assertRaisesRegex(NginxError, "rollback failed"):
             activate_runtime(self.config, self.state, "new routes\n", runner)
 
+        self.assertTrue((self.private_root / ".activation-journal.json").exists())
         self.assertEqual(
             [call[0] for call in runner.calls],
             [
@@ -351,12 +383,12 @@ class LightweightNginxTests(unittest.TestCase):
         self.routes.write_bytes(b"old routes\n")
         old_routes = self.routes.read_bytes()
         real_replace = nginx_module.os.replace
-        calls = 0
+        failed = False
 
         def fail_second_install(source, target):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
+            nonlocal failed
+            if Path(target) == self.routes and not failed:
+                failed = True
                 raise OSError("replace failed")
             return real_replace(source, target)
 
@@ -409,7 +441,7 @@ class LightweightNginxTests(unittest.TestCase):
         def fail_first_install_fsync(directory):
             nonlocal calls
             calls += 1
-            if calls == 3:
+            if calls == 5:
                 raise OSError("fsync failed")
             return real_fsync_directory(directory)
 
@@ -423,6 +455,142 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(self.routes.stat().st_mode), 0o644)
         self.assertEqual(tuple(self.private_root.glob(".*")), ())
         self.assertEqual(tuple(self.routes.parent.glob(".*")), ())
+
+    def test_termination_at_each_install_boundary_leaves_a_prepared_journal_that_recovers_old_runtime(self):
+        self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
+        state_path = self.private_root / "state.json"
+        old_state = RuntimeState(1, 7, {7: self.state.users[7]})
+        extra_path = self.private_root / "airport.json"
+        journal = self.private_root / ".activation-journal.json"
+        targets = (state_path, self.routes, extra_path)
+
+        for target in targets:
+            with self.subTest(target=target.name):
+                save_state(state_path, old_state)
+                old_state_bytes = state_path.read_bytes()
+                self.routes.write_bytes(b"old routes\n")
+                extra_path.write_bytes(b"old airport\n")
+                real_replace = nginx_module.os.replace
+
+                def terminate_after_target(source, destination):
+                    result = real_replace(source, destination)
+                    if Path(destination) == target:
+                        raise KeyboardInterrupt
+                    return result
+
+                with patch("clash_sub.nginx.os.replace", side_effect=terminate_after_target):
+                    with self.assertRaises(KeyboardInterrupt):
+                        activate_runtime(
+                            self.config,
+                            self.state,
+                            "new routes\n",
+                            FakeRunner(),
+                            extra_replacements=((extra_path, b"new airport\n", 0o600),),
+                        )
+
+                self.assertTrue(journal.is_file())
+                self.assertEqual(stat.S_IMODE(journal.stat().st_mode), 0o600)
+                recover_runtime(self.config, FakeRunner((0, 0)), reload=True)
+                self.assertEqual(state_path.read_bytes(), old_state_bytes)
+                self.assertEqual(self.routes.read_bytes(), b"old routes\n")
+                self.assertEqual(extra_path.read_bytes(), b"old airport\n")
+                self.assertFalse(journal.exists())
+
+    def test_failed_prepared_recovery_keeps_its_private_journal_without_secret_output(self):
+        self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        self.routes.write_bytes(b"old routes\n")
+        journal = self.private_root / ".activation-journal.json"
+        real_replace = nginx_module.os.replace
+
+        def terminate_after_routes(source, destination):
+            result = real_replace(source, destination)
+            if Path(destination) == self.routes:
+                raise KeyboardInterrupt
+            return result
+
+        with patch("clash_sub.nginx.os.replace", side_effect=terminate_after_routes):
+            with self.assertRaises(KeyboardInterrupt):
+                activate_runtime(self.config, self.state, "new routes\n", FakeRunner())
+
+        with self.assertRaisesRegex(NginxError, "recovery failed") as caught:
+            recover_runtime(self.config, FakeRunner((1,)), reload=True)
+
+        self.assertTrue(journal.exists())
+        self.assertNotIn(self.owner_token, str(caught.exception))
+        self.assertNotIn("new routes", str(caught.exception))
+
+    def test_failed_prepared_recovery_retains_journal_when_restore_cannot_replace(self):
+        self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        self.routes.write_bytes(b"old routes\n")
+        journal = self.private_root / ".activation-journal.json"
+        real_replace = nginx_module.os.replace
+
+        def terminate_after_routes(source, destination):
+            result = real_replace(source, destination)
+            if Path(destination) == self.routes:
+                raise KeyboardInterrupt
+            return result
+
+        with patch("clash_sub.nginx.os.replace", side_effect=terminate_after_routes):
+            with self.assertRaises(KeyboardInterrupt):
+                activate_runtime(self.config, self.state, "new routes\n", FakeRunner())
+
+        with patch("clash_sub.nginx.os.replace", side_effect=OSError("restore failed")):
+            with self.assertRaisesRegex(NginxError, "recovery failed") as caught:
+                recover_runtime(self.config, FakeRunner(), reload=True)
+
+        self.assertTrue(journal.exists())
+        self.assertNotIn(self.owner_token, str(caught.exception))
+        self.assertNotIn("new routes", str(caught.exception))
+
+    def test_committed_journal_recovery_keeps_new_runtime_without_an_nginx_command(self):
+        self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
+        state_path = self.private_root / "state.json"
+        old_state = RuntimeState(1, 7, {7: self.state.users[7]})
+        save_state(state_path, old_state)
+        self.routes.write_bytes(b"old routes\n")
+        snapshots = (
+            (state_path, (True, state_path.read_bytes(), 0o600)),
+            (self.routes, (True, self.routes.read_bytes(), 0o644)),
+        )
+        nginx_module._write_activation_journal(
+            self.private_root / ".activation-journal.json",
+            self.config,
+            snapshots,
+            "committed",
+        )
+        save_state(state_path, self.state)
+        self.routes.write_bytes(b"new routes\n")
+        runner = FakeRunner()
+
+        recovered = recover_runtime(self.config, runner, reload=True)
+
+        self.assertTrue(recovered)
+        self.assertEqual(load_state(state_path), self.state)
+        self.assertEqual(self.routes.read_bytes(), b"new routes\n")
+        self.assertEqual(runner.calls, [])
+        self.assertFalse((self.private_root / ".activation-journal.json").exists())
+
+    def test_committed_journal_cleanup_failure_keeps_the_new_runtime_and_journal(self):
+        self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        self.routes.write_bytes(b"old routes\n")
+        journal = self.private_root / ".activation-journal.json"
+
+        with patch(
+            "clash_sub.nginx._remove_activation_journal",
+            side_effect=nginx_module.NginxError("Nginx activation journal failed"),
+        ):
+            activate_runtime(self.config, self.state, "new routes\n", FakeRunner((0, 0)))
+
+        self.assertEqual(load_state(state_path), self.state)
+        self.assertEqual(self.routes.read_bytes(), b"new routes\n")
+        self.assertTrue(journal.exists())
 
 
 if __name__ == "__main__":
