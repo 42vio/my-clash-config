@@ -109,19 +109,19 @@ class ReleaseStore:
 
             _verify_public_staging(public_stage, variants, public_gid)
             _verify_staged_release(private_stage, public_stage, manifest)
+            _finalize_public_stage(public_stage, variants)
+            _fsync_directory(private_stage)
             public_target = public_client_root / release_id
             if public_target.exists() or public_target.is_symlink():
                 raise ReleaseStoreError("release path is invalid")
-            for variant in variants:
-                os.chmod(public_stage / _filename(variant), 0o640)
-            os.replace(public_stage, public_target)
+            _publish_directory(public_stage, public_target)
             public_release = public_target
             private_releases = _private_directory(self._private_root, "releases")
             private_client_root = _new_or_existing_directory(private_releases, client_name, 0o700)
             private_target = private_client_root / release_id
             if private_target.exists() or private_target.is_symlink():
                 raise ReleaseStoreError("release path is invalid")
-            os.replace(private_stage, private_target)
+            _publish_directory(private_stage, private_target)
             private_release = private_target
             return self.verify_release(client_id, release_id)
         except (ReleaseStoreError, OSError, ValueError, TypeError) as exc:
@@ -341,16 +341,27 @@ def _private_directory(root: Path, name: str) -> Path:
 
 def _new_or_existing_directory(root: Path, name: str | None, mode: int) -> Path:
     path = root if name is None else root / name
+    created = False
     if path.exists() or path.is_symlink():
         if path.is_symlink() or not path.is_dir():
             raise ReleaseStoreError("release path is invalid")
     else:
+        created_directories = [path]
+        if name is None:
+            parent = path.parent
+            while not parent.exists() and not parent.is_symlink():
+                created_directories.append(parent)
+                parent = parent.parent
         try:
             path.mkdir(mode=mode, parents=name is None)
+            created = True
         except OSError as exc:
             raise ReleaseStoreError("release path is invalid") from exc
     try:
         os.chmod(path, mode)
+        if created:
+            for directory in reversed(created_directories):
+                _fsync_directory(directory.parent)
     except OSError as exc:
         raise ReleaseStoreError("release path is invalid") from exc
     return path
@@ -384,6 +395,7 @@ def _new_or_existing_public_directory(root: Path, name: str, public_gid: int) ->
     try:
         path.mkdir(mode=_PUBLIC_DIRECTORY_MODE)
         os.chmod(path, _PUBLIC_DIRECTORY_MODE)
+        _fsync_directory(path.parent)
     except OSError as exc:
         raise ReleaseStoreError("public release path is invalid") from exc
     _require_public_directory(path, public_gid)
@@ -447,7 +459,40 @@ def _write_file(path: Path, contents: bytes, mode: int) -> None:
     with path.open("xb") as handle:
         os.chmod(path, mode)
         handle.write(contents)
+        handle.flush()
     os.chmod(path, mode)
+    _fsync_file(path)
+
+
+def _finalize_public_stage(public_stage: Path, variants: tuple[str, ...]) -> None:
+    for variant in variants:
+        public_file = public_stage / _filename(variant)
+        os.chmod(public_file, 0o640)
+        _fsync_file(public_file)
+    _fsync_directory(public_stage)
+
+
+def _publish_directory(source: Path, target: Path) -> None:
+    os.replace(source, target)
+    parents = (source.parent, target.parent)
+    for parent in dict.fromkeys(parents):
+        _fsync_directory(parent)
+
+
+def _fsync_file(path: Path) -> None:
+    _fsync_path(path)
+
+
+def _fsync_directory(path: Path) -> None:
+    _fsync_path(path)
+
+
+def _fsync_path(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _atomic_replace_file(path: Path, contents: bytes, mode: int, error: str) -> None:

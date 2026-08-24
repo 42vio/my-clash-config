@@ -84,6 +84,132 @@ class ReleaseStoreTests(unittest.TestCase):
         if public_client.exists():
             self.assertFalse(any(path.name.startswith(".") for path in public_client.iterdir()))
 
+    def test_write_file_syncs_completed_file_bytes_and_mode(self):
+        path = Path(self.tempdir.name) / "release.yaml"
+        opened_paths = {}
+        fsynced_paths = []
+        real_open = os.open
+        real_fsync = os.fsync
+
+        def record_open(target, flags, *args, **kwargs):
+            descriptor = real_open(target, flags, *args, **kwargs)
+            opened_paths[descriptor] = Path(target)
+            return descriptor
+
+        def record_fsync(descriptor):
+            fsynced_paths.append(opened_paths.get(descriptor))
+            return real_fsync(descriptor)
+
+        with patch("clash_sub.release_store.os.open", side_effect=record_open), patch(
+            "clash_sub.release_store.os.fsync", side_effect=record_fsync
+        ):
+            release_store_module._write_file(path, b"proxies: []\n", 0o600)
+
+        self.assertEqual(path.read_bytes(), b"proxies: []\n")
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(fsynced_paths, [path])
+
+    def test_finalize_public_stage_syncs_final_yaml_metadata_before_stage_directory(self):
+        stage = Path(self.tempdir.name) / "public-stage"
+        stage.mkdir()
+        public_yaml = stage / "clash-standard.yaml"
+        public_yaml.write_bytes(b"proxies: []\n")
+        os.chmod(public_yaml, 0o600)
+        opened_paths = {}
+        fsynced_paths = []
+        real_open = os.open
+        real_fsync = os.fsync
+
+        def record_open(target, flags, *args, **kwargs):
+            descriptor = real_open(target, flags, *args, **kwargs)
+            opened_paths[descriptor] = Path(target)
+            return descriptor
+
+        def record_fsync(descriptor):
+            fsynced_paths.append(opened_paths.get(descriptor))
+            return real_fsync(descriptor)
+
+        with patch("clash_sub.release_store.os.open", side_effect=record_open), patch(
+            "clash_sub.release_store.os.fsync", side_effect=record_fsync
+        ):
+            release_store_module._finalize_public_stage(stage, ("standard",))
+
+        self.assertEqual(stat.S_IMODE(public_yaml.stat().st_mode), 0o640)
+        self.assertEqual(fsynced_paths, [public_yaml, stage])
+
+    def test_publish_directory_syncs_each_rename_parent_after_replace(self):
+        root = Path(self.tempdir.name)
+        same_parent = root / "same-parent"
+        source_parent = root / "source-parent"
+        target_parent = root / "target-parent"
+        for parent in (same_parent, source_parent, target_parent):
+            parent.mkdir()
+        cases = (
+            (same_parent / ".candidate", same_parent / "release", (same_parent,)),
+            (source_parent / "candidate", target_parent / "release", (source_parent, target_parent)),
+        )
+
+        for source, target, expected_parents in cases:
+            with self.subTest(source=source, target=target):
+                source.mkdir()
+                opened_paths = {}
+                events = []
+                real_open = os.open
+                real_fsync = os.fsync
+                real_replace = os.replace
+
+                def record_open(path, flags, *args, **kwargs):
+                    descriptor = real_open(path, flags, *args, **kwargs)
+                    opened_paths[descriptor] = Path(path)
+                    return descriptor
+
+                def record_fsync(descriptor):
+                    events.append(("fsync", opened_paths.get(descriptor)))
+                    return real_fsync(descriptor)
+
+                def record_replace(source_path, target_path):
+                    events.append(("replace", Path(source_path), Path(target_path)))
+                    return real_replace(source_path, target_path)
+
+                with patch("clash_sub.release_store.os.open", side_effect=record_open), patch(
+                    "clash_sub.release_store.os.fsync", side_effect=record_fsync
+                ), patch("clash_sub.release_store.os.replace", side_effect=record_replace):
+                    release_store_module._publish_directory(source, target)
+
+                self.assertTrue(target.is_dir())
+                self.assertEqual(
+                    events,
+                    [("replace", source, target)]
+                    + [("fsync", parent) for parent in expected_parents],
+                )
+
+    def test_new_nested_private_root_syncs_every_created_parent_entry(self):
+        root = Path(self.tempdir.name)
+        private_root = root / "new-parent" / "private"
+        opened_paths = {}
+        fsynced_paths = []
+        real_open = os.open
+        real_fsync = os.fsync
+
+        def record_open(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            opened_paths[descriptor] = Path(path)
+            return descriptor
+
+        def record_fsync(descriptor):
+            fsynced_paths.append(opened_paths.get(descriptor))
+            return real_fsync(descriptor)
+
+        with patch("clash_sub.release_store.os.open", side_effect=record_open), patch(
+            "clash_sub.release_store.os.fsync", side_effect=record_fsync
+        ):
+            created = release_store_module._new_or_existing_directory(private_root, None, 0o700)
+
+        self.assertEqual(created, private_root)
+        self.assertTrue(private_root.is_dir())
+        self.assertEqual(stat.S_IMODE(private_root.stat().st_mode), 0o700)
+        self.assertEqual(fsynced_paths, [root, root / "new-parent"])
+
     def test_creates_immutable_member_release_with_canonical_manifest(self):
         release = self.prepare_member()
 
