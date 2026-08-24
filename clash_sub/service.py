@@ -189,7 +189,7 @@ def _client_id(i):
     return i
 def _urls(c,t,o):return ["https://%s/s/%s/clash-%s.yaml"%(c.subscription_authority,t,v) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}
-def _error(c,code):return {"client_id":c.client_id,"email":c.email,"code":code}
+def _error(c,code):return {"client_id":c.client_id,"code":code}
 def _pending_source(user,client):return bool(user and client.enabled and user.active and not user.current_release)
 def _state_path(c):return Path(c.private_root)/"state.json"
 def _airport_path(c):return Path(c.private_root)/"airport.yaml"

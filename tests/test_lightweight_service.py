@@ -396,7 +396,7 @@ class ServiceTests(unittest.TestCase):
         self.clients.append(client(9, "failed@example.test"))
         self.fail_client = "sub-9"
         result = self.service.sync_all()
-        self.assertEqual(result["errors"], ({"client_id": 9, "email": "failed@example.test", "code": "member_update_failed"},))
+        self.assertEqual(result["errors"], ({"client_id": 9, "code": "member_update_failed"},))
         self.assertIsNone(self.state.users[9].current_release)
         self.assertEqual(len(self.activator.calls), 2)
 
@@ -462,23 +462,41 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.state.users[7].current_release, release)
         self.assertEqual(len(self.service.links()[0]["urls"]), 3)
 
-    def test_rollback_rejects_a_deleted_current_client_before_release_verification_or_activation(self):
+    def test_rollback_rejects_invalid_current_users_before_release_verification_or_activation(self):
         self.service.sync_all()
         release = self.state.users[8].current_release
-        before = self.state
-        calls = len(self.activator.calls)
-        verified = []
+        baseline_state = self.state
+        inactive_users = dict(baseline_state.users)
+        inactive_users[8] = replace(inactive_users[8], active=False)
+        inactive_state = RuntimeState(1, 7, inactive_users)
+        release_less_users = dict(baseline_state.users)
+        release_less_users[8] = replace(release_less_users[8], current_release=None)
+        release_less_state = RuntimeState(1, 7, release_less_users)
+        cases = (
+            ("deleted", (self.owner,), baseline_state),
+            ("disabled", (self.owner, replace(self.member, enabled=False)), baseline_state),
+            ("inactive", (self.owner, self.member), inactive_state),
+            ("release-less", (self.owner, self.member), release_less_state),
+        )
         verify_release = self.store.verify_release
+        verified = []
         self.store.verify_release = lambda *arguments: verified.append(arguments) or verify_release(*arguments)
-        self.clients = [self.owner]
 
-        with self.assertRaises(ServiceError) as caught:
-            self.service.rollback(8, release)
+        for name, clients, state in cases:
+            with self.subTest(name=name):
+                self.clients = list(clients)
+                self.state = state
+                self.service._reconcile = lambda *_, expected=state: expected
+                calls = len(self.activator.calls)
+                verified.clear()
 
-        self.assertEqual(caught.exception.code, "rollback_release_invalid")
-        self.assertEqual(verified, [])
-        self.assertEqual(self.state, before)
-        self.assertEqual(len(self.activator.calls), calls)
+                with self.assertRaises(ServiceError) as caught:
+                    self.service.rollback(8, release)
+
+                self.assertEqual(caught.exception.code, "rollback_release_invalid")
+                self.assertEqual(verified, [])
+                self.assertEqual(self.state, state)
+                self.assertEqual(len(self.activator.calls), calls)
 
 
 if __name__ == "__main__":
