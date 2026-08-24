@@ -109,9 +109,12 @@ _PROXY_URI_RE = re.compile(
     r"(?i)\b(?:vless|vmess|trojan|ss|hysteria2|hy2|tuic|socks5h|socks5)://"
     r"[0-9A-Za-z_.~+-][^\s'\"`<>]*"
 )
+# The /s/ route prefix is optional: a bare <43-char-core>-<six-readable-code>
+# leak reconstructs the subscription URL on its own, so flag both forms.  The
+# left boundary keeps a token embedded in a longer identifier from matching.
 _SUBSCRIPTION_TOKEN_RE = re.compile(
-    r"/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}"
-    r"(?![A-Za-z0-9_-])"
+    r"(?<![A-Za-z0-9_-])(?:/s/)?[A-Za-z0-9_-]{43}-"
+    r"[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}(?![A-Za-z0-9_-])"
 )
 _PEM_KEY_RE = re.compile(r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----[A-Za-z0-9+/=\r\n]{100,}")
 _URL_USERINFO_RE = re.compile(

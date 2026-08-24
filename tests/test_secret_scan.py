@@ -176,6 +176,37 @@ class TrackedContentRuleTests(ScannerTestCase):
 
             self.assertEqual(exit_code, 0, self.captured_report)
 
+    def test_bare_subscription_token_without_route_prefix_is_flagged(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(
+                repository,
+                "operator-note.txt",
+                "token: %s\n" % SUBSCRIPTION_TOKEN,
+            )
+            self.stage(repository, "path-form.txt", "/%s\n" % SUBSCRIPTION_TOKEN)
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 1)
+            report_lines = self.captured_report.splitlines()
+            self.assertIn(
+                "tracked-subscription-token: operator-note.txt", report_lines
+            )
+            self.assertIn("tracked-subscription-token: path-form.txt", report_lines)
+            self.assertNotIn(SUBSCRIPTION_TOKEN, self.captured_report)
+
+    def test_bare_subscription_token_still_requires_left_boundary(self):
+        core, readable_code = SUBSCRIPTION_TOKEN.rsplit("-", 1)
+        embedded_in_longer_run = "x%s-%s" % (core, readable_code)
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(repository, "documentation.txt", embedded_in_longer_run + "\n")
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
+
     def test_concrete_secret_categories_report_only_category_and_relative_path(self):
         proxy_uri = "trojan" + "://realuser9:realpassword12345@203.0.113.9:443\n"
         userinfo_url = "https" + "://realuser9:realpassword12345@portal.example.net/path\n"
