@@ -117,6 +117,20 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertIn("add_header X-Content-Type-Options nosniff always;", text)
         self.assertIn("add_header Cache-Control no-store always;", text)
 
+    def test_routes_floor_non_second_expiry_milliseconds_in_the_userinfo_header(self):
+        client_with_fractional_expiry = replace(self.member, expiry_ms=8123)
+
+        text = render_routes(
+            self.config,
+            self.state,
+            (self.owner, client_with_fractional_expiry, self.disabled),
+        )
+
+        self.assertIn(
+            'add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8";',
+            text,
+        )
+
     def test_routes_reject_a_symlinked_release_ancestor_without_exposing_the_token(self):
         self.assertIsNotNone(render_routes, "Nginx routes are not implemented")
         releases = self.public_root / "releases"

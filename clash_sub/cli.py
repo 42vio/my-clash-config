@@ -134,7 +134,13 @@ def _call(operation, value, stdout, stderr, factory, *, include_history=False):
             service.update_airport(value)
             stdout.write("机场订阅已更新。\n")
         elif operation == "sync":
-            service.sync_all()
+            result = service.sync_all()
+            errors = tuple(result["errors"])
+            if errors:
+                stdout.write("同步部分完成。\n")
+                for error in errors:
+                    stderr.write("客户端 ID %s（错误代码：%s）\n" % (error["client_id"], error["code"]))
+                return 1
             stdout.write("同步已完成。\n")
         elif operation == "traffic":
             service.traffic_update()

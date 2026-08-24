@@ -138,8 +138,6 @@ def _validated_clients(clients):
         for value in (client.upload, client.download, client.total, client.expiry_ms):
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise NginxError("invalid client traffic")
-        if client.expiry_ms % 1000:
-            raise NginxError("invalid client traffic")
         result[client.client_id] = client
     return result
 

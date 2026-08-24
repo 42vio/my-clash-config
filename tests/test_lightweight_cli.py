@@ -20,6 +20,7 @@ class FakeService:
     def __init__(self):
         self.calls = []
         self.failure = None
+        self.sync_result = {"updated": (), "errors": ()}
         self.status_value = {
             "owner_client_id": 7,
             "last_success": 1750000000.0,
@@ -60,7 +61,7 @@ class FakeService:
 
     def sync_all(self):
         self._call("sync_all")
-        return {"updated": (), "errors": ()}
+        return self.sync_result
 
     def traffic_update(self):
         self._call("traffic_update")
@@ -180,6 +181,35 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(status.calls, [("status", ()), ("history", (7,)), ("history", (8,))])
         self.assertIn("状态", output)
         self.assertIn("历史版本", output)
+
+    def test_menu_and_noninteractive_sync_report_sanitized_partial_completion_nonzero(self):
+        partial_result = {
+            "updated": (),
+            "errors": (
+                {
+                    "client_id": 8,
+                    "email": "member@example.test",
+                    "code": "member_update_failed",
+                },
+            ),
+        }
+        for argv, stdin_text in ((None, "2\n"), (["sync"], "")):
+            with self.subTest(argv=argv):
+                service = FakeService()
+                service.sync_result = partial_result
+
+                code, stdout, stderr = run_cli(argv, service, stdin_text=stdin_text)
+
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, (MENU if argv is None else "") + "同步部分完成。\n")
+                self.assertEqual(stderr, "客户端 ID 8（错误代码：member_update_failed）\n")
+                self.assertNotIn("member@example.test", stdout + stderr)
+
+        code, stdout, stderr = run_cli(["sync"], FakeService())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout, "同步已完成。\n")
+        self.assertEqual(stderr, "")
 
     def test_links_lists_every_user_in_returned_database_id_order_without_selection(self):
         code, stdout, stderr = run_cli(["links"], self.service)
