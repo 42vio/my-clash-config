@@ -21,6 +21,14 @@
 1. **准备干净主机**：重装 Debian 12 amd64 后，先完整执行
    [DEPLOYMENT.md](../DEPLOYMENT.md) 的「检查主机并安装轻量前置包」与 UFW
    步骤。不要复用跑过其他代理栈的主机。
+   运行下面的只读 REALITY 探测前，在同一 Bash 会话中把安全示例替换成真实候选
+   域名；示例仅用于语法校验，不能作为可用 Target。
+
+   ~~~bash
+   readonly XUI_REALITY_TARGET_HOST="example.invalid"
+   printf '%s\n' "$XUI_REALITY_TARGET_HOST" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$' || { printf 'invalid target host\n' >&2; false; }
+   test "$XUI_REALITY_TARGET_HOST" != "example.invalid" || { printf 'replace XUI_REALITY_TARGET_HOST before probing\n' >&2; false; }
+   ~~~
 2. **下载 3.6.0 官方安装脚本到本地文件并先审阅再执行**，绝不把网络响应
    直接管道给 shell。先只读确认下载工具和临时目标：
 
@@ -50,8 +58,9 @@
    bash /tmp/3x-ui-install-v3.6.0.sh v3.6.0
    ```
 
-   最后的 `bash` 是有意保留的人工步骤。安装后保留来源与校验和在管理员
-   私有部署日志（同样不进本仓库）。
+   最后的 `bash` 是有意保留的管理员运行的**上游 3x-ui 安装步骤**：它在
+   下载、校验记录和源码审阅之后执行，不是本项目提供的一键整机安装器。安装后
+   保留来源与校验和在管理员私有部署日志（同样不进本仓库）。
 3. **面板设置**：强唯一用户名与密码、启用 2FA、生成随机 Web Base Path
    （示例形状 `/x7Hq2mVt`），面板监听 `127.0.0.1:<面板端口>`（示例
    `2053`）。该回环地址稍后填入 Nginx 模板的 `{{PANEL_UPSTREAM}}`。
@@ -66,7 +75,7 @@
 
    ```bash
    /opt/clash-sub/.venv/bin/python /opt/clash-sub/scripts/check_reality_target.py \
-     --host <候选目标域名>
+     --host "$XUI_REALITY_TARGET_HOST"
    ```
 
    预期 `reachable`、`tls13`、`alpn_h2`、`x25519`、`certificate_name`

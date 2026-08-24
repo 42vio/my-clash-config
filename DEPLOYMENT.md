@@ -19,6 +19,44 @@
 不开放 UDP 443，不使用公网 1443。以下均以 root 或已验证的 sudo 执行；不要把
 修改命令拼成脚本或一行。
 
+## Shell 示例变量
+
+先在同一个 root Bash 会话中把下面的安全示例替换为真实值，再运行后续命令。示例
+域名和 IP 不可路由，示例远端不存在，且校验会以非零状态拒绝未替换的值；它们不会被
+当作 shell 重定向。此代码块不修改服务器。
+
+~~~bash
+readonly DEPLOY_SSH_PORT="65535"
+readonly DEPLOY_DOMAIN="example.invalid"
+readonly DEPLOY_VPS_IP="192.0.2.10"
+readonly DEPLOY_PANEL_PORT="65534"
+readonly DEPLOY_SUBSCRIPTION_PORT="65533"
+readonly DEPLOY_REPOSITORY_URL="https://git.example.invalid/owner/clash-sub.git"
+readonly DEPLOY_MIHOMO_URL="https://downloads.example.invalid/mihomo-linux-amd64-v1.19.30.gz"
+readonly DEPLOY_MIHOMO_SHA256="0000000000000000000000000000000000000000000000000000000000000000"
+readonly DEPLOY_PANEL_BASE_PATH="/replace-me"
+readonly DEPLOY_PRIVATE_ROOT="/replace-me/private-root"
+
+for variable in DEPLOY_SSH_PORT DEPLOY_DOMAIN DEPLOY_VPS_IP DEPLOY_PANEL_PORT DEPLOY_SUBSCRIPTION_PORT DEPLOY_REPOSITORY_URL DEPLOY_MIHOMO_URL DEPLOY_MIHOMO_SHA256 DEPLOY_PANEL_BASE_PATH DEPLOY_PRIVATE_ROOT; do
+  test -n "${!variable}" || { printf 'missing %s\n' "$variable" >&2; false; }
+done
+case "$DEPLOY_SSH_PORT:$DEPLOY_PANEL_PORT:$DEPLOY_SUBSCRIPTION_PORT" in
+  *[!0-9:]* | :* | *: | 65535:* | *:65534:* | *:*:65533)
+    printf 'replace the sample ports with decimal values\n' >&2
+    false
+    ;;
+esac
+printf '%s\n' "$DEPLOY_DOMAIN" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$' || { printf 'invalid domain\n' >&2; false; }
+printf '%s\n' "$DEPLOY_VPS_IP" | grep -Eq '^[0-9]{1,3}([.][0-9]{1,3}){3}$' || { printf 'invalid IPv4 address\n' >&2; false; }
+case "$DEPLOY_PRIVATE_ROOT" in /*) ;; *) printf 'private root must be absolute\n' >&2; false ;; esac
+case "$DEPLOY_DOMAIN:$DEPLOY_VPS_IP:$DEPLOY_REPOSITORY_URL:$DEPLOY_MIHOMO_URL:$DEPLOY_MIHOMO_SHA256:$DEPLOY_PANEL_BASE_PATH:$DEPLOY_PRIVATE_ROOT" in
+  *example.invalid* | *192.0.2.10* | *0000000000000000000000000000000000000000000000000000000000000000* | */replace-me*)
+    printf 'replace every DEPLOY sample before continuing\n' >&2
+    false
+    ;;
+esac
+~~~
+
 ## 1. 检查主机并安装轻量前置包
 
 先只读确认 Debian 版本、SSH 端口、资源和监听状态。把实际 SSH 端口记为
@@ -75,7 +113,7 @@ ufw status numbered; ss -H -lntp | grep sshd
 先放行当前 SSH；这是后续默认拒绝策略的恢复路径。
 
 ~~~bash
-ufw allow <SSH-port>/tcp
+ufw allow "$DEPLOY_SSH_PORT"/tcp
 ~~~
 
 只读确认 SSH 规则出现后，才设置默认拒绝入站。
@@ -152,7 +190,7 @@ VLESS + RAW/TCP + REALITY 443 入站和每人一个客户端。本仓库脚本�
 acme.sh 已存在。若 acme.sh 不可执行，停止并完成该人工初始化；不能提前签发。
 
 ~~~bash
-ss -H -lntp | grep -E ':(443|<panel-port>|<subscription-port>)'
+ss -H -lntp | grep -E ":(443|$DEPLOY_PANEL_PORT|$DEPLOY_SUBSCRIPTION_PORT)"
 ~~~
 
 ~~~bash
@@ -164,11 +202,11 @@ systemctl is-active x-ui; ~/.acme.sh/acme.sh --version
 先只读确认目标路径为空且私有远端可读；随后才检出。
 
 ~~~bash
-test ! -e /opt/clash-sub; git ls-remote <private-repository-url> HEAD
+test ! -e /opt/clash-sub; git ls-remote "$DEPLOY_REPOSITORY_URL" HEAD
 ~~~
 
 ~~~bash
-git clone <private-repository-url> /opt/clash-sub
+git clone "$DEPLOY_REPOSITORY_URL" /opt/clash-sub
 ~~~
 
 先检查 Python 与固定依赖，再创建 venv。
@@ -206,14 +244,14 @@ curl --version; test ! -e /tmp/mihomo-v1.19.30.gz
 ~~~
 
 ~~~bash
-curl --fail --show-error --location --output /tmp/mihomo-v1.19.30.gz <mihomo-v1.19.30-linux-amd64-url>
+curl --fail --show-error --location --output /tmp/mihomo-v1.19.30.gz "$DEPLOY_MIHOMO_URL"
 ~~~
 
 下载后先用 Debian 的 sha256sum 输出与官方 <mihomo-sha256> 逐字比较；不一致立即
 停止。
 
 ~~~bash
-sha256sum /tmp/mihomo-v1.19.30.gz
+printf '%s  %s\n' "$DEPLOY_MIHOMO_SHA256" /tmp/mihomo-v1.19.30.gz | sha256sum -c -
 ~~~
 
 校验一致后，先检查安装目录，再创建目录。
@@ -336,9 +374,8 @@ xui-database、private-root、public-root、nginx-routes 与 mihomo-binary。
 stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml; sed -n '1,120p' /opt/clash-sub/private/config/service.yaml
 ~~~
 
-~~~bash
-<editor> /opt/clash-sub/private/config/service.yaml
-~~~
+先以管理员选择的本地编辑器打开 /opt/clash-sub/private/config/service.yaml 并保存
+真实值。这是人工文件修改，不提供可复制的伪编辑器命令。
 
 ~~~bash
 stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml
@@ -346,11 +383,11 @@ stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml
 
 ## 7. HTTP-01 webroot bootstrap
 
-本节必须在任何 acme.sh --issue 前完成。先只读确认 DNS 指向 <VPS-public-IP>、
+本节必须在任何 acme.sh --issue 前完成。先只读确认 DNS 指向 DEPLOY_VPS_IP、
 Nginx 已安装、webroot 权限正确；DNS-01 是显式替代方式，不是 HTTP-01 隐藏前置。
 
 ~~~bash
-dig +short panel.<domain>; dig +short sub.<domain>; nginx -v; stat -c '%a %U:%G %n' /var/lib/clash-sub/acme
+dig +short "panel.$DEPLOY_DOMAIN"; dig +short "sub.$DEPLOY_DOMAIN"; nginx -v; stat -c '%a %U:%G %n' /var/lib/clash-sub/acme
 ~~~
 
 先确认 bootstrap 文件不存在，再创建 root-owned 空文件。
@@ -363,15 +400,11 @@ test ! -e /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
 install -o root -g root -m 0644 /dev/null /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
 ~~~
 
-先检查权限，再手工填入仅 port-80 webroot 和通用 404。此时不得加入 TLS、面板或
-订阅代理。
+先检查权限，再用管理员选择的本地编辑器填入下列仅 port-80 webroot 和通用 404。
+这是人工文件修改；此时不得加入 TLS、面板或订阅代理。
 
 ~~~bash
 stat -c '%a %U:%G %n' /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
-~~~
-
-~~~bash
-<editor> /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
 ~~~
 
 ~~~nginx
@@ -444,7 +477,7 @@ echo clash-sub-acme-probe > /var/lib/clash-sub/acme/.well-known/acme-challenge/c
 不能申请证书。
 
 ~~~bash
-curl --fail --resolve panel.<domain>:80:<VPS-public-IP> http://panel.<domain>/.well-known/acme-challenge/clash-sub-probe
+curl --fail --resolve "panel.$DEPLOY_DOMAIN:80:$DEPLOY_VPS_IP" "http://panel.$DEPLOY_DOMAIN/.well-known/acme-challenge/clash-sub-probe"
 ~~~
 
 验证后先确认唯一 probe 文件仍存在，再删除它。
@@ -463,13 +496,14 @@ rm /var/lib/clash-sub/acme/.well-known/acme-challenge/clash-sub-probe
 签发不依赖尚未存在的 Nginx。
 
 ~~~bash
-dig +short panel.<domain>; dig +short sub.<domain>; systemctl is-active nginx; ~/.acme.sh/acme.sh --version
+dig +short "panel.$DEPLOY_DOMAIN"; dig +short "sub.$DEPLOY_DOMAIN"; systemctl is-active nginx; ~/.acme.sh/acme.sh --version
 ~~~
 
-HTTP-01 已可达，现在申请 panel.<domain> 与 sub.<domain> 共用 SAN 证书。
+HTTP-01 已可达，现在申请 panel.${DEPLOY_DOMAIN} 与 sub.${DEPLOY_DOMAIN} 共用 SAN
+证书。
 
 ~~~bash
-~/.acme.sh/acme.sh --issue --webroot /var/lib/clash-sub/acme -d panel.<domain> -d sub.<domain>
+~/.acme.sh/acme.sh --issue --webroot /var/lib/clash-sub/acme -d "panel.$DEPLOY_DOMAIN" -d "sub.$DEPLOY_DOMAIN"
 ~~~
 
 若选择 DNS-01，改用 acme.sh 的显式 DNS API 参数并保护 API 凭据；它是 HTTP-01 的
@@ -488,11 +522,11 @@ install -d -o root -g root -m 0700 /var/lib/clash-sub/certs
 先查看签发记录和目标路径；Nginx 已存在，所以续期的 reload hook 现在才安全。
 
 ~~~bash
-~/.acme.sh/acme.sh --info -d panel.<domain>; test ! -e /var/lib/clash-sub/certs/fullchain.pem; test ! -e /var/lib/clash-sub/certs/privkey.pem
+~/.acme.sh/acme.sh --info -d "panel.$DEPLOY_DOMAIN"; test ! -e /var/lib/clash-sub/certs/fullchain.pem; test ! -e /var/lib/clash-sub/certs/privkey.pem
 ~~~
 
 ~~~bash
-~/.acme.sh/acme.sh --install-cert -d panel.<domain> --fullchain-file /var/lib/clash-sub/certs/fullchain.pem --key-file /var/lib/clash-sub/certs/privkey.pem --reloadcmd "systemctl reload nginx"
+~/.acme.sh/acme.sh --install-cert -d "panel.$DEPLOY_DOMAIN" --fullchain-file /var/lib/clash-sub/certs/fullchain.pem --key-file /var/lib/clash-sub/certs/privkey.pem --reloadcmd "systemctl reload nginx"
 ~~~
 
 ~~~bash
@@ -528,22 +562,22 @@ test ! -e /etc/nginx/sites-available/clash-sub.conf
 install -o root -g root -m 0644 /opt/clash-sub/deploy/nginx/clash-sub.conf.tmpl /etc/nginx/sites-available/clash-sub.conf
 ~~~
 
-先检查六个占位符都存在；随后只在服务器副本填入真实值。PANEL_UPSTREAM 必须是已验证
-的 127.0.0.1:<panel-port>，PANEL_BASE_PATH 必须是 3x-ui 随机路径。
+先检查六个占位符都存在；随后仅用管理员选择的本地编辑器在服务器副本填入真实值。
+PANEL_UPSTREAM 必须是已验证的 127.0.0.1:DEPLOY_PANEL_PORT，PANEL_BASE_PATH
+必须等于 DEPLOY_PANEL_BASE_PATH；不提供可复制的伪编辑器命令。
 
 ~~~bash
-rg -n '{{' /etc/nginx/sites-available/clash-sub.conf
+grep -n '{{' /etc/nginx/sites-available/clash-sub.conf
 ~~~
 
-~~~bash
-<editor> /etc/nginx/sites-available/clash-sub.conf
-~~~
+完成上述检查后，用管理员选择的本地编辑器修改
+/etc/nginx/sites-available/clash-sub.conf。
 
 编辑后先确认无占位符，再原子切换同名链接到最终文件；运行中的 Nginx 仍保留 bootstrap
 直到下一次成功 reload。
 
 ~~~bash
-! rg -n '{{' /etc/nginx/sites-available/clash-sub.conf; readlink /etc/nginx/sites-enabled/clash-sub.conf
+! grep -n '{{' /etc/nginx/sites-available/clash-sub.conf; readlink /etc/nginx/sites-enabled/clash-sub.conf
 ~~~
 
 ~~~bash
@@ -562,11 +596,11 @@ systemctl reload nginx
 不依赖某个 3x-ui 版本的 login URI。
 
 ~~~bash
-curl --fail --resolve panel.<domain>:8443:<VPS-public-IP> https://panel.<domain>:8443<PANEL_BASE_PATH>/
+curl --fail --resolve "panel.$DEPLOY_DOMAIN:8443:$DEPLOY_VPS_IP" "https://panel.$DEPLOY_DOMAIN:8443$DEPLOY_PANEL_BASE_PATH/"
 ~~~
 
 ~~~bash
-ss -H -lntp | grep -E ':(443|8443|<panel-port>|<subscription-port>)'
+ss -H -lntp | grep -E ":(443|8443|$DEPLOY_PANEL_PORT|$DEPLOY_SUBSCRIPTION_PORT)"
 ~~~
 
 ## 10. 每日流量 timer
@@ -615,9 +649,9 @@ systemctl list-timers clash-sub-traffic.timer
 
 ## 11. 首次同步：先发布 owner，再同步成员
 
-首次 owner 数据不能是空配置：<private-root>/home.yaml 必须有至少一个可解析代理。
-先只读核对 service.yaml、配置的 private root 和当前状态；不要创建 proxies: []，
-也不要跳过 home。
+首次 owner 数据不能是空配置：DEPLOY_PRIVATE_ROOT/home.yaml 必须有至少一个可解析
+代理。先只读核对 service.yaml、配置的 private root 和当前状态；不要创建
+proxies: []，也不要跳过 home。
 
 ~~~bash
 stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml; sed -n '1,120p' /opt/clash-sub/private/config/service.yaml; clash-sub status
@@ -626,43 +660,43 @@ stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml; sed -n '1,120p
 先确认 home snapshot 不存在，再以 root-only 模式创建。
 
 ~~~bash
-test ! -e <private-root>/home.yaml
+test ! -e "$DEPLOY_PRIVATE_ROOT/home.yaml"
 ~~~
 
 ~~~bash
-install -o root -g root -m 0600 /dev/null <private-root>/home.yaml
+install -o root -g root -m 0600 /dev/null "$DEPLOY_PRIVATE_ROOT/home.yaml"
 ~~~
 
-先核对模式，再写入下列合成示例并替换全部占位符。至少保留一个完整 proxy，所有真实
-密码、地址、UUID 只留在这个文件。
-
-~~~bash
-stat -c '%a %U:%G %n' <private-root>/home.yaml
-~~~
+先核对模式，再用管理员选择的本地编辑器写入下列合成示例。它本身是可被 Mihomo
+接受的 SS 映射；替换节点前至少保留一个完整 proxy，所有真实密码、地址、UUID
+只留在这个文件。
 
 ~~~bash
-<editor> <private-root>/home.yaml
+stat -c '%a %U:%G %n' "$DEPLOY_PRIVATE_ROOT/home.yaml"
 ~~~
+
+完成上述检查后，用管理员选择的本地编辑器写入
+DEPLOY_PRIVATE_ROOT/home.yaml。
 
 ~~~yaml
 proxies:
-  - name: home-ss-<node-label>
+  - name: home-ss-replace-me
     type: ss
-    server: <home-proxy-host>
-    port: <home-proxy-port>
-    cipher: <home-proxy-cipher>
-    password: <home-proxy-password>
+    server: 198.51.100.10
+    port: 8388
+    cipher: aes-128-gcm
+    password: replace-me-before-use
 ~~~
 
 保存后做 mode 与 parse 两项只读检查：必须是 600 root:root，且用实际服务的
 load_proxy_snapshot 解析器确认至少一个 proxy。
 
 ~~~bash
-stat -c '%a %U:%G %n' <private-root>/home.yaml
+stat -c '%a %U:%G %n' "$DEPLOY_PRIVATE_ROOT/home.yaml"
 ~~~
 
 ~~~bash
-cd /opt/clash-sub && .venv/bin/python -c "from pathlib import Path; from clash_sub.sources import load_proxy_snapshot; print(len(load_proxy_snapshot(Path('<private-root>/home.yaml'))))"
+cd /opt/clash-sub && .venv/bin/python -c "from pathlib import Path; from clash_sub.sources import load_proxy_snapshot; print(len(load_proxy_snapshot(Path('$DEPLOY_PRIVATE_ROOT/home.yaml'))))"
 ~~~
 
 先只读查看状态，再运行菜单并选择 `1`「更新机场订阅」，仅在隐藏输入中粘贴短时

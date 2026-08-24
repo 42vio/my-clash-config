@@ -1,7 +1,9 @@
+import ipaddress
 import re
 import unittest
 from pathlib import Path
 
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 NGINX_TEMPLATE = ROOT / "deploy" / "nginx" / "clash-sub.conf.tmpl"
@@ -65,6 +67,27 @@ def _selected_location(locations, uri):
         if uri.startswith(prefix):
             prefixes.append((len(prefix), location))
     return max(prefixes, default=(0, None))[1]
+
+
+def _fenced_blocks(text, languages):
+    blocks = []
+    delimiter = None
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if delimiter is None:
+            opening = re.fullmatch(r"([~\x60]{3,})([A-Za-z0-9_-]*)", stripped)
+            if opening and opening.group(2) in languages:
+                delimiter = opening.group(1)
+                lines = []
+        elif stripped == delimiter:
+            blocks.append("\n".join(lines))
+            delimiter = None
+        else:
+            lines.append(line)
+    if delimiter is not None:
+        raise AssertionError("unterminated fenced block")
+    return blocks
 
 
 def _server_with_name(servers, name):
@@ -170,7 +193,7 @@ class DocumentationCoverageTests(unittest.TestCase):
         self.assertIn("ufw default deny incoming", deployment)
         self.assertIn("ufw default allow outgoing", deployment)
         self.assertLess(
-            deployment.index("ufw allow <SSH-port>/tcp"),
+            deployment.index('ufw allow "$DEPLOY_SSH_PORT"/tcp'),
             deployment.index("ufw default deny incoming"),
         )
         self.assertLess(
@@ -179,7 +202,7 @@ class DocumentationCoverageTests(unittest.TestCase):
         )
         for phrase in (
             "proxies:",
-            "<private-root>/home.yaml",
+            "DEPLOY_PRIVATE_ROOT/home.yaml",
             "load_proxy_snapshot",
             "选择 `1`",
             "clash-sub sync",
@@ -187,6 +210,33 @@ class DocumentationCoverageTests(unittest.TestCase):
             self.assertIn(phrase, deployment)
         for path in ("/opt/clash-sub/private/config/service.yaml", "<private-root>"):
             self.assertIn(path, private_data)
+
+    def test_active_shell_examples_are_safe_to_copy_without_ripgrep(self):
+        for name in ("deployment", "xui-setup", "operations"):
+            with self.subTest(document=name):
+                blocks = _fenced_blocks(self.texts[name], {"bash", "sh", "shell"})
+                self.assertTrue(blocks)
+                for block in blocks:
+                    self.assertNotRegex(block, r"<[^>\n]+>")
+                    self.assertNotRegex(block, r"\brg\b")
+
+    def test_owner_home_example_is_a_type_correct_synthetic_ss_proxy(self):
+        deployment = self.texts["deployment"]
+        examples = [
+            yaml.safe_load(block)
+            for block in _fenced_blocks(deployment, {"yaml"})
+            if "home-ss-" in block
+        ]
+        self.assertEqual(len(examples), 1)
+        proxy = examples[0]["proxies"][0]
+
+        self.assertEqual(proxy["type"], "ss")
+        self.assertEqual(proxy["server"], "198.51.100.10")
+        self.assertTrue(ipaddress.ip_address(proxy["server"]).is_private)
+        self.assertIsInstance(proxy["port"], int)
+        self.assertEqual(proxy["port"], 8388)
+        self.assertEqual(proxy["cipher"], "aes-128-gcm")
+        self.assertEqual(proxy["password"], "replace-me-before-use")
 
     def test_deployment_documents_nginx_timer_and_first_sync_lifecycle(self):
         deployment = self.texts["deployment"]
