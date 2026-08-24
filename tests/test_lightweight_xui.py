@@ -1,3 +1,4 @@
+from contextlib import closing
 import sqlite3
 import tempfile
 import unittest
@@ -34,7 +35,7 @@ class XuiSnapshotTests(unittest.TestCase):
         )
 
     def test_quotes_sub_id_in_clash_url(self):
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute(
                 "UPDATE clients SET sub_id = ? WHERE id = ?", ("member/id value", 3)
             )
@@ -58,7 +59,7 @@ class XuiSnapshotTests(unittest.TestCase):
         self.assertEqual([client.expiry_ms for client in snapshot.clients], [123456789, 0])
 
     def test_normalizes_relative_expiry_against_injected_current_time(self):
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("UPDATE clients SET expiry_time = ? WHERE id = ?", (-5000, 9))
             connection.execute(
                 """
@@ -113,12 +114,12 @@ class XuiSnapshotTests(unittest.TestCase):
         )
 
     def test_rejects_missing_table_or_column(self):
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("DROP TABLE client_traffics")
         self.assert_incompatible()
 
         self._initialize_database()
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("DROP TABLE clients")
             connection.execute(
                 """
@@ -182,7 +183,7 @@ class XuiSnapshotTests(unittest.TestCase):
         for label, key, value in cases:
             with self.subTest(label):
                 self._initialize_database()
-                with sqlite3.connect(self.database) as connection:
+                with closing(sqlite3.connect(self.database)) as connection, connection:
                     connection.execute(
                         "UPDATE settings SET value = ? WHERE key = ?", (value, key)
                     )
@@ -192,7 +193,7 @@ class XuiSnapshotTests(unittest.TestCase):
         self.database = Path(self.tempdir.name) / ("x-ui-%s.db" % id(self))
         if self.database.exists():
             self.database.unlink()
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.executescript(FIXTURE.read_text(encoding="utf-8"))
             connection.executemany(
                 """
@@ -210,7 +211,7 @@ class XuiSnapshotTests(unittest.TestCase):
             )
 
     def _replace_clients(self, rows):
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("DROP TABLE clients")
             connection.execute(
                 """
