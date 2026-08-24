@@ -35,7 +35,6 @@ TRACKED_DOCUMENT_PATHS = (
     "templates/variants/balanced.yaml",
     "templates/variants/standard.yaml",
     "templates/variants/privacy.yaml",
-    "tests/fixtures/synthetic-users.yaml",
 )
 
 LEGACY_RUNTIME_PATHS = (

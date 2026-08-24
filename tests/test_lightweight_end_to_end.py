@@ -1,4 +1,4 @@
-"""End-to-end acceptance tests for the lightweight static publisher."""
+"""End-to-end acceptance tests for the lightweight static subscription service."""
 
 import hashlib
 import io
