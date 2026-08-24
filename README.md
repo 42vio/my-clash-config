@@ -1,82 +1,130 @@
-# My Mihomo Config
+# my-clash-config：轻量私有 Clash 订阅服务
 
-个人 Clash / Mihomo 配置仓库：自建订阅转换服务 + 三套可复用的无凭据配置模板 + 本地生成脚本。
+对外统一使用 **Clash** 命名；服务器上唯一的管理命令是 `clash-sub`（没有
+`refresh`、`clashctl` 之类的别名）。本仓库从每人的 3x-ui 客户端、owner 的
+机场快照与家庭节点出发，渲染 `balanced` / `standard` / `privacy` 三种完整
+配置，经固定版本 Mihomo 真实校验后原子发布，由宿主机 Nginx 通过高强度
+随机令牌路径**静态只读**发布。平时没有任何 Python、Mihomo 或转换进程常驻。
 
-> **安全原则：** 仓库内不保存任何真实订阅地址、节点 UUID / Password、Reality 密钥等凭据。
-> 自建节点只通过被 gitignore 的私有片段注入，生成结果同样只留在本地。
+> **链接即密码：** 任何拿到订阅链接的人都能下载该链接展开后的全部节点凭据。
+> 订阅链接只通过受信任渠道分发；一旦泄漏，立即 `clash-sub rotate-link <user-id>`
+> 并在 3x-ui 面板撤销该用户的客户端凭据。
 
-## 仓库组成
+## 信任模型
 
-| 路径 | 说明 |
+| 角色 | 配置中允许的节点来源 | 可获得的 variant |
+| --- | --- | --- |
+| owner | 自己的 3x-ui 客户端 + 最新机场快照 + 自维护家庭节点 | `balanced`、`standard`、`privacy` |
+| 普通用户（member） | 仅自己的 3x-ui 客户端 | 仅 `standard` |
+
+普通用户之间完全隔离：输出中不含 owner 或其他任何用户的节点、名称或凭据。
+每位用户持有独立令牌与独立 3x-ui 客户端（独立 UUID、配额、到期时间），
+泄漏时可单独轮换、单独撤销。
+
+## 端口与监听
+
+| 端口 | 归属 | 状态 |
+| --- | --- | --- |
+| TCP 443 | 原生 Xray（VLESS + RAW/TCP + REALITY） | 公网开放，REALITY 独占，不经 Nginx |
+| TCP 80 | 宿主机 Nginx | 仅 ACME HTTP-01 验证与通用 404 |
+| TCP 8443 | 宿主机 Nginx HTTPS | 面板（`panel.<域名>`）与订阅（`sub.<域名>`）唯一公网入口 |
+| SSH | sshd | 由管理员指定，本项目不更改 |
+| 3x-ui 面板与原始订阅服务 | 回环 `127.0.0.1` | 永不直接暴露公网 |
+
+不开放 UDP 443，不使用公网 1443，不引入 Nginx stream。
+
+## 数据流
+
+```text
+3x-ui SQLite（只读发现客户端）──┐
+3x-ui 回环 Clash 订阅（每人 subId）─┤
+机场 Clash 快照（仅 owner）────────┤
+家庭节点（仅 owner，私有文件）──────┤
+基础模板 + variant 差异────────────┤
+                                  ▼
+              clash-sub 手动同步（渲染 + 结构/泄漏校验）
+                                  ▼
+              固定版本 Mihomo 真实配置校验（按需运行）
+                                  ▼
+              原子发布（每用户仅保留最近 5 个成功版本）
+                                  ▼
+              宿主机 Nginx :8443 静态发布 ──> 各自的 Clash 客户端
+```
+
+空闲时常驻进程只有 3x-ui 管理的 Xray 和宿主机 Nginx；同步与每日流量任务
+结束后，Python 与 Mihomo 进程全部退出。
+
+## 三种 variant
+
+三种输出的差异由 `templates/variants/*.yaml` 描述（DNS、策略组、规则与
+GEOIP 解析策略），公共结构在 `templates/clash.yaml.j2`：
+
+| 输出 | owner 节点范围 | 普通用户 | 用途 |
+| --- | --- | --- | --- |
+| `balanced` | 3x-ui + 机场 + 家庭 | 不发布 | 通用完整配置 |
+| `standard` | 3x-ui + 机场（不含家庭） | 仅本人 3x-ui 节点 | 标准跨平台配置，默认发给其他用户 |
+| `privacy` | 3x-ui + 机场 + 家庭 | 不发布 | 隐私优先配置（Fake-IP DNS） |
+
+订阅地址形状（Token 是唯一授权凭据，识别码不能单独下载）：
+
+```text
+普通用户：https://sub.<域名>:8443/s/<token>/clash-standard.yaml
+owner：  https://sub.<域名>:8443/s/<token>/clash-<balanced|standard|privacy>.yaml
+```
+
+## 日常管理：只记一个命令
+
+```bash
+clash-sub
+```
+
+无参数命令显示交互菜单：
+
+```text
+1. 更新机场订阅
+2. 同步所有配置
+3. 查看订阅链接
+4. 查看状态和历史版本
+0. 退出
+```
+
+不需要记住 refresh 之类的命令——它不存在；systemd 与排错用的非交互子命令
+（`sync` / `traffic-update` / `status` / `links` / `history` / `rollback` /
+`rotate-link`）见 [docs/operations.md](docs/operations.md)。
+
+## 明确不做
+
+- **不提供短链**：短链接会成为第二套 bearer 凭据和轮换状态。
+- **没有在线转换页面**，不部署 Docker / subconverter / Subweb。
+- **没有定时生成**：配置只在机场导入成功或显式同步时重建；订阅请求到达时
+  不生成配置、不做实时查询，Clash 客户端只读到最近一次发布的静态 YAML。
+- **不启用 Telegram 提醒**，不提供流量状态网页。
+- **不自动安装或修改 3x-ui**：部署文档只提供人工步骤与只读检查命令。
+- **不把任何真实节点、订阅地址、UUID、密码、REALITY 密钥或公开 Token 提交
+  到 Git**；仓库私有不改变此规则。
+
+## 文档
+
+| 文档 | 内容 |
 | --- | --- |
-| `templates/` | 共享底版 `_base.yaml.tmpl` + `templates/parts/` 差异件（DNS / GEOIP），组合生成三套无凭据配置 |
-| `private/` | 私有片段示例（`.example` 可提交；`proxies.yaml` 等真实文件被 gitignore） |
-| `scripts/generate_configs.py` | 本地生成脚本（Python 3.9+，仅标准库） |
-| `generated/` | 个人配置输出目录（内容被 gitignore） |
-| `compose.yaml` | subconverter + sub-web 订阅转换服务（端口仅绑定 `127.0.0.1`） |
-| `docker/subconverter/pref.ini` | subconverter 安全配置（API 模式、无默认订阅） |
-| `tests/` | 标准库单元测试（21 个，含模板结构与敏感信息扫描） |
-| `docs/dns-design.md` | DNS 架构与 no-resolve 策略设计方案 |
-| `DEPLOYMENT.md` | 服务部署与个人配置生成完整指南 |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | 干净 Debian 12 服务器逐步人工部署 |
+| [docs/3x-ui-setup.md](docs/3x-ui-setup.md) | 固定版本 3x-ui / Xray 人工初始化清单 |
+| [docs/operations.md](docs/operations.md) | 日常运维：机场更新、流量、历史、回滚、轮换、故障恢复 |
+| [docs/private-data.md](docs/private-data.md) | 私有数据布局、权限、备份与恢复边界 |
 
-## 三套配置
-
-三份输出（`My-Clash_Balanced` / `My-Clash_Balanced_Win` / `My-Clash_Privacy`）由共享底版
-`templates/_base.yaml.tmpl` 与 `templates/parts/` 下的差异件组合生成，公共内容只需改一处：
-
-| 输出 | DNS 差异件 | `respect-rules` | GEOIP 差异件 | 适用场景 |
-| --- | --- | --- | --- | --- |
-| `My-Clash_Balanced` | `dns-balanced.part`（策略分流：海外 DoH 默认 + 国内域名分流） | ✅ | `geoip-resolve.part`（允许解析） | 通用 / 游戏 Windows |
-| `My-Clash_Balanced_Win` | 同 Balanced（共用相同差异件，输出一致） | ✅ | 同上 | Windows 桌面 |
-| `My-Clash_Privacy` | `dns-privacy.part`（Fake-IP 隐私：国内 DoH、配置最简） | ❌ | `geoip-no-resolve.part` | 工作 Mac，隐私优先 |
-
-三套配置的差异、设计动机与设备推荐详见 [docs/dns-design.md](docs/dns-design.md)。
-
-## 快速开始：生成个人配置
-
-```bash
-# 1. 从示例创建三份私有片段，填入自建节点 / 分组 / 规则
-cp private/proxies.yaml.example private/proxies.yaml
-cp private/proxy-groups.yaml.example private/proxy-groups.yaml
-cp private/rules.yaml.example private/rules.yaml
-
-# 2. 生成三份配置到 generated/
-python3 scripts/generate_configs.py \
-  --source-url 'https://3x-ui.example/subscription' \
-  --converter-base-url 'https://convert.example.com' \
-  --private
-```
-
-私有片段的列表项必须**顶格**（column 0，不带前导空格），否则会破坏生成结果的 YAML 结构。
-不带 `--private` 时生成公共配置（订阅 provider 生效，无私有节点）。
-
-## 快速开始：订阅转换服务
-
-```bash
-cp .env.example .env
-docker compose up -d
-curl http://127.0.0.1:25500/version   # 健康检查
-```
-
-服务端口只绑定回环地址，对外通过反向代理（HTTPS + Basic Auth / IP 白名单）暴露。
-sub-web 高级模式的后端地址填 `https://convert.example.com/sub?`。
-完整步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。
+`docs/` 目录中另有一份旧服务器拓扑的历史记录文档，仅作历史说明，不是
+本项目的部署或运维步骤。
 
 ## 开发
 
 ```bash
-python3 -m unittest discover -s tests -v   # 21 个测试
+python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m unittest discover -s tests -v
+.venv/bin/python scripts/scan_tracked_secrets.py            # 跟踪文件敏感信息扫描
+.venv/bin/python scripts/scan_tracked_secrets.py --private-root private
 ```
 
-底版中的占位符为 `{{ SUBSCRIPTION_PROVIDER_URL }}`、`{{ PRIVATE_PROXIES }}`、
-`{{ PRIVATE_PROXY_GROUPS }}`、`{{ PRIVATE_RULES }}`、`{{ DNS_VARIANT }}`、`{{ GEOIP_VARIANT }}`，
-由生成脚本替换（后两者按 `parts/` 差异件注入，输出与差异件的映射见 `scripts/generate_configs.py` 的 `TEMPLATES`）。
-测试会校验：所有占位符齐全、各差异件内容差异保持（Balanced 与 Win 输出一致、Privacy 不同）、
-以及公共文件中不出现个人域名 / IP / 节点名 / 凭据。
-
-## 安全约定
-
-- 真实订阅 URL 只通过 `--source-url` 命令行参数传入，绝不写进仓库。
-- `private/*.yaml`（真实片段）与 `generated/*.yaml`（生成结果）均已 gitignore。
-- 生成的配置包含个人节点凭据，只导入自己的 Clash 客户端，不得分享。
-- 若凭据曾被推送到远程仓库，仅删除文件无法撤回历史，必须轮换凭据。
+安全约定：真实订阅 URL、令牌、UUID、节点密码、REALITY 密钥、机场临时 URL、
+生成结果与含凭据的 release 元数据一律不进入 Git（`private/`、`generated/`
+均被忽略）；扫描器只输出类别与路径，绝不回显命中的值。若凭据曾被推送到远程
+仓库，仅删除文件无法撤回历史，必须轮换凭据。

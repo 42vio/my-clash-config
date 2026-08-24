@@ -1,8 +1,7 @@
 .worktrees/
+.venv/
 .env
-private/proxies.yaml
-private/proxy-groups.yaml
-private/rules.yaml
-generated/*.yaml
+private/**
+generated/**
 __pycache__/
 *.py[cod]

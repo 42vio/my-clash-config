@@ -1,0 +1,11 @@
+schema-version: 1
+owner-email: owner-example
+subscription-authority: sub.example.com:8443
+xui-database: /etc/x-ui/x-ui.db
+private-root: /var/lib/clash-sub/private
+public-root: /var/lib/clash-sub/public
+nginx-routes: /etc/nginx/clash-sub/routes.conf
+mihomo-binary: /usr/local/lib/clash-sub/mihomo
+nginx-binary: /usr/sbin/nginx
+systemctl-binary: /usr/bin/systemctl
+max-source-bytes: 5242880
