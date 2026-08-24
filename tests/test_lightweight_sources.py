@@ -230,6 +230,38 @@ class SnapshotAndMergeTests(unittest.TestCase):
             self.assertNotIn(secret, path.read_text(encoding="utf-8"))
             self.assertEqual(list(Path(directory).iterdir()), [path])
 
+    def test_snapshot_loads_a_regular_single_link_file_with_the_expected_owner(self):
+        proxies = [{"name": "Home", "type": "ss", "server": "example.invalid"}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "home.yaml"
+            write_proxy_snapshot(path, proxies)
+
+            self.assertEqual(load_proxy_snapshot(path), proxies)
+
+    def test_snapshot_rejects_a_file_owned_by_someone_other_than_the_effective_owner(self):
+        proxies = [{"name": "Home", "type": "ss", "server": "example.invalid"}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "home.yaml"
+            write_proxy_snapshot(path, proxies)
+            if os.geteuid() == 0:
+                os.chown(path, 1, -1)
+                with self.assertRaises(SourceError):
+                    load_proxy_snapshot(path)
+            else:
+                with patch("clash_sub.sources.os.geteuid", return_value=os.geteuid() + 1):
+                    with self.assertRaises(SourceError):
+                        load_proxy_snapshot(path)
+
+    def test_snapshot_rejects_a_hard_linked_file(self):
+        proxies = [{"name": "Home", "type": "ss", "server": "example.invalid"}]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "home.yaml"
+            write_proxy_snapshot(path, proxies)
+            os.link(path, path.with_name("linked-home.yaml"))
+
+            with self.assertRaises(SourceError):
+                load_proxy_snapshot(path)
+
     def test_snapshot_rejects_insecure_mode_and_invalid_proxy_shape(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "home.yaml"

@@ -49,6 +49,8 @@ def load_proxy_snapshot(path):
             not stat.S_ISREG(details.st_mode)
             or stat.S_ISLNK(details.st_mode)
             or stat.S_IMODE(details.st_mode) != 0o600
+            or details.st_uid != (0 if os.geteuid() == 0 else os.geteuid())
+            or details.st_nlink != 1
         ):
             _snapshot_fail()
         return _parse_proxy_document(snapshot.read_bytes(), _SNAPSHOT_ERROR)

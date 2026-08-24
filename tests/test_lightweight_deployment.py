@@ -1,8 +1,11 @@
 import ipaddress
+import os
 import re
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import yaml
 
@@ -124,6 +127,85 @@ def _validation_exit_status(text, values):
     ).returncode
 
 
+def _acme_validation_block(text):
+    blocks = [
+        block
+        for block in _fenced_blocks(text, {"bash"})
+        if 'readonly ACME_HOME="/root/.acme.sh"' in block
+    ]
+    if len(blocks) != 1:
+        raise AssertionError("expected exactly one ACME validation block")
+    return blocks[0]
+
+
+def _acme_validation_exit_status(
+    text, home, cron_entry, *, package_status="installed", home_metadata="700 root:root"
+):
+    block = _acme_validation_block(text)
+    block, replacements = re.subn(
+        r'(?m)^readonly ACME_HOME="/root/\.acme\.sh"$',
+        "readonly ACME_HOME=%s" % shlex.quote(str(home)),
+        block,
+        count=1,
+    )
+    if replacements != 1:
+        raise AssertionError("expected one ACME home assignment")
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        commands = root / "bin"
+        commands.mkdir()
+        crontab = root / "root.crontab"
+        crontab.write_text(cron_entry + "\n", encoding="utf-8")
+        fixtures = {
+            "dpkg-query": '#!/bin/sh\nprintf "%s\\n" "$ACME_TEST_PACKAGE_STATUS"\n',
+            "crontab": '#!/bin/sh\ncat "$ACME_TEST_CRONTAB"\n',
+            "stat": '#!/bin/sh\nprintf "%s\\n" "$ACME_TEST_HOME_METADATA"\n',
+        }
+        for name, content in fixtures.items():
+            path = commands / name
+            path.write_text(content, encoding="utf-8")
+            path.chmod(0o755)
+        environment = dict(
+            os.environ,
+            PATH="%s:%s" % (commands, os.environ["PATH"]),
+            ACME_TEST_CRONTAB=str(crontab),
+            ACME_TEST_HOME_METADATA=home_metadata,
+            ACME_TEST_PACKAGE_STATUS=package_status,
+        )
+        return subprocess.run(
+            ["bash", "-c", block],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        ).returncode
+
+
+def _activation_candidate_inventory_block(text):
+    blocks = [
+        block
+        for block in _fenced_blocks(text, {"bash"})
+        if '[[ "$candidate" =~' in block and "activation-journal" in block
+    ]
+    if len(blocks) != 1:
+        raise AssertionError("expected exactly one activation candidate inventory block")
+    return blocks[0]
+
+
+def _activation_candidate_inventory_paths(text, private_root, current_root, nginx_root):
+    block = _activation_candidate_inventory_block(text)
+    block = block.replace("/var/lib/clash-sub/private/current", str(current_root))
+    block = block.replace("/var/lib/clash-sub/private", str(private_root))
+    block = block.replace("/etc/nginx/clash-sub", str(nginx_root))
+    result = subprocess.run(
+        ["bash", "-c", block],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, tuple(Path(line) for line in result.stdout.splitlines() if line)
+
+
 VALID_DEPLOY_VALUES = {
     "DEPLOY_SSH_PORT": "22",
     "DEPLOY_DOMAIN": "vps.example.test",
@@ -206,10 +288,44 @@ class DocumentationCoverageTests(unittest.TestCase):
         ):
             self.assertIn(phrase, deployment)
 
-    def test_deployment_documents_acme_sh_certificate_lifecycle(self):
-        deployment = self.texts["deployment"]
-        for phrase in ("acme.sh", "--install-cert", "SAN", "systemctl reload nginx"):
-            self.assertIn(phrase, deployment)
+    def test_acme_renewal_validation_executes_with_controlled_fixtures(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory) / "acme-home"
+            home.mkdir()
+            quoted = '0 0 * * * "%s"/acme.sh --cron --home "%s" > /dev/null' % (
+                home,
+                home,
+            )
+            unquoted = "0 0 * * * %s/acme.sh --cron --home %s > /dev/null" % (home, home)
+            for entry in (quoted, unquoted):
+                with self.subTest(entry=entry):
+                    self.assertEqual(
+                        _acme_validation_exit_status(self.texts["deployment"], home, entry),
+                        0,
+                    )
+            for entry in (
+                "0 0 * * * %s/acme.sh --home %s > /dev/null" % (home, home),
+                "0 0 * * * %s/acme.sh --cron > /dev/null" % home,
+                "0 0 * * * %s/acme.sh --cron --home %s > /dev/null"
+                % (home, home.parent / "wrong-home"),
+            ):
+                with self.subTest(entry=entry):
+                    self.assertNotEqual(
+                        _acme_validation_exit_status(self.texts["deployment"], home, entry),
+                        0,
+                    )
+            self.assertNotEqual(
+                _acme_validation_exit_status(
+                    self.texts["deployment"], home, unquoted, package_status="not-installed"
+                ),
+                0,
+            )
+            self.assertNotEqual(
+                _acme_validation_exit_status(
+                    self.texts["deployment"], home, unquoted, home_metadata="755 root:root"
+                ),
+                0,
+            )
 
     def test_clean_debian_contract_bootstraps_http01_before_tls_and_owner_publish(self):
         deployment = self.texts["deployment"]
@@ -291,22 +407,6 @@ class DocumentationCoverageTests(unittest.TestCase):
             self.texts["deployment"],
         )
 
-    def test_deployment_documents_a_reviewed_acme_bootstrap_before_http01_issuance(self):
-        deployment = self.texts["deployment"]
-        for phrase in (
-            "acme.sh official release",
-            "ACME_SH_VERSION",
-            "sha256sum -c -",
-            "/root/.acme.sh",
-            "default CA",
-            "renewal cron",
-        ):
-            self.assertIn(phrase, deployment)
-        self.assertLess(
-            deployment.index("acme.sh official release"),
-            deployment.index("acme.sh --issue --webroot"),
-        )
-
     def test_owner_home_example_is_a_type_correct_synthetic_ss_proxy(self):
         deployment = self.texts["deployment"]
         examples = [
@@ -362,6 +462,38 @@ class DocumentationCoverageTests(unittest.TestCase):
             "旧 YAML",
         ):
             self.assertIn(phrase, operations)
+
+    def test_activation_candidate_inventory_is_strict_and_read_only(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            private_root = root / "private"
+            current_root = private_root / "current"
+            nginx_root = root / "nginx"
+            current_root.mkdir(parents=True)
+            nginx_root.mkdir()
+            candidates = (
+                private_root / ".state.json.a1b2c3d4",
+                private_root / ".airport.yaml.e5f6g7h8",
+                private_root / "..activation-journal.json.i9j0k1l2",
+                current_root / ".7.m3n4o5p6",
+                nginx_root / ".routes.conf.q7r8s9t0",
+            )
+            decoys = (
+                private_root / ".status.json.a1b2c3d4",
+                private_root / ".state.json.bad-suffix!",
+                current_root / ".0.m3n4o5p6",
+                nginx_root / ".routes.conf.bad-suffix!",
+            )
+            for path in candidates + decoys:
+                path.write_bytes(b"fixture\n")
+
+            status, listed = _activation_candidate_inventory_paths(
+                self.texts["operations"], private_root, current_root, nginx_root
+            )
+
+            self.assertEqual(status, 0)
+            self.assertEqual(set(listed), set(candidates))
+            self.assertTrue(all(path.exists() for path in candidates + decoys))
 
     def test_operations_documents_replacement_checklists(self):
         operations = self.texts["operations"]

@@ -153,6 +153,28 @@ owner 没有 release，状态会显示 pending。随后按手机流程更新机�
 find /var/lib/clash-sub/private/staging /var/lib/clash-sub/private/releases /var/lib/clash-sub/public/releases -xdev -printf '%m %u:%g %p\n' 2>/dev/null | sort
 ```
 
+运行时激活候选文件也只读盘点；下列匹配严格限定为 state、机场快照、journal、
+current marker 与 routes 候选名，不把其他隐藏文件当成可处理对象。命令只输出路径，
+不删除任何文件：
+
+```bash
+while IFS= read -r -d '' candidate; do
+  if [[ "$candidate" =~ ^/var/lib/clash-sub/private/\.state\.json\.[[:alnum:]_]+$ ||
+        "$candidate" =~ ^/var/lib/clash-sub/private/\.airport\.yaml\.[[:alnum:]_]+$ ||
+        "$candidate" =~ ^/var/lib/clash-sub/private/\.\.activation-journal\.json\.[[:alnum:]_]+$ ||
+        "$candidate" =~ ^/var/lib/clash-sub/private/current/\.[1-9][0-9]*\.[[:alnum:]_]+$ ||
+        "$candidate" =~ ^/etc/nginx/clash-sub/\.routes\.conf\.[[:alnum:]_]+$ ]]; then
+    printf '%s\n' "$candidate"
+  fi
+done < <(
+  {
+    find /var/lib/clash-sub/private -path /var/lib/clash-sub/private/current -prune -o -type f -print0
+    find /var/lib/clash-sub/private/current -type f -print0
+    find /etc/nginx/clash-sub -type f -print0
+  } 2>/dev/null
+) | sort
+```
+
 同时检查 `/var/lib/clash-sub/private/.activation-journal.json`；若存在，先执行
 `clash-sub recover`，不得手动删除 journal 或 release。
 

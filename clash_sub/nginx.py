@@ -93,7 +93,7 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
                 raise NginxError("Nginx activation rollback failed")
             raise NginxError("Nginx reload failed")
 
-        _write_activation_journal(journal_path, checked_config, snapshots, "committed")
+        _commit_activation_journal(checked_config, runner, journal_path, snapshots)
         try:
             _remove_activation_journal(journal_path)
         except NginxError:
@@ -167,6 +167,26 @@ def _write_activation_journal(journal_path, config, snapshots, phase):
     finally:
         if candidate is not None:
             _remove_candidate(candidate)
+
+
+def _commit_activation_journal(config, runner, journal_path, snapshots):
+    try:
+        _write_activation_journal(journal_path, config, snapshots, "committed")
+        return
+    except NginxError:
+        try:
+            phase, _ = _load_activation_journal(journal_path, config)
+        except NginxError:
+            phase = None
+        if phase == "committed":
+            try:
+                _fsync_directory(journal_path.parent)
+            except OSError:
+                raise NginxError("Nginx activation journal failed") from None
+            return
+        if phase == "prepared" and _recover_after_failed_activation(config, runner):
+            raise NginxError("Nginx activation failed")
+        raise NginxError("Nginx activation rollback failed")
 
 
 def _activation_journal_payload(config, snapshots, phase):

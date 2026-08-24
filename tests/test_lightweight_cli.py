@@ -3,10 +3,12 @@ import io
 import subprocess
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from clash_sub.domain import ServiceConfig
-from clash_sub.service import ServiceError
+from clash_sub.service import ServiceError, _OperationLock
 from clash_sub.cli import MENU, _default_service_factory, main
 
 
@@ -14,6 +16,22 @@ TOKEN = "x" * 43 + "-ABC234"
 ROTATED_TOKEN = "y" * 43 + "-XYZ789"
 SOURCE_URL = "http://127.0.0.1:2096/clash/private-sub-id"
 AIRPORT_URL = "https://airport.example/temporary-secret"
+
+
+def recovery_config(private_root):
+    root = private_root.parent
+    return ServiceConfig(
+        "owner",
+        "sub.example.test:8443",
+        root / "xui",
+        private_root,
+        root / "public",
+        root / "routes",
+        root / "mihomo",
+        root / "nginx",
+        root / "systemctl",
+        root / "templates",
+    )
 
 
 class FakeService:
@@ -296,20 +314,56 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(self.service.calls, [])
 
     def test_root_only_recover_uses_disk_recovery_without_requiring_running_nginx(self):
-        config = ServiceConfig(
-            "owner", "sub.example.test:8443", Path("/xui"), Path("/private"), Path("/public"),
-            Path("/routes"), Path("/mihomo"), Path("/nginx"), Path("/systemctl"), Path("/templates"),
-        )
-        with patch("clash_sub.cli.os.geteuid", return_value=0), patch(
-            "clash_sub.cli.load_config", return_value=config
-        ), patch("clash_sub.cli.recover_runtime") as recover:
-            code, stdout, stderr = run_cli(["recover"], self.service)
+        with TemporaryDirectory() as directory:
+            private_root = Path(directory).resolve() / "private"
+            private_root.mkdir(mode=0o700)
+            private_root.chmod(0o700)
+            config = recovery_config(private_root)
+            with patch("clash_sub.cli.os", SimpleNamespace(geteuid=lambda: 0)), patch(
+                "clash_sub.cli.load_config", return_value=config
+            ), patch("clash_sub.cli.recover_runtime") as recover:
+                code, stdout, stderr = run_cli(["recover"], self.service)
 
         self.assertEqual(code, 0)
         self.assertEqual(stdout, "运行时恢复已完成。\n")
         self.assertEqual(stderr, "")
         self.assertEqual(recover.call_args.args, (config, subprocess.run))
         self.assertEqual(recover.call_args.kwargs, {"reload": False})
+        self.assertEqual(self.service.calls, [])
+
+    def test_root_only_recover_rejects_a_real_contended_operation_lock_before_recovery(self):
+        with TemporaryDirectory() as directory:
+            private_root = Path(directory).resolve() / "private"
+            private_root.mkdir(mode=0o700)
+            private_root.chmod(0o700)
+            config = recovery_config(private_root)
+            with _OperationLock(private_root / "operation.lock"):
+                with patch("clash_sub.cli.os", SimpleNamespace(geteuid=lambda: 0)), patch(
+                    "clash_sub.cli.load_config", return_value=config
+                ), patch("clash_sub.cli.recover_runtime") as recover:
+                    code, stdout, stderr = run_cli(["recover"], self.service)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "操作失败（错误代码：operation_busy）\n")
+        recover.assert_not_called()
+        self.assertEqual(self.service.calls, [])
+
+    def test_root_only_recover_rejects_an_invalid_operation_lock_before_recovery(self):
+        with TemporaryDirectory() as directory:
+            private_root = Path(directory).resolve() / "private"
+            private_root.mkdir(mode=0o700)
+            private_root.chmod(0o755)
+            config = recovery_config(private_root)
+            with patch("clash_sub.cli.os", SimpleNamespace(geteuid=lambda: 0)), patch(
+                "clash_sub.cli.load_config", return_value=config
+            ), patch("clash_sub.cli.recover_runtime") as recover:
+                code, stdout, stderr = run_cli(["recover"], self.service)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "操作失败（错误代码：operation_lock_invalid）\n")
+        recover.assert_not_called()
         self.assertEqual(self.service.calls, [])
 
     def test_rejects_legacy_unknown_and_airport_url_arguments_without_echoing_them(self):

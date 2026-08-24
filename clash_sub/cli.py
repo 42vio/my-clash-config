@@ -14,7 +14,7 @@ from clash_sub.config import load_config
 from clash_sub.generator import render_user_bundle
 from clash_sub.nginx import activate_runtime, recover_runtime, render_routes
 from clash_sub.release_store import ReleaseStore
-from clash_sub.service import ClashSubService, ServiceError
+from clash_sub.service import ClashSubService, ServiceError, _OperationLock
 from clash_sub.sources import (
     download_airport_proxies,
     fetch_xui_proxies,
@@ -256,7 +256,10 @@ def _recover(stdout, stderr):
     try:
         repo_root = Path(__file__).resolve().parents[1]
         config = load_config(repo_root / "private" / "config" / "service.yaml", repo_root)
-        recover_runtime(config, subprocess.run, reload=False)
+        with _OperationLock(Path(config.private_root) / "operation.lock"):
+            recover_runtime(config, subprocess.run, reload=False)
+    except ServiceError as error:
+        return _error(stderr, error.code, 1)
     except Exception:
         return _error(stderr, "runtime_recovery_failed", 1)
     stdout.write("运行时恢复已完成。\n")

@@ -89,20 +89,21 @@ apt-get update
 
 先只读核对候选版本；再一次安装所有必需的轻量包。--no-install-recommends 避免
 512 MiB 主机安装推荐包，且 ca-certificates、curl、git、python3、python3-venv、
-nginx、ufw、dnsutils、gzip 必须在首次使用前到位。
+nginx、ufw、dnsutils、gzip、cron 必须在首次使用前到位。`cron` 和 `crontab`
+必须在安装 acme.sh 前已经可用。
 
 ~~~bash
-apt-cache policy ca-certificates curl git python3 python3-venv nginx ufw dnsutils gzip
+apt-cache policy ca-certificates curl git python3 python3-venv nginx ufw dnsutils gzip cron
 ~~~
 
 ~~~bash
-apt-get -y install --no-install-recommends ca-certificates curl git python3 python3-venv nginx ufw dnsutils gzip
+apt-get -y install --no-install-recommends ca-certificates curl git python3 python3-venv nginx ufw dnsutils gzip cron
 ~~~
 
 安装后只读确认工具与包均可用。
 
 ~~~bash
-command -v curl git python3 nginx ufw dig gzip; dpkg-query -W ca-certificates python3-venv
+command -v curl git python3 nginx ufw dig gzip crontab; dpkg-query -W ca-certificates python3-venv cron
 ~~~
 
 ## 2. UFW：先保住 SSH，再启用
@@ -545,14 +546,34 @@ HOME=/root "/tmp/acme.sh-$ACME_SH_VERSION/acme.sh" --install -m "$ACME_ACCOUNT_E
 ~~~
 
 先确认安装、账户配置、明确设置的 default CA 与 renewal cron/job；任何一项失败时
-不要继续 HTTP-01 签发。
+不要继续 HTTP-01 签发。下面的检查要求 `/root/.acme.sh` 精确为 `0700 root:root`，
+并只接受官方 renewal job 的带引号或未带引号路径形式。
 
 ~~~bash
 /root/.acme.sh/acme.sh --version; /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt; /root/.acme.sh/acme.sh --info
 ~~~
 
 ~~~bash
-test -d /root/.acme.sh; stat -c '%a %U:%G %n' /root/.acme.sh; crontab -l -u root | grep -F '/root/.acme.sh/acme.sh --cron --home /root/.acme.sh'
+readonly ACME_HOME="/root/.acme.sh"
+set -e
+command -v crontab >/dev/null
+test "$(dpkg-query -W -f='${db:Status-Status}' cron)" = installed
+test -d "$ACME_HOME"
+test "$(stat -c '%a %U:%G' "$ACME_HOME")" = '700 root:root'
+crontab -l -u root | awk \
+  -v quoted_program="\"$ACME_HOME\"/acme.sh" \
+  -v unquoted_program="$ACME_HOME/acme.sh" \
+  -v quoted_home="\"$ACME_HOME\"" \
+  -v unquoted_home="$ACME_HOME" '
+    $1 !~ /^#/ && NF >= 9 &&
+      ($6 == quoted_program || $6 == unquoted_program) &&
+      $7 == "--cron" &&
+      $8 == "--home" &&
+      ($9 == quoted_home || $9 == unquoted_home) {
+        valid = 1
+      }
+    END { exit valid ? 0 : 1 }
+  '
 ~~~
 
 先只读重复确认两条 A 记录、正在运行的 bootstrap Nginx 和 acme.sh。此顺序保证

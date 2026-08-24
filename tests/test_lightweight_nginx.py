@@ -91,6 +91,18 @@ class LightweightNginxTests(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
+    def _activation_artifacts(self):
+        state_path = self.private_root / "state.json"
+        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        old_state = state_path.read_bytes()
+        self.routes.write_bytes(b"old routes\n")
+        current_path = self.private_root / "current" / "7"
+        current_path.parent.mkdir()
+        os.chmod(current_path.parent, 0o700)
+        current_path.write_bytes(b"old release\n")
+        os.chmod(current_path, 0o600)
+        return state_path, old_state, current_path
+
     def test_routes_are_exact_anonymous_and_limited_to_authorized_variants(self):
         self.assertIsNotNone(render_routes, "Nginx routes are not implemented")
 
@@ -591,6 +603,152 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertEqual(load_state(state_path), self.state)
         self.assertEqual(self.routes.read_bytes(), b"new routes\n")
         self.assertTrue(journal.exists())
+
+    def test_committed_journal_candidate_failure_restores_old_runtime_and_removes_prepared_journal(self):
+        state_path, old_state, current_path = self._activation_artifacts()
+        journal = self.private_root / ".activation-journal.json"
+        runner = FakeRunner((0, 0, 0, 0))
+        real_candidate = nginx_module._write_candidate
+        real_load = nginx_module._load_activation_journal
+        journal_writes = 0
+        observed_phases = []
+
+        def fail_committed_candidate(path, contents, mode):
+            nonlocal journal_writes
+            if Path(path) == journal:
+                journal_writes += 1
+                if journal_writes == 2:
+                    raise OSError("committed candidate write failed")
+            return real_candidate(path, contents, mode)
+
+        def record_phase(journal_path, config):
+            result = real_load(journal_path, config)
+            observed_phases.append(result[0])
+            return result
+
+        with patch("clash_sub.nginx._write_candidate", side_effect=fail_committed_candidate), patch(
+            "clash_sub.nginx._load_activation_journal", side_effect=record_phase
+        ):
+            with self.assertRaisesRegex(NginxError, "activation failed") as caught:
+                activate_runtime(
+                    self.config,
+                    self.state,
+                    "new routes\n",
+                    runner,
+                    extra_replacements=((current_path, b"new release\n", 0o600),),
+                )
+
+        self.assertEqual(state_path.read_bytes(), old_state)
+        self.assertEqual(self.routes.read_bytes(), b"old routes\n")
+        self.assertEqual(current_path.read_bytes(), b"old release\n")
+        self.assertEqual(set(observed_phases), {"prepared"})
+        self.assertFalse(journal.exists())
+        self.assertEqual(
+            [call[0] for call in runner.calls],
+            [
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/bin/systemctl", "reload", "nginx"),
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/bin/systemctl", "reload", "nginx"),
+            ],
+        )
+        self.assertNotIn(self.member_token, str(caught.exception))
+        self.assertNotIn("new routes", str(caught.exception))
+
+    def test_committed_journal_rename_failure_restores_old_runtime_and_removes_prepared_journal(self):
+        state_path, old_state, current_path = self._activation_artifacts()
+        journal = self.private_root / ".activation-journal.json"
+        runner = FakeRunner((0, 0, 0, 0))
+        real_replace = nginx_module.os.replace
+        real_load = nginx_module._load_activation_journal
+        journal_replacements = 0
+        observed_phases = []
+
+        def fail_committed_rename(source, destination):
+            nonlocal journal_replacements
+            if Path(destination) == journal:
+                journal_replacements += 1
+                if journal_replacements == 2:
+                    raise OSError("committed journal rename failed")
+            return real_replace(source, destination)
+
+        def record_phase(journal_path, config):
+            result = real_load(journal_path, config)
+            observed_phases.append(result[0])
+            return result
+
+        with patch("clash_sub.nginx.os.replace", side_effect=fail_committed_rename), patch(
+            "clash_sub.nginx._load_activation_journal", side_effect=record_phase
+        ):
+            with self.assertRaisesRegex(NginxError, "activation failed") as caught:
+                activate_runtime(
+                    self.config,
+                    self.state,
+                    "new routes\n",
+                    runner,
+                    extra_replacements=((current_path, b"new release\n", 0o600),),
+                )
+
+        self.assertEqual(state_path.read_bytes(), old_state)
+        self.assertEqual(self.routes.read_bytes(), b"old routes\n")
+        self.assertEqual(current_path.read_bytes(), b"old release\n")
+        self.assertEqual(set(observed_phases), {"prepared"})
+        self.assertFalse(journal.exists())
+        self.assertEqual(
+            [call[0] for call in runner.calls],
+            [
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/bin/systemctl", "reload", "nginx"),
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/bin/systemctl", "reload", "nginx"),
+            ],
+        )
+        self.assertNotIn(self.member_token, str(caught.exception))
+        self.assertNotIn("new routes", str(caught.exception))
+
+    def test_committed_journal_fsync_failure_retries_before_keeping_the_new_runtime(self):
+        state_path, _, current_path = self._activation_artifacts()
+        journal = self.private_root / ".activation-journal.json"
+        runner = FakeRunner((0, 0))
+        real_fsync = nginx_module._fsync_directory
+        observed_phases = []
+        failed = False
+
+        def fail_committed_fsync(directory):
+            nonlocal failed
+            if Path(directory) == self.private_root and not failed:
+                try:
+                    phase, _ = nginx_module._load_activation_journal(journal, self.config)
+                except NginxError:
+                    phase = None
+                if phase == "committed":
+                    failed = True
+                    observed_phases.append(phase)
+                    raise OSError("committed journal fsync failed")
+            return real_fsync(directory)
+
+        with patch("clash_sub.nginx._fsync_directory", side_effect=fail_committed_fsync):
+            activate_runtime(
+                self.config,
+                self.state,
+                "new routes\n",
+                runner,
+                extra_replacements=((current_path, b"new release\n", 0o600),),
+            )
+
+        self.assertTrue(failed)
+        self.assertEqual(load_state(state_path), self.state)
+        self.assertEqual(self.routes.read_bytes(), b"new routes\n")
+        self.assertEqual(current_path.read_bytes(), b"new release\n")
+        self.assertEqual(observed_phases, ["committed"])
+        self.assertFalse(journal.exists())
+        self.assertEqual(
+            [call[0] for call in runner.calls],
+            [
+                ("/usr/sbin/nginx", "-t"),
+                ("/usr/bin/systemctl", "reload", "nginx"),
+            ],
+        )
 
 
 if __name__ == "__main__":
