@@ -84,6 +84,17 @@ class ReleaseStoreTests(unittest.TestCase):
         if public_client.exists():
             self.assertFalse(any(path.name.startswith(".") for path in public_client.iterdir()))
 
+    def emulate_public_directory_mode(self):
+        real_directory_mode = release_store_module.directory_mode
+
+        def directory_mode(path):
+            path = Path(path)
+            if path == self.public_root or self.public_root in path.parents:
+                return 0o2750
+            return real_directory_mode(path)
+
+        return patch("clash_sub.release_store.directory_mode", side_effect=directory_mode)
+
     def test_write_file_syncs_completed_file_bytes_and_mode(self):
         path = Path(self.tempdir.name) / "release.yaml"
         opened_paths = {}
@@ -667,6 +678,70 @@ class ReleaseStoreTests(unittest.TestCase):
 
         self.assert_prior_release_survives(first)
         self.assert_no_uncommitted_candidates()
+
+    def test_prepare_cleans_candidates_after_public_rename_parent_fsync_failure(self):
+        release_id = "2026-08-23T12-00-00Z-00000002"
+        public_candidate = self.public_root / "releases" / "7" / release_id
+        private_candidate = self.private_root / "releases" / "7" / release_id
+        opened_paths = {}
+        real_open = os.open
+        real_fsync = os.fsync
+
+        def record_open(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            opened_paths[descriptor] = Path(path)
+            return descriptor
+
+        def fail_public_parent_fsync(descriptor):
+            if opened_paths.get(descriptor) == public_candidate.parent and public_candidate.is_dir():
+                raise OSError("public publish fsync failed")
+            return real_fsync(descriptor)
+
+        with self.emulate_public_directory_mode(), patch(
+            "clash_sub.release_store.os.open", side_effect=record_open
+        ), patch("clash_sub.release_store.os.fsync", side_effect=fail_public_parent_fsync):
+            first = self.prepare_member()
+            self.store.mark_current(7, first.release_id)
+
+            with self.assertRaisesRegex(ReleaseStoreError, "prepare"):
+                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+
+            self.assertFalse(public_candidate.exists())
+            self.assertFalse(private_candidate.exists())
+            self.assert_no_uncommitted_candidates()
+            self.assert_prior_release_survives(first)
+
+    def test_prepare_cleans_candidates_after_private_rename_parent_fsync_failure(self):
+        release_id = "2026-08-23T12-00-00Z-00000002"
+        public_candidate = self.public_root / "releases" / "7" / release_id
+        private_candidate = self.private_root / "releases" / "7" / release_id
+        opened_paths = {}
+        real_open = os.open
+        real_fsync = os.fsync
+
+        def record_open(path, flags, *args, **kwargs):
+            descriptor = real_open(path, flags, *args, **kwargs)
+            opened_paths[descriptor] = Path(path)
+            return descriptor
+
+        def fail_private_parent_fsync(descriptor):
+            if opened_paths.get(descriptor) == private_candidate.parent and private_candidate.is_dir():
+                raise OSError("private publish fsync failed")
+            return real_fsync(descriptor)
+
+        with self.emulate_public_directory_mode(), patch(
+            "clash_sub.release_store.os.open", side_effect=record_open
+        ), patch("clash_sub.release_store.os.fsync", side_effect=fail_private_parent_fsync):
+            first = self.prepare_member()
+            self.store.mark_current(7, first.release_id)
+
+            with self.assertRaisesRegex(ReleaseStoreError, "prepare"):
+                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+
+            self.assertFalse(public_candidate.exists())
+            self.assertFalse(private_candidate.exists())
+            self.assert_no_uncommitted_candidates()
+            self.assert_prior_release_survives(first)
 
     def test_prepare_cleans_published_candidates_when_final_verification_fails(self):
         first = self.prepare_member()

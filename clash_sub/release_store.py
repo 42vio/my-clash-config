@@ -70,6 +70,15 @@ class ReleaseStore:
         public_stage = None
         private_release = None
         public_release = None
+
+        def record_private_release(path: Path) -> None:
+            nonlocal private_release
+            private_release = path
+
+        def record_public_release(path: Path) -> None:
+            nonlocal public_release
+            public_release = path
+
         try:
             private_staging_root = _private_directory(self._private_root, "staging")
             private_stage = _new_directory(private_staging_root, release_id, 0o700)
@@ -114,15 +123,13 @@ class ReleaseStore:
             public_target = public_client_root / release_id
             if public_target.exists() or public_target.is_symlink():
                 raise ReleaseStoreError("release path is invalid")
-            _publish_directory(public_stage, public_target)
-            public_release = public_target
+            _publish_directory(public_stage, public_target, on_renamed=record_public_release)
             private_releases = _private_directory(self._private_root, "releases")
             private_client_root = _new_or_existing_directory(private_releases, client_name, 0o700)
             private_target = private_client_root / release_id
             if private_target.exists() or private_target.is_symlink():
                 raise ReleaseStoreError("release path is invalid")
-            _publish_directory(private_stage, private_target)
-            private_release = private_target
+            _publish_directory(private_stage, private_target, on_renamed=record_private_release)
             return self.verify_release(client_id, release_id)
         except (ReleaseStoreError, OSError, ValueError, TypeError) as exc:
             for candidate in (public_stage, public_release, private_stage, private_release):
@@ -472,8 +479,12 @@ def _finalize_public_stage(public_stage: Path, variants: tuple[str, ...]) -> Non
     _fsync_directory(public_stage)
 
 
-def _publish_directory(source: Path, target: Path) -> None:
+def _publish_directory(
+    source: Path, target: Path, *, on_renamed: Callable[[Path], None] | None = None
+) -> None:
     os.replace(source, target)
+    if on_renamed is not None:
+        on_renamed(target)
     parents = (source.parent, target.parent)
     for parent in dict.fromkeys(parents):
         _fsync_directory(parent)
