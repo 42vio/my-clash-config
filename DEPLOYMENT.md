@@ -37,24 +37,26 @@ readonly DEPLOY_MIHOMO_SHA256="0000000000000000000000000000000000000000000000000
 readonly DEPLOY_PANEL_BASE_PATH="/replace-me"
 readonly DEPLOY_PRIVATE_ROOT="/replace-me/private-root"
 
+validation_failed=0
 for variable in DEPLOY_SSH_PORT DEPLOY_DOMAIN DEPLOY_VPS_IP DEPLOY_PANEL_PORT DEPLOY_SUBSCRIPTION_PORT DEPLOY_REPOSITORY_URL DEPLOY_MIHOMO_URL DEPLOY_MIHOMO_SHA256 DEPLOY_PANEL_BASE_PATH DEPLOY_PRIVATE_ROOT; do
-  test -n "${!variable}" || { printf 'missing %s\n' "$variable" >&2; false; }
+  test -n "${!variable}" || { printf 'missing %s\n' "$variable" >&2; validation_failed=1; }
 done
 case "$DEPLOY_SSH_PORT:$DEPLOY_PANEL_PORT:$DEPLOY_SUBSCRIPTION_PORT" in
   *[!0-9:]* | :* | *: | 65535:* | *:65534:* | *:*:65533)
     printf 'replace the sample ports with decimal values\n' >&2
-    false
+    validation_failed=1
     ;;
 esac
-printf '%s\n' "$DEPLOY_DOMAIN" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$' || { printf 'invalid domain\n' >&2; false; }
-printf '%s\n' "$DEPLOY_VPS_IP" | grep -Eq '^[0-9]{1,3}([.][0-9]{1,3}){3}$' || { printf 'invalid IPv4 address\n' >&2; false; }
-case "$DEPLOY_PRIVATE_ROOT" in /*) ;; *) printf 'private root must be absolute\n' >&2; false ;; esac
+printf '%s\n' "$DEPLOY_DOMAIN" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$' || { printf 'invalid domain\n' >&2; validation_failed=1; }
+printf '%s\n' "$DEPLOY_VPS_IP" | grep -Eq '^[0-9]{1,3}([.][0-9]{1,3}){3}$' || { printf 'invalid IPv4 address\n' >&2; validation_failed=1; }
+case "$DEPLOY_PRIVATE_ROOT" in /*) ;; *) printf 'private root must be absolute\n' >&2; validation_failed=1 ;; esac
 case "$DEPLOY_DOMAIN:$DEPLOY_VPS_IP:$DEPLOY_REPOSITORY_URL:$DEPLOY_MIHOMO_URL:$DEPLOY_MIHOMO_SHA256:$DEPLOY_PANEL_BASE_PATH:$DEPLOY_PRIVATE_ROOT" in
   *example.invalid* | *192.0.2.10* | *0000000000000000000000000000000000000000000000000000000000000000* | */replace-me*)
     printf 'replace every DEPLOY sample before continuing\n' >&2
-    false
+    validation_failed=1
     ;;
 esac
+test "$validation_failed" -eq 0
 ~~~
 
 ## 1. 检查主机并安装轻量前置包

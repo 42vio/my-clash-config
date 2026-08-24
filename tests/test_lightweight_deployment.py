@@ -1,5 +1,6 @@
 import ipaddress
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -88,6 +89,51 @@ def _fenced_blocks(text, languages):
     if delimiter is not None:
         raise AssertionError("unterminated fenced block")
     return blocks
+
+
+def _deployment_validation_block(text):
+    blocks = [
+        block
+        for block in _fenced_blocks(text, {"bash"})
+        if "readonly DEPLOY_SSH_PORT" in block
+    ]
+    if len(blocks) != 1:
+        raise AssertionError("expected exactly one deployment validation block")
+    return blocks[0]
+
+
+def _validation_exit_status(text, values):
+    block = _deployment_validation_block(text)
+    for name, value in values.items():
+        assignment = r'(?m)^readonly %s="[^"]*"$' % re.escape(name)
+        block, replacements = re.subn(
+            assignment,
+            'readonly %s="%s"' % (name, value),
+            block,
+            count=1,
+        )
+        if replacements != 1:
+            raise AssertionError("expected one assignment for %s" % name)
+    return subprocess.run(
+        ["bash", "-c", block],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).returncode
+
+
+VALID_DEPLOY_VALUES = {
+    "DEPLOY_SSH_PORT": "22",
+    "DEPLOY_DOMAIN": "vps.example.test",
+    "DEPLOY_VPS_IP": "203.0.113.10",
+    "DEPLOY_PANEL_PORT": "2053",
+    "DEPLOY_SUBSCRIPTION_PORT": "2096",
+    "DEPLOY_REPOSITORY_URL": "https://git.example.test/owner/clash-sub.git",
+    "DEPLOY_MIHOMO_URL": "https://downloads.example.test/mihomo-linux-amd64-v1.19.30.gz",
+    "DEPLOY_MIHOMO_SHA256": "a" * 64,
+    "DEPLOY_PANEL_BASE_PATH": "/admin-panel",
+    "DEPLOY_PRIVATE_ROOT": "/var/lib/clash-sub/private",
+}
 
 
 def _server_with_name(servers, name):
@@ -219,6 +265,19 @@ class DocumentationCoverageTests(unittest.TestCase):
                 for block in blocks:
                     self.assertNotRegex(block, r"<[^>\n]+>")
                     self.assertNotRegex(block, r"\brg\b")
+
+    def test_deployment_validation_rejects_one_remaining_sample_port(self):
+        values = dict(VALID_DEPLOY_VALUES, DEPLOY_SSH_PORT="65535")
+        self.assertNotEqual(
+            _validation_exit_status(self.texts["deployment"], values),
+            0,
+        )
+
+    def test_deployment_validation_accepts_complete_valid_synthetic_values(self):
+        self.assertEqual(
+            _validation_exit_status(self.texts["deployment"], VALID_DEPLOY_VALUES),
+            0,
+        )
 
     def test_owner_home_example_is_a_type_correct_synthetic_ss_proxy(self):
         deployment = self.texts["deployment"]
