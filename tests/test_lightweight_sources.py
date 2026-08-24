@@ -166,7 +166,33 @@ class SourceFetchingTests(unittest.TestCase):
         self.assertIsNone(caught.exception.__context__)
         self.assertIsNone(caught.exception.__cause__)
 
-    def test_default_airport_downloader_installs_the_https_redirect_handler(self):
+    def test_default_xui_downloader_disables_ambient_proxies(self):
+        response = FakeResponse(
+            proxy_yaml(), "http://127.0.0.1:2096/clash/member"
+        )
+        captured = {}
+
+        class CapturingOpener:
+            def open(self, request, timeout):
+                captured["request"] = request
+                captured["timeout"] = timeout
+                return response
+
+        def build_opener(*handlers):
+            captured["handlers"] = handlers
+            return CapturingOpener()
+
+        with patch("urllib.request.build_opener", side_effect=build_opener) as builder:
+            proxies = fetch_xui_proxies("http://127.0.0.1:2096/clash/member", 1024)
+
+        self.assertEqual(proxies[0]["name"], "Example")
+        builder.assert_called_once()
+        self.assertEqual(len(captured["handlers"]), 1)
+        self.assertIsInstance(captured["handlers"][0], urllib.request.ProxyHandler)
+        self.assertEqual(captured["handlers"][0].proxies, {})
+        self.assertEqual(captured["timeout"], 15)
+
+    def test_default_airport_downloader_disables_ambient_proxies_and_preserves_redirect_policy(self):
         response = FakeResponse(proxy_yaml(), "https://airport.example/final")
         captured = {}
 
@@ -181,13 +207,14 @@ class SourceFetchingTests(unittest.TestCase):
             return CapturingOpener()
 
         with patch("urllib.request.build_opener", side_effect=build_opener) as builder:
-            with patch.object(urllib.request.OpenerDirector, "open", return_value=response):
-                proxies = download_airport_proxies("https://airport.example/private-token", 1024)
+            proxies = download_airport_proxies("https://airport.example/private-token", 1024)
 
         self.assertEqual(proxies[0]["name"], "Example")
         builder.assert_called_once()
-        self.assertEqual(len(captured["handlers"]), 1)
-        self.assertIsInstance(captured["handlers"][0], _HttpsRedirectHandler)
+        self.assertEqual(len(captured["handlers"]), 2)
+        self.assertIsInstance(captured["handlers"][0], urllib.request.ProxyHandler)
+        self.assertEqual(captured["handlers"][0].proxies, {})
+        self.assertIsInstance(captured["handlers"][1], _HttpsRedirectHandler)
         self.assertEqual(captured["timeout"], 15)
 
 

@@ -180,9 +180,11 @@ def _fetch_proxies(url, max_bytes, opener, valid_final_url, airport=False):
         active_opener = opener
         if active_opener is None:
             active_opener = (
-                urllib.request.build_opener(_HttpsRedirectHandler())
+                urllib.request.build_opener(
+                    urllib.request.ProxyHandler({}), _HttpsRedirectHandler()
+                )
                 if airport
-                else urllib.request.build_opener()
+                else urllib.request.build_opener(urllib.request.ProxyHandler({}))
             )
         response = _open(active_opener, request)
         with response:

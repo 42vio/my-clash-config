@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import json
 import os
 import stat
 import tempfile
@@ -349,6 +350,64 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(journal.is_file())
         self.assertEqual(stat.S_IMODE(journal.stat().st_mode), 0o600)
         self.assertFalse((Path(self.config.private_root) / "status.json.tmp").exists())
+
+    def test_status_journal_uses_unique_temp_without_clobbering_legacy_name(self):
+        legacy_temporary = Path(self.config.private_root) / "status.json.tmp"
+        legacy_temporary.write_bytes(b"unrelated journal file")
+
+        self.service._journal(success=self.clock_value)
+
+        journal = Path(self.config.private_root) / "status.json"
+        self.assertTrue(legacy_temporary.exists())
+        if legacy_temporary.exists():
+            self.assertEqual(legacy_temporary.read_bytes(), b"unrelated journal file")
+        self.assertEqual(
+            json.loads(journal.read_text(encoding="utf-8")),
+            {"last_errors": [], "last_success": self.clock_value},
+        )
+
+    def test_status_journal_completes_partial_writes_and_syncs_file_and_parent(self):
+        journal = Path(self.config.private_root) / "status.json"
+        original_write = os.write
+        original_fsync = os.fsync
+        writes = []
+        synced_directories = []
+
+        def partial_write(descriptor, data):
+            size = max(1, len(data) // 2)
+            written = original_write(descriptor, data[:size])
+            writes.append(written)
+            return written
+
+        def capture_fsync(descriptor):
+            synced_directories.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+            return original_fsync(descriptor)
+
+        with patch("clash_sub.service.os.write", side_effect=partial_write), patch(
+            "clash_sub.service.os.fsync", side_effect=capture_fsync
+        ):
+            self.service._journal(success=self.clock_value)
+
+        try:
+            persisted = json.loads(journal.read_text(encoding="utf-8"))
+        except ValueError:
+            persisted = None
+        self.assertEqual(
+            persisted,
+            {"last_errors": [], "last_success": self.clock_value},
+        )
+        self.assertGreater(len(writes), 1)
+        self.assertIn(False, synced_directories)
+        self.assertIn(True, synced_directories)
+
+    def test_status_journal_cleans_temporary_file_after_replace_failure(self):
+        journal = Path(self.config.private_root) / "status.json"
+
+        with patch("clash_sub.service.os.replace", side_effect=OSError("replace failed")):
+            self.service._journal(success=self.clock_value)
+
+        self.assertFalse(journal.exists())
+        self.assertEqual(tuple(Path(self.config.private_root).iterdir()), ())
 
     def test_render_validation_receives_tokens_loopback_subid_and_airport_url(self):
         seen = []

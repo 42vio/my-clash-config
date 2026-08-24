@@ -2,6 +2,7 @@ import fcntl
 import json
 import os
 import stat
+import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -153,15 +154,31 @@ class ClashSubService:
         # Best-effort sanitized operation journal: timestamps and stable
         # error codes only, never tokens, URLs, or client secrets.
         path=Path(self.config.private_root)/"status.json"
+        descriptor=None; temporary=None
         try:
             current=self._read_journal(); payload={"last_success":current["last_success"] if success is None else success,"last_errors":tuple(str(item) for item in errors)}
-            temporary=path.with_name("status.json.tmp")
-            descriptor=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+            descriptor,temporary=tempfile.mkstemp(prefix=".%s."%path.name,dir=str(path.parent))
             try:
-                os.fchmod(descriptor,0o600); os.write(descriptor,json.dumps(payload,sort_keys=True).encode("utf-8"))
-            finally:os.close(descriptor)
-            os.replace(temporary,path)
+                os.fchmod(descriptor,0o600); content=json.dumps(payload,sort_keys=True).encode("utf-8"); offset=0
+                while offset<len(content):
+                    written=os.write(descriptor,content[offset:])
+                    if written<=0:raise OSError
+                    offset+=written
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor); descriptor=None
+            os.replace(temporary,path); temporary=None
+            directory=os.open(path.parent,os.O_RDONLY|getattr(os,"O_DIRECTORY",0))
+            try:os.fsync(directory)
+            finally:os.close(directory)
         except Exception:pass
+        finally:
+            if descriptor is not None:
+                try:os.close(descriptor)
+                except OSError:pass
+            if temporary is not None:
+                try:os.unlink(temporary)
+                except OSError:pass
     def _read_journal(self):
         try:
             loaded=json.loads((Path(self.config.private_root)/"status.json").read_text(encoding="utf-8"))
