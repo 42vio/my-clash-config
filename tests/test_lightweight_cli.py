@@ -22,6 +22,9 @@ class FakeService:
         self.failure = None
         self.status_value = {
             "owner_client_id": 7,
+            "last_success": 1750000000.0,
+            "last_errors": ("member_update_failed",),
+            "pending": ({"client_id": 9, "email": "new@example.test"},),
             "users": (
                 {"client_id": 7, "email": "Alice", "active": True, "current_release": "release-owner"},
                 {"client_id": 8, "email": "Bob", "active": True, "current_release": "release-member"},
@@ -199,6 +202,30 @@ class LightweightCliTests(unittest.TestCase):
         for secret in (TOKEN, ROTATED_TOKEN, "ABC234", "private-sub-id", SOURCE_URL, "550e8400-e29b-41d4-" "a716-446655440000"):
             self.assertNotIn(secret, stdout)
 
+    def test_status_output_renders_last_success_errors_and_pending_sources(self):
+        code, stdout, stderr = run_cli(["status"], self.service)
+
+        self.assertEqual(code, 0)
+        self.assertIn("最后成功时间：2025-06-15 15:06:40Z", stdout)
+        self.assertIn("最近错误：member_update_failed", stdout)
+        self.assertIn("待同步：", stdout)
+        self.assertIn("ID 9（new@example.test）", stdout)
+
+    def test_status_output_renders_empty_state_without_placeholders(self):
+        self.service.status_value = dict(
+            self.service.status_value,
+            last_success=None,
+            last_errors=(),
+            pending=(),
+        )
+
+        code, stdout, stderr = run_cli(["status"], self.service)
+
+        self.assertEqual(code, 0)
+        self.assertIn("最后成功时间：无", stdout)
+        self.assertIn("最近错误：无", stdout)
+        self.assertIn("待同步：无", stdout)
+
     def test_noninteractive_commands_call_only_the_documented_service_operations(self):
         cases = (
             (["sync"], "sync_all", ()),
@@ -286,6 +313,40 @@ class LightweightCliTests(unittest.TestCase):
 
         self.assertIn("from clash_sub.cli import main", source)
         self.assertNotIn("clash_sub.host_cli", source)
+
+    def test_installed_entry_point_reexecs_repo_venv_python_from_any_location(self):
+        import shutil
+        import sys
+        from tempfile import TemporaryDirectory
+
+        repository = Path(__file__).resolve().parents[1]
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            copy = root / "repo"
+            (copy / "bin").mkdir(parents=True)
+            shutil.copy(repository / "bin" / "clash-sub", copy / "bin" / "clash-sub")
+            marker = root / "argv.txt"
+            fake_venv_python = copy / ".venv" / "bin" / "python"
+            fake_venv_python.parent.mkdir(parents=True)
+            fake_venv_python.write_text(
+                '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\n' % marker,
+                encoding="utf-8",
+            )
+            fake_venv_python.chmod(0o755)
+            installed = root / "installed" / "clash-sub"
+            installed.parent.mkdir()
+            installed.symlink_to(copy / "bin" / "clash-sub")
+
+            result = subprocess.run(
+                [sys.executable, str(installed), "sync"],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            recorded = marker.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(recorded[-1], "sync")
+            self.assertTrue(recorded[0].endswith("clash-sub"), recorded)
 
 
 if __name__ == "__main__":

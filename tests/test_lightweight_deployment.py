@@ -127,6 +127,8 @@ class DocumentationCoverageTests(unittest.TestCase):
             "1.19.30",
             "sha256",
             "install -d -o root -g www-data -m 2750 /var/lib/clash-sub/public",
+            "install -d -o root -g www-data -m 0750 /var/lib/clash-sub/acme",
+            "ln -s /opt/clash-sub/bin/clash-sub /usr/local/bin/clash-sub",
             "0700",
             "0600",
             "0640",

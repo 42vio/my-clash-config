@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """Thin entry point for the user-facing clash-sub command."""
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Resolve through the /usr/local/bin symlink so the repository root is
+# found no matter where this script is invoked from.
+REPOSITORY = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPOSITORY))
+
+# Dependencies live only in the repository virtualenv; re-exec into it so a
+# system-Python launch (cron, systemd, bare shebang) still works.
+VENV_PYTHON = REPOSITORY / ".venv" / "bin" / "python"
+if VENV_PYTHON.is_file() and Path(sys.executable).resolve() != VENV_PYTHON.resolve():
+    try:
+        os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
+    except OSError:
+        pass
 
 from clash_sub.cli import main
 

@@ -40,6 +40,8 @@ TRACKED_DOCUMENT_PATHS = (
 LEGACY_RUNTIME_PATHS = (
     "Dockerfile",
     "compose.yaml",
+    ".dockerignore",
+    ".env.example",
     "config/subconverter/pref.ini",
     "config/users.example.yaml",
     "clash_sub/converter.py",

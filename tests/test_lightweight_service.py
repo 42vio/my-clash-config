@@ -118,8 +118,14 @@ class ServiceTests(unittest.TestCase):
         self.state = None
         self.store = FakeStore()
         self.activator = FakeActivator()
-        root = Path("/tmp/service")
-        self.config = ServiceConfig("owner@example.test", "sub.example.test:8443", root / "xui.db", root / "private", root / "public", root / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), root / "templates")
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name).resolve() / "service"
+        private_root = root / "private"
+        private_root.mkdir(parents=True)
+        os.chmod(private_root, 0o700)
+        self.clock_value = 1750000000.0
+        self.config = ServiceConfig("owner@example.test", "sub.example.test:8443", root / "xui.db", private_root, root / "public", root / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), root / "templates")
         self.generator_calls = []
         self.mihomo_calls = []
         self.fetch_calls = []
@@ -147,6 +153,7 @@ class ServiceTests(unittest.TestCase):
             snapshot_encoder=lambda proxies: ("snapshot:%s" % proxies[0]["name"]).encode(),
             state_sink=lambda state: setattr(self, "state", state),
             lock_factory=lambda _: contextlib.nullcontext(),
+            clock=lambda: self.clock_value,
         )
 
     def _reconcile(self, previous, clients, owner_email):
@@ -245,6 +252,57 @@ class ServiceTests(unittest.TestCase):
         self.state = RuntimeState(1, 7, users)
         self.assertEqual([item["client_id"] for item in self.service.status()["users"]], [3, 7, 8])
         self.assertNotIn("token", repr(self.service.status()))
+
+    def test_status_reports_last_success_pending_sources_and_sanitized_errors(self):
+        self.service.sync_all()
+
+        status = self.service.status()
+
+        self.assertEqual(status["last_success"], self.clock_value)
+        self.assertEqual(status["last_errors"], ())
+        self.assertEqual(status["pending"], ())
+        self.clients.append(client(9, "new@example.test"))
+
+        status = self.service.status()
+
+        self.assertEqual(
+            [item["client_id"] for item in status["pending"]], [9]
+        )
+        self.assertEqual(
+            [item["email"] for item in status["pending"]], ["new@example.test"]
+        )
+        self.assertNotIn("token", repr(status))
+
+    def test_partial_sync_journals_success_with_member_error_codes(self):
+        self.fail_client = "sub-8"
+
+        result = self.service.sync_all()
+
+        self.assertEqual(result["errors"][0]["code"], "member_update_failed")
+        status = self.service.status()
+        self.assertEqual(status["last_success"], self.clock_value)
+        self.assertEqual(status["last_errors"], ("member_update_failed",))
+
+    def test_activation_failure_journals_error_and_preserves_last_success(self):
+        self.service.sync_all()
+        self.assertEqual(self.service.status()["last_success"], self.clock_value)
+        self.activator.fail = True
+
+        with self.assertRaises(ServiceError):
+            self.service.sync_all()
+
+        status = self.service.status()
+        self.assertEqual(status["last_success"], self.clock_value)
+        self.assertEqual(status["last_errors"], ("sync_activation_failed",))
+
+    def test_status_journal_is_a_root_only_atomic_file(self):
+        self.service.sync_all()
+
+        journal = Path(self.config.private_root) / "status.json"
+
+        self.assertTrue(journal.is_file())
+        self.assertEqual(stat.S_IMODE(journal.stat().st_mode), 0o600)
+        self.assertFalse((Path(self.config.private_root) / "status.json.tmp").exists())
 
     def test_render_validation_receives_tokens_loopback_subid_and_airport_url(self):
         seen = []

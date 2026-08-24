@@ -90,18 +90,31 @@ rm /tmp/mihomo-v1.19.30.gz
 
 ## 4. 安装 clash-sub 命令与运行目录
 
+用**符号链接**安装入口（复制会导致脚本无法定位仓库与 venv；symlink +
+脚本内的 `.resolve()` 与 venv 重执行逻辑保证从任何位置、任何解释器启动
+都正确）：
+
 ```bash
-install -o root -g root -m 0755 /opt/clash-sub/bin/clash-sub /usr/local/bin/clash-sub
+ln -s /opt/clash-sub/bin/clash-sub /usr/local/bin/clash-sub
+```
+
+只读验证（预期打印帮助性质的菜单错误码或菜单，而非
+`ModuleNotFoundError`）：
+
+```bash
+clash-sub status || true
 ```
 
 目录与权限（private 树 `0700` root-only；public 树归组 www-data，setgid
-`2750`，发布出的 YAML 为 `0640`，Nginx worker 恰好可读、其他用户不可进入）：
+`2750`，发布出的 YAML 为 `0640`，Nginx worker 恰好可读、其他用户不可进入；
+acme webroot 同样归组 www-data，Nginx worker 需要穿越它读取 challenge
+文件）：
 
 ```bash
 install -d -o root -g root -m 0700 /var/lib/clash-sub/private /var/lib/clash-sub/private/config
 install -d -o root -g www-data -m 2750 /var/lib/clash-sub/public
 install -d -o root -g root -m 0750 /etc/nginx/clash-sub
-install -d -o root -g root -m 0750 /var/lib/clash-sub/acme
+install -d -o root -g www-data -m 0750 /var/lib/clash-sub/acme
 ```
 
 只读验证：

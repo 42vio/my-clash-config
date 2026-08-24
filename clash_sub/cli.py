@@ -4,6 +4,7 @@ import argparse
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from getpass import getpass
 from pathlib import Path
 
@@ -175,6 +176,16 @@ def _write_links(stdout, links):
 def _write_status(stdout, status):
     stdout.write("状态：\n")
     stdout.write("所有者客户端 ID：%s\n" % status["owner_client_id"])
+    stdout.write("最后成功时间：%s\n" % _format_timestamp(status.get("last_success")))
+    errors = status.get("last_errors") or ()
+    stdout.write("最近错误：%s\n" % ("、".join(errors) if errors else "无"))
+    pending = status.get("pending") or ()
+    if pending:
+        stdout.write("待同步：\n")
+        for item in pending:
+            stdout.write("ID %s（%s）\n" % (item["client_id"], item["email"]))
+    else:
+        stdout.write("待同步：无\n")
     users = sorted(status["users"], key=lambda user: user["client_id"])
     if not users:
         stdout.write("用户：无\n")
@@ -184,6 +195,12 @@ def _write_status(stdout, status):
         state = "启用" if user["active"] else "停用"
         release = user["current_release"] or "无"
         stdout.write("ID %s：%s（%s，当前版本：%s）\n" % (user["client_id"], user["email"], state, release))
+
+
+def _format_timestamp(value):
+    if not isinstance(value, (int, float)):
+        return "无"
+    return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
 def _write_all_history(stdout, service, status):

@@ -31,7 +31,7 @@ clash-sub rollback <user-id> <release-id>
 clash-sub rotate-link <user-id>   # 轮换令牌，新链接只显示一次
 ```
 
-失败时输出只有稳定错误代码（如 `操作失败（错误代码：xui_schema_mismatch）`），
+失败时输出只有稳定错误代码（如 `操作失败（错误代码：xui_snapshot_failed）`），
 不含敏感值。没有 `refresh` 命令，也没有兼容别名。
 
 ## 机场更新（手机 SSH 完整流程）

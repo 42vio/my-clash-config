@@ -2,6 +2,7 @@ import fcntl
 import json
 import os
 import stat
+import time
 from dataclasses import replace
 from pathlib import Path
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, RuntimeState
@@ -59,8 +60,8 @@ class _OperationLock:
         if error and exc_type is None: raise ServiceError("operation_lock_invalid")
 
 class ClashSubService:
-    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_proxies, load_proxy_snapshot, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, snapshot_encoder=None, state_sink=None, lock_factory=None):
-        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_proxies; self._load_proxy=load_proxy_snapshot; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._encode=snapshot_encoder or _snapshot_bytes; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock
+    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_proxies, load_proxy_snapshot, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, snapshot_encoder=None, state_sink=None, lock_factory=None, clock=None):
+        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_proxies; self._load_proxy=load_proxy_snapshot; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._encode=snapshot_encoder or _snapshot_bytes; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time
     def sync_all(self):
         with self._lock():
             snapshot,state=self._reconciled(); airport,home,bad_owner=self._owner_sources(); next_state=state; candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in state.users.values())
@@ -74,7 +75,7 @@ class ClashSubService:
                 except Exception:
                     owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
             try: self._activate(snapshot.clients,next_state,candidates)
-            except ServiceError: self._discard(candidates); raise
+            except ServiceError as error: self._journal(errors=(error.code,)); self._discard(candidates); raise
             return self._finish(next_state,candidates,updated,errors)
     def update_airport(self,url):
         with self._lock():
@@ -82,7 +83,7 @@ class ClashSubService:
             try:
                 owner=_client(snapshot.clients,state.owner_client_id); home=self._load_proxy(_home_path(self.config)); airport=self._download(url,self.config.max_source_bytes); release=self._prepare(owner,True,snapshot.source_url(owner),airport,home,tuple(u.token for u in state.users.values()),url,candidates); next_state=state if not release else _with_release(state,owner.client_id,release.release_id)
                 self._activate(snapshot.clients,next_state,candidates,[( _airport_path(self.config),self._encode(airport),0o600)])
-            except Exception: self._discard(candidates); raise ServiceError("airport_activation_failed") from None
+            except Exception: self._journal(errors=("airport_activation_failed",)); self._discard(candidates); raise ServiceError("airport_activation_failed") from None
             return self._finish(next_state,candidates,[_result(owner,release)] if release else [],[])
     def traffic_update(self):
         with self._lock():
@@ -90,7 +91,7 @@ class ClashSubService:
                 snapshot=self._read_snapshot(self.config.xui_database); state=self._load_state(_state_path(self.config))
                 if state is None: raise ValueError
                 self._activate(snapshot.clients,state,[])
-            except Exception: raise ServiceError("traffic_activation_failed") from None
+            except Exception: self._journal(errors=("traffic_activation_failed",)); raise ServiceError("traffic_activation_failed") from None
             return self._finish(state,[],[],[])
     def rollback(self,user,release):
         with self._lock():
@@ -109,7 +110,8 @@ class ClashSubService:
     def links(self):
         snapshot,state=self._reconciled(); clients={c.client_id:c for c in snapshot.clients}; return tuple({"client_id":u.client_id,"email":u.email,"readable_code":u.readable_code,"urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id))} for u in sorted(state.users.values(),key=lambda u:u.client_id) if u.active and u.current_release and clients.get(u.client_id) and clients[u.client_id].enabled)
     def status(self):
-        _,state=self._reconciled(); return {"owner_client_id":state.owner_client_id,"users":tuple({"client_id":u.client_id,"email":u.email,"active":u.active,"current_release":u.current_release} for u in sorted(state.users.values(),key=lambda u:u.client_id))}
+        snapshot,state=self._reconciled(); journal=self._read_journal(); pending=tuple({"client_id":c.client_id,"email":c.email} for c in sorted(snapshot.clients,key=lambda c:c.client_id) if _pending_source(state.users.get(c.client_id),c))
+        return {"owner_client_id":state.owner_client_id,"last_success":journal["last_success"],"last_errors":journal["last_errors"],"pending":pending,"users":tuple({"client_id":u.client_id,"email":u.email,"active":u.active,"current_release":u.current_release} for u in sorted(state.users.values(),key=lambda u:u.client_id))}
     def history(self,user): return tuple({"release_id":r.release_id,"variants":tuple(r.public_paths)} for r in self._releases.history(_client_id(user)))
     def _prepare(self,client,owner,url,airport,home,tokens,transient=None,candidates=None):
         xui=self._fetch(url,self.config.max_source_bytes); bundle=self._render(owner,xui,airport,home,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
@@ -127,6 +129,7 @@ class ClashSubService:
         for i,_ in candidates:
             try:self._releases.prune(i)
             except Exception:errors.append({"client_id":i,"code":"release_cleanup_failed"})
+        self._journal(self._clock(),tuple(item["code"] for item in errors))
         return {"updated":tuple(updated),"errors":tuple(errors)}
     def _discard(self,candidates):
         failed=False
@@ -144,6 +147,25 @@ class ClashSubService:
     def _observe(self,state):
         try:self._sink(state)
         except Exception:pass
+    def _journal(self,success=None,errors=()):
+        # Best-effort sanitized operation journal: timestamps and stable
+        # error codes only, never tokens, URLs, or client secrets.
+        path=Path(self.config.private_root)/"status.json"
+        try:
+            current=self._read_journal(); payload={"last_success":current["last_success"] if success is None else success,"last_errors":tuple(str(item) for item in errors)}
+            temporary=path.with_name("status.json.tmp")
+            descriptor=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+            try:
+                os.fchmod(descriptor,0o600); os.write(descriptor,json.dumps(payload,sort_keys=True).encode("utf-8"))
+            finally:os.close(descriptor)
+            os.replace(temporary,path)
+        except Exception:pass
+    def _read_journal(self):
+        try:
+            loaded=json.loads((Path(self.config.private_root)/"status.json").read_text(encoding="utf-8"))
+            success=loaded.get("last_success"); errors=loaded.get("last_errors")
+            return {"last_success":success if isinstance(success,(int,float)) else None,"last_errors":tuple(str(item) for item in errors) if isinstance(errors,list) else ()}
+        except Exception:return {"last_success":None,"last_errors":()}
     def _lock(self):return self._lock_factory(Path(self.config.private_root)/"operation.lock")
 
 def _with_release(s,i,r):
@@ -163,6 +185,7 @@ def _client_id(i):
 def _urls(c,t,o):return ["https://%s/s/%s/clash-%s.yaml"%(c.subscription_authority,t,v) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}
 def _error(c,code):return {"client_id":c.client_id,"email":c.email,"code":code}
+def _pending_source(user,client):return bool(user and client.enabled and user.active and not user.current_release)
 def _state_path(c):return Path(c.private_root)/"state.json"
 def _airport_path(c):return Path(c.private_root)/"airport.yaml"
 def _home_path(c):return Path(c.private_root)/"home.yaml"
