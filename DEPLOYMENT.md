@@ -1,309 +1,711 @@
 # 部署指南（干净 Debian 12，轻量静态架构）
 
-目标环境是**重装后的干净 Debian 12 amd64 VPS**，资源约束约 **512 MiB RAM、
-256 MiB Swap、10 GiB 磁盘**。本仓库**不提供一键安装脚本**：下面每一条会修改
-服务器的命令都是单独的人工步骤，且执行前先给出只读检查与预期输出。域名、
-路径、端口、邮箱、哈希在本文中一律是示例占位，真实值只存在于服务器上的
-root-only 私有配置中。
+目标环境是重装后的干净 Debian 12 amd64 VPS，资源约束约 512 MiB RAM、256 MiB Swap、
+10 GiB 磁盘。本仓库不提供一键安装脚本：每条会修改服务器的命令都是单独
+人工步骤，前面都有只读检查与理由。域名、IP、端口、邮箱、远端、密码和哈希均为
+占位符；真实值只存在于服务器 root-only 私有配置。
 
-本架构空闲时常驻进程只有两个：3x-ui 管理的 Xray 与宿主机 Nginx。不安装
-Docker，不部署转换器或发布进程；Python 与 Mihomo 只在手动同步和每日流量
-任务期间短暂运行。
-
-端口规划（部署完成后必须逐项核对）：
+空闲时常驻进程只有 3x-ui 管理的 Xray 与宿主机 Nginx。不要安装 Docker、转换器
+或发布进程；Python 与 Mihomo 只在手动同步和每日流量任务期间运行。
 
 | 端口 | 归属 | 公网状态 |
 | --- | --- | --- |
 | TCP 443 | Xray：VLESS + RAW/TCP + REALITY | 开放，REALITY 独占 |
 | TCP 80 | Nginx：ACME HTTP-01 与通用 404 | 开放 |
-| TCP 8443 | Nginx：面板与 Clash 订阅（HTTPS） | 开放 |
-| SSH 端口 | sshd | 由管理员指定 |
-| 3x-ui 面板 / 原始订阅端口 | 3x-ui | 仅回环 `127.0.0.1` |
+| TCP 8443 | Nginx：面板与 Clash 订阅 HTTPS | 开放 |
+| SSH | sshd | 管理员指定 |
+| 面板 / 原始订阅端口 | 3x-ui | 仅回环 127.0.0.1 |
 
-不开放 UDP 443，不使用公网 1443。
+不开放 UDP 443，不使用公网 1443。以下均以 root 或已验证的 sudo 执行；不要把
+修改命令拼成脚本或一行。
 
-## 1. 人工初始化 3x-ui / Xray（本仓库不代办）
+## 1. 检查主机并安装轻量前置包
 
-按 [docs/3x-ui-setup.md](docs/3x-ui-setup.md) 完成：原生 3x-ui `3.6.0`、
-Xray-core `26.6.27`、强密码 + 2FA + 随机 Web Base Path、面板与订阅服务仅绑
-回环、一个 VLESS + RAW/TCP + REALITY 公网 443 入站、每人一个独立客户端。
-该清单中的安装命令是人工步骤，本仓库的任何脚本都不会下载或执行它们。
+先只读确认 Debian 版本、SSH 端口、资源和监听状态。把实际 SSH 端口记为
+<SSH-port>，不得猜测。
 
-完成后做只读检查（预期：443 只属于 Xray，面板与订阅只出现在 127.0.0.1）：
+~~~bash
+cat /etc/os-release
+~~~
 
-```bash
-ss -H -lntp | grep -E ':(443|2053|2096)\b'
-systemctl is-active x-ui nginx
-```
+~~~bash
+sshd -T | grep '^port '
+~~~
 
-## 2. 检出仓库与 Python 运行环境
+~~~bash
+free -m; df -h /; ss -H -lntp
+~~~
 
-只读检查：确认目标目录空闲、Python 3 可用。
+先检查 APT 来源；随后刷新包索引。这是独立的服务器修改。
 
-```bash
-ls -ld /opt/clash-sub 2>/dev/null; python3 --version
-```
+~~~bash
+apt-config dump | grep -E '^(Dir::Etc::sourcelist|Dir::Etc::sourceparts)'
+~~~
 
-逐条执行（每条是独立的修改步骤）：
+~~~bash
+apt-get update
+~~~
 
-```bash
-git clone <你的私有远端> /opt/clash-sub
-cd /opt/clash-sub
-python3 -m venv .venv
-.venv/bin/python -m pip install --no-input -r requirements.txt
-```
+先只读核对候选版本；再一次安装所有必需的轻量包。--no-install-recommends 避免
+512 MiB 主机安装推荐包，且 ca-certificates、curl、git、python3、python3-venv、
+nginx、ufw、dnsutils、gzip 必须在首次使用前到位。
 
-`requirements.txt` 只有两个固定依赖：`Jinja2==3.1.6` 与 `PyYAML==6.0.3`。
-只读验证（预期输出与两个固定版本号一致）：
+~~~bash
+apt-cache policy ca-certificates curl git python3 python3-venv nginx ufw dnsutils gzip
+~~~
 
-```bash
-.venv/bin/python -m pip freeze
-```
+~~~bash
+apt-get -y install --no-install-recommends ca-certificates curl git python3 python3-venv nginx ufw dnsutils gzip
+~~~
 
-## 3. 安装固定版本 Mihomo 校验器
+安装后只读确认工具与包均可用。
 
-Mihomo 只用于发布前的真实配置校验，固定为 `1.19.30`。先在本机核对官方
-Release 公布的 `sha256`（示例占位哈希，务必替换为官方值）：
+~~~bash
+command -v curl git python3 nginx ufw dig gzip; dpkg-query -W ca-certificates python3-venv
+~~~
 
-```bash
-curl --fail --show-error --location \
-  --output /tmp/mihomo-v1.19.30.gz \
-  https://github.com/MetaCubeX/mihomo/releases/download/v1.19.30/mihomo-linux-amd64-v1.19.30.gz
-shasum -a 256 /tmp/mihomo-v1.19.30.gz   # 与官方公布值逐字比对
-```
+## 2. UFW：先保住 SSH，再启用
 
-校验一致后再安装：
+先只读确认当前规则和 SSH 监听。未确认 <SSH-port> 前不要继续。
 
-```bash
-install -d -o root -g root -m 0755 /usr/local/lib/clash-sub
-install -o root -g root -m 0755 /dev/null /usr/local/lib/clash-sub/mihomo
-gunzip -c /tmp/mihomo-v1.19.30.gz > /usr/local/lib/clash-sub/mihomo
-chmod 0755 /usr/local/lib/clash-sub/mihomo
-rm /tmp/mihomo-v1.19.30.gz
-```
-
-只读验证（预期显示 v1.19.30）：
-
-```bash
-/usr/local/lib/clash-sub/mihomo -v
-```
-
-## 4. 安装 clash-sub 命令与运行目录
-
-用**符号链接**安装入口（复制会导致脚本无法定位仓库与 venv；symlink +
-脚本内的 `.resolve()` 与 venv 重执行逻辑保证从任何位置、任何解释器启动
-都正确）：
-
-```bash
-ln -s /opt/clash-sub/bin/clash-sub /usr/local/bin/clash-sub
-```
-
-只读验证（预期打印帮助性质的菜单错误码或菜单，而非
-`ModuleNotFoundError`）：
-
-```bash
-clash-sub status || true
-```
-
-目录与权限（private 树 `0700` root-only；public 树归组 www-data，setgid
-`2750`，发布出的 YAML 为 `0640`，Nginx worker 恰好可读、其他用户不可进入；
-acme webroot 同样归组 www-data，Nginx worker 需要穿越它读取 challenge
-文件）：
-
-```bash
-install -d -o root -g root -m 0700 /var/lib/clash-sub/private /var/lib/clash-sub/private/config
-install -d -o root -g www-data -m 2750 /var/lib/clash-sub/public
-install -d -o root -g root -m 0750 /etc/nginx/clash-sub
-install -d -o root -g www-data -m 0750 /var/lib/clash-sub/acme
-```
-
-只读验证：
-
-```bash
-stat -c '%a %U:%G %n' /var/lib/clash-sub/private /var/lib/clash-sub/public
-# 预期：700 root:root .../private
-#       2750 root:www-data .../public
-```
-
-## 5. 私有配置
-
-```bash
-install -o root -g root -m 0600 /opt/clash-sub/config/service.example.yaml \
-  /opt/clash-sub/private/config/service.yaml
-```
-
-编辑 `/opt/clash-sub/private/config/service.yaml`（保持属主 root:root、权限
-`0600`），逐项填写真实值：
-
-| 键 | 含义 |
-| --- | --- |
-| `owner-email` | owner 客户端在 3x-ui 中的 email 标识（示例 `owner-example`） |
-| `subscription-authority` | 订阅对外主机名，如 `sub.<域名>:8443` |
-| `xui-database` | 3x-ui SQLite 路径（示例 `/etc/x-ui/x-ui.db`），只读打开 |
-| `private-root` / `public-root` | 运行数据目录（第 4 步创建的两组目录） |
-| `nginx-routes` | 生成的精确路由 include（本文示例 `/etc/nginx/clash-sub/routes.conf`） |
-| `mihomo-binary` | 第 3 步安装的 Mihomo 路径 |
-
-owner 家庭节点手工维护在 `<private-root>/home.yaml`（同样 `0600`）。
-私有数据边界见 [docs/private-data.md](docs/private-data.md)。
-
-## 6. 证书（acme.sh，一张 SAN 证书）
-
-复用服务器上已有的 acme.sh（3x-ui 环境通常已安装；没有则先人工安装
-acme.sh，本文不代装）。`panel.<域名>` 与 `sub.<域名>` 共用一张 SAN 证书。
-
-先做只读检查：确认 DNS A 记录已指向本机公网 IP，且 80 端口尚未被占用
-（第 7 步的 Nginx 才会监听 80）：
-
-```bash
-dig +short panel.<域名>; dig +short sub.<域名>
-ss -H -lntp | grep ':80\b' || echo '80 free'
-```
-
-签发（以 root 身份；HTTP-01，webroot 即第 4 步的 acme 目录；也可改用
-DNS API 方式）：
-
-```bash
-~/.acme.sh/acme.sh --issue \
-  --webroot /var/lib/clash-sub/acme \
-  -d panel.<域名> \
-  -d sub.<域名>
-```
-
-然后把证书安装到稳定路径（acme.sh 续期后会自动执行 `--reloadcmd`；Nginx
-不直接引用 `~/.acme.sh` 内部文件）：
-
-```bash
-install -d -o root -g root -m 0700 /var/lib/clash-sub/certs
-~/.acme.sh/acme.sh --install-cert -d panel.<域名> \
-  --fullchain-file /var/lib/clash-sub/certs/fullchain.pem \
-  --key-file /var/lib/clash-sub/certs/privkey.pem \
-  --reloadcmd "systemctl reload nginx"
-```
-
-只读验证（预期两张文件存在、权限 0600）：
-
-```bash
-stat -c '%a %n' /var/lib/clash-sub/certs/*.pem
-```
-
-## 7. Nginx 配置（手工编辑模板）
-
-先装 Nginx 并做只读检查：
-
-```bash
-apt install nginx
-nginx -v
-ls -l /etc/nginx/sites-enabled/
-```
-
-把模板复制后**手工编辑六个占位符**（`{{DOMAIN}}`、`{{FULLCHAIN_PATH}}`、
-`{{PRIVKEY_PATH}}`、`{{PANEL_BASE_PATH}}`、`{{PANEL_UPSTREAM}}`、
-`{{ROUTES_INCLUDE}}`）：
-
-```bash
-install -o root -g root -m 0644 /opt/clash-sub/deploy/nginx/clash-sub.conf.tmpl \
-  /etc/nginx/sites-available/clash-sub.conf
-install -o root -g root -m 0644 /opt/clash-sub/deploy/nginx/routes.empty.conf \
-  /etc/nginx/clash-sub/routes.conf
-ln -s /etc/nginx/sites-available/clash-sub.conf /etc/nginx/sites-enabled/clash-sub.conf
-rm /etc/nginx/sites-enabled/default   # Debian 默认站点占用 80，会与模板冲突
-```
-
-占位符取值（全部替换为真实值）：
-
-| 占位符 | 示例值 |
-| --- | --- |
-| `{{DOMAIN}}` | `example.com` |
-| `{{FULLCHAIN_PATH}}` / `{{PRIVKEY_PATH}}` | 第 6 步的 `/var/lib/clash-sub/certs/*.pem` |
-| `{{PANEL_BASE_PATH}}` | 3x-ui 随机 Web Base Path，如 `/x7Hq2mVt` |
-| `{{PANEL_UPSTREAM}}` | 已验证的回环面板地址，如 `127.0.0.1:2053` |
-| `{{ROUTES_INCLUDE}}` | `/etc/nginx/clash-sub/routes.conf` |
-
-先检查再重载（`nginx -t` 失败就绝不能 reload）：
-
-```bash
-nginx -t && systemctl reload nginx
-```
-
-只读验证：`https://panel.<域名>:8443<面板路径>/` 可登录且要求 2FA；错误
-Host / 路径只返回通用 404。
-
-## 8. 每日流量 systemd timer
-
-安装两个 unit 文件并启用（timer 每日运行一次 `clash-sub traffic-update`，
-只更新流量响应头，绝不生成 YAML）：
-
-```bash
-install -o root -g root -m 0644 /opt/clash-sub/deploy/systemd/clash-sub-traffic.service \
-  /etc/systemd/system/clash-sub-traffic.service
-install -o root -g root -m 0644 /opt/clash-sub/deploy/systemd/clash-sub-traffic.timer \
-  /etc/systemd/system/clash-sub-traffic.timer
-systemctl daemon-reload
-systemctl enable --now clash-sub-traffic.timer
-```
-
-只读验证（预期列出下一次触发时间）：
-
-```bash
-systemctl list-timers clash-sub-traffic.timer
-```
-
-## 9. 防火墙（UFW）
-
-先只读确认当前规则与自己的 SSH 端口，避免把自己锁在门外：
-
-```bash
+~~~bash
 ufw status numbered; ss -H -lntp | grep sshd
-```
+~~~
 
-逐条放行（先 SSH，再开放端口；不开 UDP 443）：
+先放行当前 SSH；这是后续默认拒绝策略的恢复路径。
 
-```bash
-ufw allow <SSH端口>/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 8443/tcp
-ufw --force enable
-```
+~~~bash
+ufw allow <SSH-port>/tcp
+~~~
 
-只读验证（预期仅上述端口；无 UDP 443、无 1443）：
+只读确认 SSH 规则出现后，才设置默认拒绝入站。
 
-```bash
+~~~bash
+ufw status numbered
+~~~
+
+~~~bash
+ufw default deny incoming
+~~~
+
+只读确认策略后，设置默认允许出站，保留软件更新、ACME 和管理员连接能力。
+
+~~~bash
 ufw status verbose
-```
+~~~
 
-## 10. 首次同步与链接分发
+~~~bash
+ufw default allow outgoing
+~~~
 
-```bash
-clash-sub sync
-clash-sub links
-```
+每次只添加一个设计端口。先检查当前规则，再开放 80、443、8443 TCP；绝不添加
+UDP 443。
 
-`sync` 只读打开 3x-ui SQLite 发现全部客户端，为每位用户生成
-`standard`（owner 另有 `balanced` / `privacy`），经结构检查、泄漏扫描与
-Mihomo 真实校验后原子发布；`links` 一次性显示全部有效订阅地址（按 3x-ui
-内部 email 分组、附六位识别码），通过既有安全渠道分发一次。
+~~~bash
+ufw status numbered
+~~~
 
-## 11. 安装后验证清单
+~~~bash
+ufw allow 80/tcp
+~~~
 
-```bash
-ss -H -lntup                          # 443 仅 Xray；80/8443 仅 Nginx；面板/订阅仅回环
-ufw status numbered                   # 仅 SSH、TCP 80/443/8443
+~~~bash
+ufw status numbered
+~~~
+
+~~~bash
+ufw allow 443/tcp
+~~~
+
+~~~bash
+ufw status numbered
+~~~
+
+~~~bash
+ufw allow 8443/tcp
+~~~
+
+启用前最后一次只读核对必须同时显示 SSH、80、443、8443 与正确默认策略。
+
+~~~bash
+ufw status verbose
+~~~
+
+~~~bash
+ufw --force enable
+~~~
+
+另开一个 SSH 会话后只读确认；失败时只用 VPS 控制台恢复。
+
+~~~bash
+ufw status numbered
+~~~
+
+## 3. 人工初始化 3x-ui / Xray
+
+现在按 [docs/3x-ui-setup.md](docs/3x-ui-setup.md) 完成原生 3x-ui 3.6.0、
+Xray-core 26.6.27、强密码、2FA、随机 Web Base Path、回环面板/订阅服务、唯一
+VLESS + RAW/TCP + REALITY 443 入站和每人一个客户端。本仓库脚本不会下载、
+安装或修改 3x-ui。
+
+完成后只读检查：443 只属于 Xray，面板和订阅仅在 127.0.0.1，且 3x-ui 环境的
+acme.sh 已存在。若 acme.sh 不可执行，停止并完成该人工初始化；不能提前签发。
+
+~~~bash
+ss -H -lntp | grep -E ':(443|<panel-port>|<subscription-port>)'
+~~~
+
+~~~bash
+systemctl is-active x-ui; ~/.acme.sh/acme.sh --version
+~~~
+
+## 4. 检出仓库并建立 Python 环境
+
+先只读确认目标路径为空且私有远端可读；随后才检出。
+
+~~~bash
+test ! -e /opt/clash-sub; git ls-remote <private-repository-url> HEAD
+~~~
+
+~~~bash
+git clone <private-repository-url> /opt/clash-sub
+~~~
+
+先检查 Python 与固定依赖，再创建 venv。
+
+~~~bash
+cd /opt/clash-sub && python3 --version && sed -n '1,20p' requirements.txt
+~~~
+
+~~~bash
+cd /opt/clash-sub && python3 -m venv .venv
+~~~
+
+先检查 venv pip 与依赖清单，再安装。requirements.txt 固定为 Jinja2==3.1.6 与
+PyYAML==6.0.3。
+
+~~~bash
+cd /opt/clash-sub && .venv/bin/python -m pip --version && sed -n '1,20p' requirements.txt
+~~~
+
+~~~bash
+cd /opt/clash-sub && .venv/bin/python -m pip install --no-input -r requirements.txt
+~~~
+
+~~~bash
+cd /opt/clash-sub && .venv/bin/python -m pip freeze
+~~~
+
+## 5. 安装固定 Mihomo 校验器
+
+Mihomo 只做发布前真实校验，版本固定 1.19.30。先检查下载工具和临时目标，再下载
+官方归档；不要把网络响应管道给 shell。
+
+~~~bash
+curl --version; test ! -e /tmp/mihomo-v1.19.30.gz
+~~~
+
+~~~bash
+curl --fail --show-error --location --output /tmp/mihomo-v1.19.30.gz <mihomo-v1.19.30-linux-amd64-url>
+~~~
+
+下载后先用 Debian 的 sha256sum 输出与官方 <mihomo-sha256> 逐字比较；不一致立即
+停止。
+
+~~~bash
+sha256sum /tmp/mihomo-v1.19.30.gz
+~~~
+
+校验一致后，先检查安装目录，再创建目录。
+
+~~~bash
+stat -c '%a %U:%G %n' /usr/local/lib/clash-sub 2>/dev/null || true
+~~~
+
+~~~bash
+install -d -o root -g root -m 0755 /usr/local/lib/clash-sub
+~~~
+
+先确认二进制目标不存在且归档可解压，再写入它。
+
+~~~bash
+test ! -e /usr/local/lib/clash-sub/mihomo; gzip -t /tmp/mihomo-v1.19.30.gz
+~~~
+
+~~~bash
+gunzip -c /tmp/mihomo-v1.19.30.gz > /usr/local/lib/clash-sub/mihomo
+~~~
+
+先确认文件非空，再设可执行权限。
+
+~~~bash
+test -s /usr/local/lib/clash-sub/mihomo
+~~~
+
+~~~bash
+chmod 0755 /usr/local/lib/clash-sub/mihomo
+~~~
+
+~~~bash
+/usr/local/lib/clash-sub/mihomo -v
+~~~
+
+确认仅临时归档仍存在后再删除它。
+
+~~~bash
+test -f /tmp/mihomo-v1.19.30.gz
+~~~
+
+~~~bash
+rm /tmp/mihomo-v1.19.30.gz
+~~~
+
+## 6. 运行目录、私有配置与命令入口
+
+先确认入口未占用，再建立符号链接。复制会破坏脚本定位仓库与 venv 的逻辑。
+
+~~~bash
+test ! -e /usr/local/bin/clash-sub
+~~~
+
+~~~bash
+ln -s /opt/clash-sub/bin/clash-sub /usr/local/bin/clash-sub
+~~~
+
+~~~bash
+clash-sub status || true
+~~~
+
+依次创建运行目录：private 树是 0700 root-only；public 树归组 www-data 且 setgid
+2750，发布 YAML 才能是 0640；ACME webroot 同样归组 www-data。
+
+~~~bash
+stat -c '%a %U:%G %n' /var/lib/clash-sub/private 2>/dev/null || true
+~~~
+
+~~~bash
+install -d -o root -g root -m 0700 /var/lib/clash-sub/private
+~~~
+
+~~~bash
+stat -c '%a %U:%G %n' /var/lib/clash-sub/private/config 2>/dev/null || true
+~~~
+
+~~~bash
+install -d -o root -g root -m 0700 /var/lib/clash-sub/private/config
+~~~
+
+~~~bash
+stat -c '%a %U:%G %n' /var/lib/clash-sub/public 2>/dev/null || true
+~~~
+
+~~~bash
+install -d -o root -g www-data -m 2750 /var/lib/clash-sub/public
+~~~
+
+~~~bash
+stat -c '%a %U:%G %n' /etc/nginx/clash-sub 2>/dev/null || true
+~~~
+
+~~~bash
+install -d -o root -g root -m 0750 /etc/nginx/clash-sub
+~~~
+
+~~~bash
+stat -c '%a %U:%G %n' /var/lib/clash-sub/acme 2>/dev/null || true
+~~~
+
+~~~bash
+install -d -o root -g www-data -m 0750 /var/lib/clash-sub/acme
+~~~
+
+先确认服务配置目标不存在和示例可读，再创建唯一 root-only 副本。
+
+~~~bash
+test ! -e /opt/clash-sub/private/config/service.yaml; sed -n '1,120p' /opt/clash-sub/config/service.example.yaml
+~~~
+
+~~~bash
+install -o root -g root -m 0600 /opt/clash-sub/config/service.example.yaml /opt/clash-sub/private/config/service.yaml
+~~~
+
+先检查权限和键；随后在私有副本填写真实 owner-email、subscription-authority、
+xui-database、private-root、public-root、nginx-routes 与 mihomo-binary。
+
+~~~bash
+stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml; sed -n '1,120p' /opt/clash-sub/private/config/service.yaml
+~~~
+
+~~~bash
+<editor> /opt/clash-sub/private/config/service.yaml
+~~~
+
+~~~bash
+stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml
+~~~
+
+## 7. HTTP-01 webroot bootstrap
+
+本节必须在任何 acme.sh --issue 前完成。先只读确认 DNS 指向 <VPS-public-IP>、
+Nginx 已安装、webroot 权限正确；DNS-01 是显式替代方式，不是 HTTP-01 隐藏前置。
+
+~~~bash
+dig +short panel.<domain>; dig +short sub.<domain>; nginx -v; stat -c '%a %U:%G %n' /var/lib/clash-sub/acme
+~~~
+
+先确认 bootstrap 文件不存在，再创建 root-owned 空文件。
+
+~~~bash
+test ! -e /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
+~~~
+
+~~~bash
+install -o root -g root -m 0644 /dev/null /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
+~~~
+
+先检查权限，再手工填入仅 port-80 webroot 和通用 404。此时不得加入 TLS、面板或
+订阅代理。
+
+~~~bash
+stat -c '%a %U:%G %n' /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
+~~~
+
+~~~bash
+<editor> /etc/nginx/sites-available/clash-sub-http-bootstrap.conf
+~~~
+
+~~~nginx
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    server_tokens off;
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/clash-sub/acme;
+        try_files $uri =404;
+    }
+    location / {
+        return 404;
+    }
+}
+~~~
+
+先只读检查默认站点与目标链接。下面两条只改变磁盘上的链接；Nginx 继续运行旧配置，
+直到 nginx -t 成功后的 reload。
+
+~~~bash
+ls -l /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/clash-sub.conf 2>/dev/null || true
+~~~
+
+~~~bash
+rm /etc/nginx/sites-enabled/default
+~~~
+
+~~~bash
+test ! -e /etc/nginx/sites-enabled/default; test -f /etc/nginx/sites-available/clash-sub-http-bootstrap.conf; test ! -e /etc/nginx/sites-enabled/clash-sub.conf
+~~~
+
+~~~bash
+ln -s /etc/nginx/sites-available/clash-sub-http-bootstrap.conf /etc/nginx/sites-enabled/clash-sub.conf
+~~~
+
+先验证整个 Nginx 配置；失败时不得 reload。
+
+~~~bash
 nginx -t
+~~~
+
+~~~bash
+systemctl reload nginx
+~~~
+
+先确认 Nginx active、80 监听和 ACME challenge 目录尚不存在，再建立 root-owned、
+group-readable challenge 目录。
+
+~~~bash
+systemctl is-active nginx; ss -H -lntp | grep ':80'; test ! -e /var/lib/clash-sub/acme/.well-known
+~~~
+
+~~~bash
+install -d -o root -g www-data -m 0750 /var/lib/clash-sub/acme/.well-known/acme-challenge
+~~~
+
+challenge 目录建立后，先只读确认 probe 目标不存在，再写入无秘密 probe。
+
+~~~bash
+test ! -e /var/lib/clash-sub/acme/.well-known/acme-challenge/clash-sub-probe
+~~~
+
+~~~bash
+echo clash-sub-acme-probe > /var/lib/clash-sub/acme/.well-known/acme-challenge/clash-sub-probe
+~~~
+
+用真实域名与公网 IP 做只读请求，预期返回 probe 内容。失败先修 DNS、UFW 或 Nginx，
+不能申请证书。
+
+~~~bash
+curl --fail --resolve panel.<domain>:80:<VPS-public-IP> http://panel.<domain>/.well-known/acme-challenge/clash-sub-probe
+~~~
+
+验证后先确认唯一 probe 文件仍存在，再删除它。
+
+~~~bash
+test -f /var/lib/clash-sub/acme/.well-known/acme-challenge/clash-sub-probe
+~~~
+
+~~~bash
+rm /var/lib/clash-sub/acme/.well-known/acme-challenge/clash-sub-probe
+~~~
+
+## 8. SAN 证书（HTTP-01；DNS-01 可选）
+
+先只读重复确认两条 A 记录、正在运行的 bootstrap Nginx 和 acme.sh。此顺序保证
+签发不依赖尚未存在的 Nginx。
+
+~~~bash
+dig +short panel.<domain>; dig +short sub.<domain>; systemctl is-active nginx; ~/.acme.sh/acme.sh --version
+~~~
+
+HTTP-01 已可达，现在申请 panel.<domain> 与 sub.<domain> 共用 SAN 证书。
+
+~~~bash
+~/.acme.sh/acme.sh --issue --webroot /var/lib/clash-sub/acme -d panel.<domain> -d sub.<domain>
+~~~
+
+若选择 DNS-01，改用 acme.sh 的显式 DNS API 参数并保护 API 凭据；它是 HTTP-01 的
+替代流程，不是 HTTP-01 的隐藏要求。
+
+签发成功后先检查稳定证书目录不存在，再创建 root-only 目录。
+
+~~~bash
+test ! -e /var/lib/clash-sub/certs
+~~~
+
+~~~bash
+install -d -o root -g root -m 0700 /var/lib/clash-sub/certs
+~~~
+
+先查看签发记录和目标路径；Nginx 已存在，所以续期的 reload hook 现在才安全。
+
+~~~bash
+~/.acme.sh/acme.sh --info -d panel.<domain>; test ! -e /var/lib/clash-sub/certs/fullchain.pem; test ! -e /var/lib/clash-sub/certs/privkey.pem
+~~~
+
+~~~bash
+~/.acme.sh/acme.sh --install-cert -d panel.<domain> --fullchain-file /var/lib/clash-sub/certs/fullchain.pem --key-file /var/lib/clash-sub/certs/privkey.pem --reloadcmd "systemctl reload nginx"
+~~~
+
+~~~bash
+stat -c '%a %U:%G %n' /var/lib/clash-sub/certs/fullchain.pem /var/lib/clash-sub/certs/privkey.pem; systemctl is-active nginx
+~~~
+
+## 9. final 8443 TLS template
+
+现在才安装最终模板。它保留 80 ACME location，并在 8443 提供默认 404、面板反向
+代理与静态订阅。先确认 PEM、模板、空路由和 bootstrap 链接；缺少证书不得继续。
+
+~~~bash
+stat -c '%a %U:%G %n' /var/lib/clash-sub/certs/fullchain.pem /var/lib/clash-sub/certs/privkey.pem; test -f /opt/clash-sub/deploy/nginx/clash-sub.conf.tmpl; test -f /opt/clash-sub/deploy/nginx/routes.empty.conf; readlink /etc/nginx/sites-enabled/clash-sub.conf
+~~~
+
+先确认路由 include 不存在，再安装。
+
+~~~bash
+test ! -e /etc/nginx/clash-sub/routes.conf
+~~~
+
+~~~bash
+install -o root -g root -m 0644 /opt/clash-sub/deploy/nginx/routes.empty.conf /etc/nginx/clash-sub/routes.conf
+~~~
+
+先确认最终站点副本不存在，再从模板创建它。
+
+~~~bash
+test ! -e /etc/nginx/sites-available/clash-sub.conf
+~~~
+
+~~~bash
+install -o root -g root -m 0644 /opt/clash-sub/deploy/nginx/clash-sub.conf.tmpl /etc/nginx/sites-available/clash-sub.conf
+~~~
+
+先检查六个占位符都存在；随后只在服务器副本填入真实值。PANEL_UPSTREAM 必须是已验证
+的 127.0.0.1:<panel-port>，PANEL_BASE_PATH 必须是 3x-ui 随机路径。
+
+~~~bash
+rg -n '{{' /etc/nginx/sites-available/clash-sub.conf
+~~~
+
+~~~bash
+<editor> /etc/nginx/sites-available/clash-sub.conf
+~~~
+
+编辑后先确认无占位符，再原子切换同名链接到最终文件；运行中的 Nginx 仍保留 bootstrap
+直到下一次成功 reload。
+
+~~~bash
+! rg -n '{{' /etc/nginx/sites-available/clash-sub.conf; readlink /etc/nginx/sites-enabled/clash-sub.conf
+~~~
+
+~~~bash
+ln -sfn /etc/nginx/sites-available/clash-sub.conf /etc/nginx/sites-enabled/clash-sub.conf
+~~~
+
+~~~bash
+nginx -t
+~~~
+
+~~~bash
+systemctl reload nginx
+~~~
+
+只读确认 TLS 面板、HTTP challenge 路径和回环限制。面板限速覆盖整个随机 base path，
+不依赖某个 3x-ui 版本的 login URI。
+
+~~~bash
+curl --fail --resolve panel.<domain>:8443:<VPS-public-IP> https://panel.<domain>:8443<PANEL_BASE_PATH>/
+~~~
+
+~~~bash
+ss -H -lntp | grep -E ':(443|8443|<panel-port>|<subscription-port>)'
+~~~
+
+## 10. 每日流量 timer
+
+先确认 unit 源与目标状态，再分别安装 service 和 timer。
+
+~~~bash
+test -f /opt/clash-sub/deploy/systemd/clash-sub-traffic.service; test ! -e /etc/systemd/system/clash-sub-traffic.service
+~~~
+
+~~~bash
+install -o root -g root -m 0644 /opt/clash-sub/deploy/systemd/clash-sub-traffic.service /etc/systemd/system/clash-sub-traffic.service
+~~~
+
+~~~bash
+test -f /opt/clash-sub/deploy/systemd/clash-sub-traffic.timer; test ! -e /etc/systemd/system/clash-sub-traffic.timer
+~~~
+
+~~~bash
+install -o root -g root -m 0644 /opt/clash-sub/deploy/systemd/clash-sub-traffic.timer /etc/systemd/system/clash-sub-traffic.timer
+~~~
+
+先做只读 unit 验证，再让 systemd 重新加载。
+
+~~~bash
+systemd-analyze verify /etc/systemd/system/clash-sub-traffic.service /etc/systemd/system/clash-sub-traffic.timer
+~~~
+
+~~~bash
+systemctl daemon-reload
+~~~
+
+先检查 timer 尚未启用，再启用；它只运行 clash-sub traffic-update，不生成 YAML。
+
+~~~bash
+systemctl is-enabled clash-sub-traffic.timer 2>/dev/null || true
+~~~
+
+~~~bash
+systemctl enable --now clash-sub-traffic.timer
+~~~
+
+~~~bash
 systemctl list-timers clash-sub-traffic.timer
+~~~
+
+## 11. 首次同步：先发布 owner，再同步成员
+
+首次 owner 数据不能是空配置：<private-root>/home.yaml 必须有至少一个可解析代理。
+先只读核对 service.yaml、配置的 private root 和当前状态；不要创建 proxies: []，
+也不要跳过 home。
+
+~~~bash
+stat -c '%a %U:%G %n' /opt/clash-sub/private/config/service.yaml; sed -n '1,120p' /opt/clash-sub/private/config/service.yaml; clash-sub status
+~~~
+
+先确认 home snapshot 不存在，再以 root-only 模式创建。
+
+~~~bash
+test ! -e <private-root>/home.yaml
+~~~
+
+~~~bash
+install -o root -g root -m 0600 /dev/null <private-root>/home.yaml
+~~~
+
+先核对模式，再写入下列合成示例并替换全部占位符。至少保留一个完整 proxy，所有真实
+密码、地址、UUID 只留在这个文件。
+
+~~~bash
+stat -c '%a %U:%G %n' <private-root>/home.yaml
+~~~
+
+~~~bash
+<editor> <private-root>/home.yaml
+~~~
+
+~~~yaml
+proxies:
+  - name: home-ss-<node-label>
+    type: ss
+    server: <home-proxy-host>
+    port: <home-proxy-port>
+    cipher: <home-proxy-cipher>
+    password: <home-proxy-password>
+~~~
+
+保存后做 mode 与 parse 两项只读检查：必须是 600 root:root，且用实际服务的
+load_proxy_snapshot 解析器确认至少一个 proxy。
+
+~~~bash
+stat -c '%a %U:%G %n' <private-root>/home.yaml
+~~~
+
+~~~bash
+cd /opt/clash-sub && .venv/bin/python -c "from pathlib import Path; from clash_sub.sources import load_proxy_snapshot; print(len(load_proxy_snapshot(Path('<private-root>/home.yaml'))))"
+~~~
+
+先只读查看状态，再运行菜单并选择 `1`「更新机场订阅」，仅在隐藏输入中粘贴短时
+HTTPS 机场 URL。成功时菜单保存 airport snapshot 并发布 owner 的 balanced、
+standard、privacy；它不是空 home 的替代行为。
+
+~~~bash
 clash-sub status
-```
+~~~
 
-- 外部客户端下载 `https://sub.<域名>:8443/s/<token>/clash-<variant>.yaml`
-  成功，错误 token / 越权 variant 返回相同 404。
-- 手机更新机场、回滚、令牌轮换与故障恢复见
-  [docs/operations.md](docs/operations.md)。
+~~~bash
+clash-sub
+~~~
 
-## 边界
+owner 已发布后，先只读确认 owner 成功版本，再同步所有成员；sync 为成员发布各自
+唯一的 standard。
 
-- 重装操作系统、清除磁盘、修改 DNS 记录、更换 VPS / IP / 域名属于仓库外
-  操作，由管理员单独决策执行；更换清单见 [docs/operations.md](docs/operations.md)。
-- 配置内容的回退不靠文件备份：`clash-sub history` / `clash-sub rollback`
-  基于每用户保留的最近五个成功版本。
-- 3x-ui 的安装、升级、凭据管理全部人工完成，本仓库脚本只做只读检查。
+~~~bash
+clash-sub status
+~~~
+
+~~~bash
+clash-sub sync
+~~~
+
+最后只读显示链接；完整 Token 仅通过既有安全渠道分发。
+
+~~~bash
+clash-sub links
+~~~
+
+## 12. 安装后验证与边界
+
+以下均为只读检查：443 仅 Xray；80/8443 仅 Nginx；面板/订阅仅回环；UFW 仅 SSH、
+TCP 80/443/8443；Nginx、timer 与发布状态均正常。
+
+~~~bash
+ss -H -lntup; ufw status numbered; nginx -t; systemctl list-timers clash-sub-traffic.timer; clash-sub status
+~~~
+
+- 客户端下载 https://sub.<domain>:8443/s/<token>/clash-<variant>.yaml 成功，错误
+  token / 越权 variant 返回相同 404。
+- 手机更新机场、回滚、令牌轮换、备份和故障恢复见
+  [docs/operations.md](docs/operations.md) 与 [docs/private-data.md](docs/private-data.md)。
+- 重装系统、清除磁盘、修改 DNS、更换 VPS / IP / 域名由管理员单独决策；内容回退
+  使用 clash-sub history / clash-sub rollback 的五个成功版本，不覆盖私有备份。

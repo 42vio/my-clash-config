@@ -140,6 +140,54 @@ class DocumentationCoverageTests(unittest.TestCase):
         for phrase in ("acme.sh", "--install-cert", "SAN", "systemctl reload nginx"):
             self.assertIn(phrase, deployment)
 
+    def test_clean_debian_contract_bootstraps_http01_before_tls_and_owner_publish(self):
+        deployment = self.texts["deployment"]
+        private_data = self.texts["private-data"]
+        for prerequisite in (
+            "ca-certificates",
+            "curl",
+            "git",
+            "python3",
+            "python3-venv",
+            "nginx",
+            "ufw",
+            "dnsutils",
+            "gzip",
+            "--no-install-recommends",
+            "sha256sum",
+        ):
+            self.assertIn(prerequisite, deployment)
+        self.assertNotIn("shasum", deployment)
+        self.assertLess(
+            deployment.index("HTTP-01 webroot bootstrap"),
+            deployment.index("acme.sh --issue"),
+        )
+        self.assertLess(
+            deployment.index("acme.sh --issue"),
+            deployment.index("final 8443 TLS template"),
+        )
+        self.assertIn("curl --fail --resolve", deployment)
+        self.assertIn("ufw default deny incoming", deployment)
+        self.assertIn("ufw default allow outgoing", deployment)
+        self.assertLess(
+            deployment.index("ufw allow <SSH-port>/tcp"),
+            deployment.index("ufw default deny incoming"),
+        )
+        self.assertLess(
+            deployment.index("ufw default allow outgoing"),
+            deployment.index("ufw --force enable"),
+        )
+        for phrase in (
+            "proxies:",
+            "<private-root>/home.yaml",
+            "load_proxy_snapshot",
+            "选择 `1`",
+            "clash-sub sync",
+        ):
+            self.assertIn(phrase, deployment)
+        for path in ("/opt/clash-sub/private/config/service.yaml", "<private-root>"):
+            self.assertIn(path, private_data)
+
     def test_deployment_documents_nginx_timer_and_first_sync_lifecycle(self):
         deployment = self.texts["deployment"]
         for phrase in (
@@ -279,6 +327,18 @@ class LightweightDeploymentTests(unittest.TestCase):
             "PANEL_BASE_PATH contract: leading slash, one safe random component ([A-Za-z0-9_-]+), no trailing slash.",
             self.template,
         )
+
+    def test_panel_proxy_has_a_separate_moderate_rate_limit_over_the_whole_base_path(self):
+        panel = _server_with_name(self.servers, "panel.{{DOMAIN}}")
+        rendered = panel.replace("{{PANEL_BASE_PATH}}", "/secret")
+        child = _selected_location(_blocks(rendered, "location"), "/secret/login")
+
+        self.assertIn(
+            "limit_req_zone $binary_remote_addr zone=clash_panel:10m rate=10r/s;",
+            self.nginx,
+        )
+        self.assertIn("limit_req zone=clash_panel burst=20 nodelay;", child)
+        self.assertNotIn("clash_subscription", child)
 
     def test_subscription_uses_only_generated_exact_routes_and_silent_404_fallbacks(self):
         subscription = _server_with_name(self.servers, "sub.{{DOMAIN}}")

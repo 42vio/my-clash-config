@@ -18,20 +18,39 @@
 
 ## 步骤（按顺序）
 
-1. **准备干净主机**：重装 Debian 12 amd64 并 `apt update && apt
-   full-upgrade`。不要复用跑过其他代理栈的主机。
+1. **准备干净主机**：重装 Debian 12 amd64 后，先完整执行
+   [DEPLOYMENT.md](../DEPLOYMENT.md) 的「检查主机并安装轻量前置包」与 UFW
+   步骤。不要复用跑过其他代理栈的主机。
 2. **下载 3.6.0 官方安装脚本到本地文件并先审阅再执行**，绝不把网络响应
-   直接管道给 shell：
+   直接管道给 shell。先只读确认下载工具和临时目标：
+
+   ```bash
+   curl --version; test ! -e /tmp/3x-ui-install-v3.6.0.sh
+   ```
+
+   确认后单独下载：
 
    ```bash
    curl --fail --show-error --location \
      --output /tmp/3x-ui-install-v3.6.0.sh \
      https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.6.0/install.sh
+   ```
+
+   下载后先进行只读校验与审阅；将 Debian `sha256sum` 输出和来源写进管理员
+   私有部署日志，再决定是否执行：
+
+   ```bash
+   sha256sum /tmp/3x-ui-install-v3.6.0.sh
    less /tmp/3x-ui-install-v3.6.0.sh
+   ```
+
+   审阅通过后，最后一条才是独立的人工安装操作：
+
+   ```bash
    bash /tmp/3x-ui-install-v3.6.0.sh v3.6.0
    ```
 
-   最后的 `bash` 是有意保留的人工步骤。把安装包来源与校验和记入管理员
+   最后的 `bash` 是有意保留的人工步骤。安装后保留来源与校验和在管理员
    私有部署日志（同样不进本仓库）。
 3. **面板设置**：强唯一用户名与密码、启用 2FA、生成随机 Web Base Path
    （示例形状 `/x7Hq2mVt`），面板监听 `127.0.0.1:<面板端口>`（示例

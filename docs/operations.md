@@ -150,7 +150,10 @@ FINAL,DIRECT
 
 ## 私有数据备份
 
-`<private-root>` 是唯一需要备份的运行数据（配置、state.json、机场/家庭
-快照、releases、参考原件）。备份与恢复只在管理员控制的加密存储之间进行，
-保持目录 `0700`、文件 `0600`、属主 root；Git 与普通备份介质不得携带
-（见 [private-data.md](private-data.md)）。
+`/opt/clash-sub/private/config/service.yaml` 与配置的 `<private-root>` 是必须
+一起备份的两项私有数据：后者包含 state.json、机场/家庭快照、releases 与参考
+原件，前者包含服务设置且不位于 private root 内。备份与恢复只在管理员控制的
+加密存储之间进行，两个副本均保持 root-only；恢复前保留当前副本，恢复后核对
+service.yaml 为 `0600 root:root`、private root 为 `0700 root:root` 和内部私有
+文件为 `0600 root:root`。Git 与普通备份介质不得携带它们（见
+[private-data.md](private-data.md)）。

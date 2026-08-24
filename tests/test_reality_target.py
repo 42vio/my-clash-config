@@ -198,9 +198,9 @@ ALPN protocol: h2
 SSL-Session:
     Protocol  : TLSv1.2
     Cipher    : 0000
-    Session-ID: 
-    Session-ID-ctx: 
-    Master-Key: 
+    Session-ID:
+    Session-ID-ctx:
+    Master-Key:
     PSK identity: None
     PSK identity hint: None
     SRP username: None

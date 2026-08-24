@@ -28,9 +28,14 @@ root-only 的 `state.json` 中即等价于「文件系统权限保护」， Git�
 
 ## 备份与恢复
 
-- 只备份 `<private-root>` 全树（含 `reference-configs/` 原件）。
-- 备份与恢复只在管理员控制的加密存储之间进行；恢复后核对目录 `0700`、
-  文件 `0600`、属主 root:root。
+- 必须备份两个独立来源：`/opt/clash-sub/private/config/service.yaml` 与配置的
+  `<private-root>` 全树（含 `state.json`、`airport.yaml`、`home.yaml`、
+  releases 与 `reference-configs/` 原件）。前者不在 `<private-root>` 内，漏掉
+  它将无法恢复服务设置。
+- 备份和恢复只在管理员控制的加密存储之间进行，且备份副本同样 root-only；不得把
+  这两项写入 Git、普通备份介质或公开云盘。恢复前先保留当前两项的只读副本，恢复后
+  核对 `service.yaml` 为 `0600 root:root`、`<private-root>` 为 `0700 root:root`，
+  并逐项核对其私有文件为 `0600 root:root`。
 - Git 与普通备份介质不得携带私有数据；若凭据曾被推送到远程仓库，仅删除
   文件无法撤回历史，必须轮换凭据（令牌用 `rotate-link`，节点凭据在
   3x-ui 重建）。
