@@ -74,6 +74,134 @@ def _server_with_name(servers, name):
     return matches[0]
 
 
+DOCUMENTATION_PATHS = {
+    "readme": ROOT / "README.md",
+    "deployment": ROOT / "DEPLOYMENT.md",
+    "xui-setup": ROOT / "docs" / "3x-ui-setup.md",
+    "operations": ROOT / "docs" / "operations.md",
+    "private-data": ROOT / "docs" / "private-data.md",
+    "legacy-topology": ROOT / "docs" / "legacy-trojan-topology.md",
+}
+
+
+class DocumentationCoverageTests(unittest.TestCase):
+    """Task 13 coverage: the active manual documentation must stay complete."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.texts = {
+            name: path.read_text(encoding="utf-8")
+            for name, path in DOCUMENTATION_PATHS.items()
+        }
+
+    def test_all_documented_files_exist(self):
+        for name, path in DOCUMENTATION_PATHS.items():
+            self.assertTrue(path.is_file(), name)
+
+    def test_deployment_documents_host_constraints_and_idle_processes(self):
+        deployment = self.texts["deployment"]
+        for phrase in ("512 MiB", "256 MiB Swap", "10 GiB", "常驻进程只有"):
+            self.assertIn(phrase, deployment)
+
+    def test_deployment_documents_port_plan_and_reality_boundaries(self):
+        deployment = self.texts["deployment"]
+        for phrase in ("TCP 443", "REALITY", "8443", "不开放 UDP 443", "不使用公网 1443"):
+            self.assertIn(phrase, deployment)
+
+    def test_xui_setup_documents_manual_pinned_installation(self):
+        xui = self.texts["xui-setup"]
+        for phrase in ("3.6.0", "26.6.27", "人工", "bash /tmp/3x-ui-install"):
+            self.assertIn(phrase, xui)
+
+    def test_xui_setup_documents_loopback_listeners_and_readonly_sqlite(self):
+        xui = self.texts["xui-setup"]
+        for phrase in ("127.0.0.1", "Clash 输出", "x-ui.db", "只读"):
+            self.assertIn(phrase, xui)
+
+    def test_deployment_documents_python_runtime_and_mihomo_checksum(self):
+        deployment = self.texts["deployment"]
+        for phrase in (
+            "python3 -m venv",
+            "Jinja2==3.1.6",
+            "PyYAML==6.0.3",
+            "1.19.30",
+            "sha256",
+            "install -d -o root -g www-data -m 2750 /var/lib/clash-sub/public",
+            "0700",
+            "0600",
+            "0640",
+        ):
+            self.assertIn(phrase, deployment)
+
+    def test_deployment_documents_acme_sh_certificate_lifecycle(self):
+        deployment = self.texts["deployment"]
+        for phrase in ("acme.sh", "--install-cert", "SAN", "systemctl reload nginx"):
+            self.assertIn(phrase, deployment)
+
+    def test_deployment_documents_nginx_timer_and_first_sync_lifecycle(self):
+        deployment = self.texts["deployment"]
+        for phrase in (
+            "clash-sub.conf.tmpl",
+            "nginx -t",
+            "clash-sub-traffic.timer",
+            "systemctl enable --now clash-sub-traffic.timer",
+            "首次同步",
+            "clash-sub sync",
+            "clash-sub links",
+        ):
+            self.assertIn(phrase, deployment)
+
+    def test_operations_documents_mobile_airport_update_and_commands(self):
+        operations = self.texts["operations"]
+        for phrase in (
+            "手机",
+            "隐藏输入",
+            "仅接受 https://",
+            "clash-sub status",
+            "clash-sub history",
+            "clash-sub rollback",
+            "clash-sub rotate-link",
+            "clash-sub traffic-update",
+        ):
+            self.assertIn(phrase, operations)
+
+    def test_operations_documents_xui_upgrade_procedure(self):
+        operations = self.texts["operations"]
+        for phrase in (
+            "备份",
+            "停止",
+            "副本",
+            "clash-sub sync",
+            "旧 YAML",
+        ):
+            self.assertIn(phrase, operations)
+
+    def test_operations_documents_replacement_checklists(self):
+        operations = self.texts["operations"]
+        for phrase in ("更换域名", "更换 VPS", "不依赖 Nginx 证书"):
+            self.assertIn(phrase, operations)
+
+    def test_readme_documents_non_goals_and_menu_management(self):
+        readme = self.texts["readme"]
+        for phrase in (
+            "更新机场订阅",
+            "同步所有配置",
+            "不提供短链",
+            "实时查询",
+            "Telegram",
+            "不需要记住 refresh",
+        ):
+            self.assertIn(phrase, readme)
+
+    def test_active_docs_never_reference_removed_tooling(self):
+        removed = ("server_preflight", "install-server", "install_server", "certbot")
+        for name in DOCUMENTATION_PATHS:
+            if name == "legacy-topology":
+                continue
+            for phrase in removed:
+                self.assertNotIn(phrase, self.texts[name], "%s: %s" % (name, phrase))
+
+
 class LightweightDeploymentTests(unittest.TestCase):
     def setUp(self):
         self.template = NGINX_TEMPLATE.read_text(encoding="utf-8")

@@ -209,3 +209,23 @@ class RepositorySafetyTests(unittest.TestCase):
                 self.assertNotIn(
                     forbidden.lower(), lowered, f"{relative} leaks {forbidden!r}"
                 )
+
+    def test_legacy_trojan_topology_is_isolated_and_explicitly_historical(self):
+        legacy = ROOT / "docs" / "legacy-trojan-topology.md"
+        self.assertTrue(legacy.is_file())
+        legacy_text = legacy.read_text(encoding="utf-8")
+        for fact in ("1443", "8080", "trojan-web", "fallback"):
+            self.assertIn(fact, legacy_text)
+        for statement in ("不是新服务器的安装步骤", "不得在新服务器上执行"):
+            self.assertIn(statement, legacy_text)
+        active_docs = (
+            "README.md",
+            "DEPLOYMENT.md",
+            "docs/3x-ui-setup.md",
+            "docs/operations.md",
+            "docs/private-data.md",
+        )
+        for relative in active_docs:
+            text = (ROOT / relative).read_text(encoding="utf-8").lower()
+            for term in ("trojan", "jrohy", "trojan-web", "8080"):
+                self.assertNotIn(term, text, f"{relative} mentions {term!r}")

@@ -1,33 +1,27 @@
-# Manual 3x-ui initialization checklist
+# 3x-ui 人工初始化清单（固定版本）
 
-This checklist configures the panel side of the server exactly once, by
-hand.  Everything the project automates afterwards (Nginx, certificates,
-firewall, the pinned Compose stack) assumes the end state described
-here, and `scripts/server_preflight.py` refuses to pass a host that
-drifts away from it.
+本清单描述服务器面板侧的最终状态，**全部步骤人工执行**：本仓库的任何脚本
+都不会下载、安装或修改 3x-ui / Xray。文中非版本号的名称、地址、端口与
+路径均为示例占位，真实值只存在于 3x-ui 本身与 root-only 私有配置中。
 
-## Pinned versions
+## 固定版本
 
-| Component | Pinned value |
+| 组件 | 固定值 |
 | --- | --- |
-| Operating system | Debian 12 (bookworm), amd64 |
-| 3x-ui panel | 3.6.0 (native install, systemd `x-ui` unit) |
-| Xray-core | 26.6.27 (selected inside 3x-ui) |
-| Public inbound | VLESS + RAW/TCP + REALITY on TCP 443, flow `xtls-rprx-vision` |
+| 操作系统 | Debian 12（bookworm），amd64 |
+| 3x-ui 面板 | 3.6.0（原生安装，systemd `x-ui` 单元） |
+| Xray-core | 26.6.27（在 3x-ui 内选择，关闭自动升级） |
+| 公网入站 | VLESS + RAW/TCP + REALITY，TCP 443，flow `xtls-rprx-vision` |
 
-All names, addresses, and ports below that are not version numbers are
-examples; the real values live only in the private `service.yaml` and in
-3x-ui itself.
+不要升级到更高版本：升级前必须先按
+[docs/operations.md](operations.md) 的「3x-ui 升级流程」做数据库兼容检查。
 
-## Steps (in order)
+## 步骤（按顺序）
 
-1. **Reinstall a clean Debian 12 amd64 server** and update the OS
-   (`apt update && apt full-upgrade`).  Do not reuse a host that ever ran
-   another proxy stack; the preflight blocks leftover Trojan/Jrohy,
-   MariaDB, or Portainer services and unknown owners of TCP 443.
-2. **Download the official 3.6.0 installation script from the matching
-   Git tag to a local file and inspect it before running it.**  Never
-   pipe the network response to a shell:
+1. **准备干净主机**：重装 Debian 12 amd64 并 `apt update && apt
+   full-upgrade`。不要复用跑过其他代理栈的主机。
+2. **下载 3.6.0 官方安装脚本到本地文件并先审阅再执行**，绝不把网络响应
+   直接管道给 shell：
 
    ```bash
    curl --fail --show-error --location \
@@ -37,74 +31,64 @@ examples; the real values live only in the private `service.yaml` and in
    bash /tmp/3x-ui-install-v3.6.0.sh v3.6.0
    ```
 
-   The final `bash` command is an intentional human step; it is never
-   called by `scripts/install_server.py` or any other script in this
-   repository.
-3. **Install native 3x-ui 3.6.0 manually.**  Record the package or
-   source URL and its checksum in the administrator's private
-   deployment log (kept outside this repository, like every other
-   private artifact).
-4. **Panel settings:** strong unique username and password, 2FA
-   enabled, a random Web Base Path, and the panel bound to
-   `127.0.0.1:<configured-panel-port>` (the `xui.panel-port` from the
-   private `service.yaml`, e.g. `2053`).
-5. **Raw subscription service** bound to
-   `127.0.0.1:<configured-subscription-port>` (the
-   `xui.subscription-port`, e.g. `2096`) with a random subscription
-   path.  The panel and the subscription service are only reachable
-   through the project's Nginx on 8443 or over an SSH tunnel, never
-   directly.
-6. **Select Xray-core 26.6.27 in 3x-ui**, verify the bundled binary
-   version (`<xray-binary-path> version`, path from the private
-   settings), and **disable automatic core upgrades** so the pin holds.
-7. **Create exactly one public inbound:** protocol VLESS, transport
-   RAW/TCP, security REALITY, port TCP 443, flow `xtls-rprx-vision`, a
-   REALITY dest/SNI that passed `scripts/check_reality_target.py`, a
-   generated REALITY keypair, and at least one non-empty short ID.
-   Nothing else may listen publicly on 443 (TCP or UDP).
-8. **Create one independent 3x-ui client per person.**  Never share
-   UUIDs or raw subscription IDs: ordinary-user clients are referenced
-   only by their matching `users.yaml` entry, and the owner has a
-   separate client of their own.
-9. **Verify before use:** run `scripts/check_reality_target.py` before
-   accepting the REALITY target, then
-   `scripts/server_preflight.py --config private/config/service.yaml`
-   (as root, exit 0 required) before running the project installer —
-   a bare invocation defaults to the repository example settings and
-   will always block on the DNS comparison.
+   最后的 `bash` 是有意保留的人工步骤。把安装包来源与校验和记入管理员
+   私有部署日志（同样不进本仓库）。
+3. **面板设置**：强唯一用户名与密码、启用 2FA、生成随机 Web Base Path
+   （示例形状 `/x7Hq2mVt`），面板监听 `127.0.0.1:<面板端口>`（示例
+   `2053`）。该回环地址稍后填入 Nginx 模板的 `{{PANEL_UPSTREAM}}`。
+4. **原始订阅服务**：监听 `127.0.0.1:<订阅端口>`（示例 `2096`），并在
+   面板中**启用 Clash 输出**——`clash-sub` 只从该回环 Clash 接口获取节点
+   与流量，不使用 `/sub/` 或 `/json/` 原始输出。
+5. **固定 Xray 版本**：在 3x-ui 中选择 Xray-core 26.6.27，用
+   `<xray-二进制路径> version` 核对，并**关闭自动核心升级**。
+6. **创建唯一公网入站**：协议 VLESS、传输 RAW/TCP、安全 REALITY、端口
+   TCP 443、flow `xtls-rprx-vision`；REALITY dest/SNI 必须先通过本仓库
+   的只读检测脚本：
 
-## Redacted verification table
+   ```bash
+   /opt/clash-sub/.venv/bin/python /opt/clash-sub/scripts/check_reality_target.py \
+     --host <候选目标域名>
+   ```
 
-Copy this table into the private deployment log and fill it in; it is
-the human-readable twin of the machine report.
+   预期 `reachable`、`tls13`、`alpn_h2`、`x25519`、`certificate_name`
+   全部通过。密钥对由 3x-ui 生成，至少一个非空 short ID。除它之外任何
+   进程不得监听公网 443（TCP 或 UDP）。
+7. **每人一个独立客户端**：绝不共享 UUID 或订阅 ID。owner 客户端的
+   email 标识必须与私有 `service.yaml` 的 `owner-email` 一致（首次同步
+   时唯一匹配并持久化其数据库主键）；其他用户各建一个客户端，`clash-sub`
+   首次同步时自动为每个客户端生成独立订阅令牌。
 
-| Check | Expected |
+## 完成后的核对表
+
+| 检查 | 预期 |
 | --- | --- |
-| Panel version | 3.6.0 (`xui --version`) |
-| Xray version | 26.6.27 (bundled binary) |
-| Panel listener | `127.0.0.1:<panel-port>` (loopback only) |
-| Subscription listener | `127.0.0.1:<subscription-port>` (loopback only) |
-| Public listener | exactly one TCP 443, owned by the Xray process |
-| Inbound protocol / network / security | VLESS / tcp / reality |
-| Inbound flow (every client) | `xtls-rprx-vision` |
-| Client count | one per person, no shared UUIDs |
-| Short IDs | at least one non-empty value |
-| Server names | non-empty, matches the tested target |
-| Target test | `reachable`, `tls13`, `alpn_h2`, `x25519`, `certificate_name` all `true` |
-| Preflight | exit 0, no blocking codes |
-| Private tree | `private/` subdirs uid/gid 10001, dirs 0700, `config/*.yaml` 0600 |
+| `x-ui --version`（或面板关于页） | 3.6.0 |
+| Xray 二进制 `version` | 26.6.27 |
+| 面板监听 | 仅 `127.0.0.1:<面板端口>` |
+| 订阅服务监听 | 仅 `127.0.0.1:<订阅端口>`，Clash 输出已启用 |
+| `ss -H -lntp | grep ':443\b'` | 仅 Xray 进程，无 UDP 443 |
+| 入站协议 / 传输 / 安全 | VLESS / tcp / reality |
+| 每客户端 flow | `xtls-rprx-vision` |
+| 客户端数量 | 每人一个，无共享 UUID |
+| short ID | 至少一个非空值 |
+| SQLite 位置 | 与 `service.yaml` 的 `xui-database` 一致（示例 `/etc/x-ui/x-ui.db`） |
 
-## Secret boundaries
+## 与本仓库的数据接口
 
-- The **REALITY private key stays only in Xray/3x-ui** (the generated
-  keypair's private half).  It must never enter this repository, the
-  private `service.yaml`, the deployment log in plaintext, or any
-  generated Clash file; published Clash configs carry only the public
-  key and a short ID.
-- Panel credentials, 2FA secrets, Web Base Path, subscription paths,
-  client UUIDs, and the private deployment log are equally excluded
-  from the repository and from every report the scripts print.
-- `scripts/server_preflight.py` is read-only: it issues bounded
-  `systemctl is-active`/`show`, `ss`, version, `ufw status`, `nginx -T`,
-  and `docker compose config` probes only, and its reports are limited
-  to booleans, versions, counts, ports, and stable codes.
+`clash-sub` 对 3x-ui 只有两类**只读**访问，代码中不存在任何写 SQL：
+
+1. 以只读模式打开 SQLite（示例 `/etc/x-ui/x-ui.db`），仅查询客户端主键、
+   email 标识、subId、启用状态、配额/到期与订阅服务设置；表或字段结构与
+   固定预期不符时全局失败关闭，不修改任何已发布配置。
+2. 通过已验证的回环地址 `http://127.0.0.1:<订阅端口>/<订阅路径>/<subId>`
+   获取 Clash YAML 与 `Subscription-Userinfo` 流量头。
+
+## 秘密边界
+
+- **REALITY 私钥只留在 Xray/3x-ui 中**：不进本仓库、不进私有
+  `service.yaml`、不进部署日志明文、不进任何生成的 Clash 文件；发布的
+  Clash 配置只携带公钥与 short ID。
+- 面板凭据、2FA 密钥、Web Base Path、订阅路径、客户端 UUID 与管理员
+  私有部署日志同样不进仓库，也不出现在任何脚本输出里。
+- `scripts/check_reality_target.py` 只读：仅做 TLS 1.3 / ALPN / X25519 /
+   可达性 / 证书名探测，输出限于布尔值与稳定代码。
