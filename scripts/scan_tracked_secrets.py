@@ -110,8 +110,8 @@ _PROXY_URI_RE = re.compile(
     r"[0-9A-Za-z_.~+-][^\s'\"`<>]*"
 )
 _SUBSCRIPTION_TOKEN_RE = re.compile(
-    r"/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/"
-    r"clash-(?:balanced|standard|privacy)\.yaml(?=$|[?#\s'\"`<>\[\](){},;])"
+    r"/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}"
+    r"(?![A-Za-z0-9_-])"
 )
 _PEM_KEY_RE = re.compile(r"-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----[A-Za-z0-9+/=\r\n]{100,}")
 _URL_USERINFO_RE = re.compile(

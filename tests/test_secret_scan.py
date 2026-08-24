@@ -136,31 +136,45 @@ class TrackedPathRuleTests(ScannerTestCase):
 
 
 class TrackedContentRuleTests(ScannerTestCase):
-    def test_only_exact_final_subscription_routes_are_flagged_and_redacted(self):
-        final_path = "/s/%s/clash-balanced.yaml" % SUBSCRIPTION_TOKEN
-        near_misses = (
-            "/s/%s/clash-balanced.yaml.bak" % SUBSCRIPTION_TOKEN,
-            "/s/%s/clash-balanced.yml" % SUBSCRIPTION_TOKEN,
-            "/s/%s/clash-other.yaml" % SUBSCRIPTION_TOKEN,
-            "/s/<token>/clash-balanced.yaml",
-        )
+    def test_complete_subscription_tokens_are_flagged_and_redacted(self):
+        token_path = "/s/%s" % SUBSCRIPTION_TOKEN
+        leaks = {
+            "bare-token.txt": token_path,
+            "wrong-suffix.txt": token_path + "/clash-balanced.yaml.bak",
+            "wrong-extension.txt": token_path + "/clash-balanced.yml",
+            "unknown-variant.txt": token_path + "/clash-other.yaml",
+        }
         with TemporaryDirectory() as directory:
             repository = self.make_repository(Path(directory))
-            self.stage(
-                repository,
-                "final-link.txt",
-                "embedded: https://sub.example.test:8443%s?download=1\n" % final_path,
-            )
-            self.stage(repository, "near-misses.txt", "\n".join(near_misses) + "\n")
+            for relative, leaked_value in leaks.items():
+                self.stage(repository, relative, "embedded: %s\n" % leaked_value)
 
             exit_code = self.scan(repository)
 
             self.assertEqual(exit_code, 1)
             report_lines = self.captured_report.splitlines()
-            self.assertIn("tracked-subscription-token: final-link.txt", report_lines)
-            self.assertNotIn("tracked-subscription-token: near-misses.txt", report_lines)
+            for relative in leaks:
+                self.assertIn("tracked-subscription-token: %s" % relative, report_lines)
             self.assertNotIn(SUBSCRIPTION_TOKEN, self.captured_report)
-            self.assertNotIn(final_path, self.captured_report)
+            for leaked_value in leaks.values():
+                self.assertNotIn(leaked_value, self.captured_report)
+
+    def test_subscription_token_requires_exact_length_and_token_boundaries(self):
+        core, readable_code = SUBSCRIPTION_TOKEN.rsplit("-", 1)
+        invalid_tokens = (
+            "/s/<token>",
+            "/s/%s-%s" % (core[:-1], readable_code),
+            "/s/%sA-%s" % (core, readable_code),
+            "/s/%s-%sA" % (core, readable_code),
+            "/s/%sA" % SUBSCRIPTION_TOKEN,
+        )
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(repository, "documentation.txt", "\n".join(invalid_tokens) + "\n")
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
 
     def test_concrete_secret_categories_report_only_category_and_relative_path(self):
         proxy_uri = "trojan" + "://realuser9:realpassword12345@203.0.113.9:443\n"
