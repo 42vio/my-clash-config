@@ -314,6 +314,25 @@ class LightweightCliTests(unittest.TestCase):
         self.assertIn("from clash_sub.cli import main", source)
         self.assertNotIn("clash_sub.host_cli", source)
 
+    def test_entry_point_reexecs_when_launched_by_the_venv_base_interpreter(self):
+        import subprocess
+        import sys
+
+        repository = Path(__file__).resolve().parents[1]
+        venv_python = repository / ".venv" / "bin" / "python"
+        base_interpreter = venv_python.resolve()
+        if not venv_python.is_symlink():
+            self.skipTest("venv python is not a symlink to a base interpreter")
+
+        result = subprocess.run(
+            [str(base_interpreter), str(repository / "bin" / "clash-sub"), "invalid-cmd"],
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_installed_entry_point_reexecs_repo_venv_python_from_any_location(self):
         import shutil
         import sys

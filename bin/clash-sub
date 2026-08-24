@@ -10,9 +10,11 @@ REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY))
 
 # Dependencies live only in the repository virtualenv; re-exec into it so a
-# system-Python launch (cron, systemd, bare shebang) still works.
+# system-Python launch (cron, systemd, bare shebang) still works.  Gate on
+# sys.prefix, not the binary: a venv python is a symlink to the base
+# interpreter, so binary identity cannot distinguish the two launches.
 VENV_PYTHON = REPOSITORY / ".venv" / "bin" / "python"
-if VENV_PYTHON.is_file() and Path(sys.executable).resolve() != VENV_PYTHON.resolve():
+if VENV_PYTHON.is_file() and Path(sys.prefix).resolve() != VENV_PYTHON.parent.parent.resolve():
     try:
         os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
     except OSError:
