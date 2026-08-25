@@ -195,5 +195,74 @@ class PreflightTests(unittest.TestCase):
             installer._require_dns("example.com")
 
 
+class LowMemoryPhaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.paths = InstallPaths(
+            sysctl_conf=self.root / "99-clash-sub.conf",
+            journald_conf_dir=self.root / "journald",
+            swap_file=self.root / "swap.img",
+        )
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def test_writes_sysctl_and_journald_without_swap(self):
+        self._installer().optimize_low_memory(swap_mb=0)
+
+        self.assertEqual(
+            self.paths.sysctl_conf.read_text(encoding="utf-8"),
+            "vm.swappiness=10\n",
+        )
+        self.assertEqual(
+            (self.paths.journald_conf_dir / "99-clash-sub.conf").read_text(encoding="utf-8"),
+            "[Journal]\nSystemMaxUse=50M\n",
+        )
+        swap_commands = [
+            c for c in self.runner_calls if "swapon" in c or "mkswap" in c or "fallocate" in c
+        ]
+        self.assertEqual(swap_commands, [])
+        self.assertIn("low_memory", load_install_state(self.root / "private" / "install-state.json").phases_done)
+
+    def test_creates_swap_when_requested(self):
+        self._installer().optimize_low_memory(swap_mb=1024)
+
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("fallocate" in item for item in joined))
+        self.assertTrue(
+            any("mkswap" in item and str(self.paths.swap_file) in item for item in joined)
+        )
+        self.assertTrue(
+            any("swapon" in item and str(self.paths.swap_file) in item for item in joined)
+        )
+
+    def test_skips_swap_when_file_exists(self):
+        self.paths.swap_file.write_bytes(b"")
+        self._installer().optimize_low_memory(swap_mb=1024)
+
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertFalse(any("fallocate" in item for item in joined))
+
+    def test_raises_when_command_fails(self):
+        def failing_runner(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            return subprocess.CompletedProcess(arguments, 1)
+
+        installer = Installer(self.root, paths=self.paths, runner=failing_runner)
+
+        with self.assertRaisesRegex(InstallerError, "command_failed"):
+            installer.optimize_low_memory(swap_mb=0)
+
+
 if __name__ == "__main__":
     unittest.main()

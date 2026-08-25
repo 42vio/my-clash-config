@@ -175,6 +175,64 @@ class Installer:
         if not any(address in local for address in resolved):
             raise InstallerError("dns_mismatch")
 
+    # -- phase 1 ---------------------------------------------------------
+    def optimize_low_memory(self, swap_mb):
+        self._write_file(self.paths.sysctl_conf, "vm.swappiness=10\n", 0o644)
+        self.paths.journald_conf_dir.mkdir(parents=True, exist_ok=True)
+        self._write_file(
+            self.paths.journald_conf_dir / "99-clash-sub.conf",
+            "[Journal]\nSystemMaxUse=50M\n",
+            0o644,
+        )
+        if (
+            isinstance(swap_mb, int)
+            and not isinstance(swap_mb, bool)
+            and swap_mb > 0
+            and not self.paths.swap_file.exists()
+        ):
+            self._run(
+                ["fallocate", "-l", "%sM" % swap_mb, str(self.paths.swap_file)]
+            )
+            self._run(["chmod", "600", str(self.paths.swap_file)])
+            self._run(["mkswap", str(self.paths.swap_file)])
+            self._run(["swapon", str(self.paths.swap_file)])
+        self._run(["sysctl", "-p", str(self.paths.sysctl_conf)])
+        self._phase_done("low_memory")
+
+    def _write_file(self, path, contents, mode):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".%s." % path.name, dir=str(path.parent)
+        )
+        try:
+            os.fchmod(descriptor, mode)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write(contents)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            if Path(temporary).exists():
+                Path(temporary).unlink(missing_ok=True)
+
+    def _run(self, arguments, env=None):
+        try:
+            result = self.runner(
+                list(arguments),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=600,
+                check=False,
+                env=dict(os.environ, **env) if env else None,
+            )
+        except Exception:
+            raise InstallerError("command_failed") from None
+        if result.returncode != 0:
+            raise InstallerError("command_failed")
+        return result
+
 
 def _require_free_tcp_port(installer, port):
     probe = socket.socket()
