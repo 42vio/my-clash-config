@@ -471,6 +471,21 @@ class NginxActivationPhaseTests(unittest.TestCase):
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertEqual(state.panel_base_path, "/p-fixedpath")
 
+    def test_enable_failure_does_not_journal_phase(self):
+        def failing_enable_runner(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            if "enable" in arguments and "nginx" in arguments:
+                return subprocess.CompletedProcess(arguments, 1)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=failing_enable_runner)
+
+        with self.assertRaisesRegex(InstallerError, "command_failed"):
+            installer.activate_nginx(domain="example.com", panel_port=2053)
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertNotIn("nginx_activation", state.phases_done)
+
     def test_hardens_systemd_units(self):
         installer = self._installer()
 

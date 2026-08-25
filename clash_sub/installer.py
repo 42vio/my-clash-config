@@ -332,13 +332,13 @@ class Installer:
             )
         except NginxError:
             raise InstallerError("nginx_activation_failed") from None
-        self._phase_done(
-            "nginx_activation",
-            domain=domain,
-            panel_port=panel_port,
-            panel_base_path=panel_base_path,
-        )
+        self._run(["systemctl", "enable", "--now", "nginx"])
         state = self.state()
+        if "nginx_activation" not in state.phases_done:
+            state.phases_done.append("nginx_activation")
+        state.domain = domain
+        state.panel_port = panel_port
+        state.panel_base_path = panel_base_path
         for path in (
             self.paths.stream_conf(),
             self.paths.http_conf(),
@@ -347,7 +347,6 @@ class Installer:
             if str(path) not in state.files_written:
                 state.files_written.append(str(path))
         self._save_state(state)
-        self._run(["systemctl", "enable", "--now", "nginx"])
 
     # -- phase 5 ---------------------------------------------------------
     def harden_systemd(self):
