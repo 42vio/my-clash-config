@@ -227,6 +227,51 @@ class XuiSnapshotTests(unittest.TestCase):
             )
             connection.executemany("INSERT INTO clients VALUES (?, ?, ?, ?, ?, ?)", rows)
 
+    def test_accepts_exactly_one_enabled_reality_inbound_on_10443(self):
+        snapshot = read_xui_snapshot(self.database)
+
+        self.assertEqual(snapshot.clients[0].client_id, 3)
+
+    def test_rejects_second_reality_inbound(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO inbounds VALUES (2, 10544, 'vless', 1, '0.0.0.0', '{}',"
+                " '{\"security\":\"reality\"}', 'reality-second')"
+            )
+        self.assert_incompatible()
+
+    def test_rejects_reality_inbound_on_other_port(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE inbounds SET port = 10544 WHERE id = 1")
+        self.assert_incompatible()
+
+    def test_allows_non_reality_inbound_for_future_extension(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO inbounds VALUES (2, 20443, 'trojan', 1, '127.0.0.1', '{}', '{}', 'reserved')"
+            )
+        snapshot = read_xui_snapshot(self.database)
+
+        self.assertTrue(snapshot.clients)
+
+    def test_rejects_missing_inbounds_table(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("DROP TABLE inbounds")
+        self.assert_incompatible()
+
+    def test_read_panel_port_returns_web_port(self):
+        from clash_sub.xui import read_panel_port
+
+        self.assertEqual(read_panel_port(self.database), 2053)
+
+    def test_read_panel_port_rejects_invalid_port(self):
+        from clash_sub.xui import read_panel_port
+
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE settings SET value = 'not-a-port' WHERE key = 'port'")
+        with self.assertRaises(XuiCompatibilityError):
+            read_panel_port(self.database)
+
 
 if __name__ == "__main__":
     unittest.main()

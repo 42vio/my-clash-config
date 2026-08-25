@@ -11,6 +11,7 @@ class XuiCompatibilityError(RuntimeError):
 
 
 _ERROR = "3x-ui database compatibility check failed"
+_REALITY_INBOUND_PORT = 10443
 _REQUIRED_COLUMNS = {
     "clients": {
         "id",
@@ -22,6 +23,7 @@ _REQUIRED_COLUMNS = {
     },
     "client_traffics": {"id", "email", "up", "down"},
     "settings": {"key", "value"},
+    "inbounds": {"id", "port", "protocol", "enable", "stream_settings"},
 }
 _REQUIRED_SETTINGS = (
     "subListen",
@@ -44,6 +46,7 @@ def read_xui_snapshot(path: Path, now_ms: int | None = None) -> XuiSnapshot:
             _validate_schema(connection)
             listen, port, clash_path = _read_settings(connection)
             clients = _read_clients(connection, current_time_ms)
+            _validate_reality_inbound(connection)
         finally:
             connection.close()
     except XuiCompatibilityError:
@@ -150,6 +153,44 @@ def _read_clients(connection, current_time_ms: int) -> list[XuiClient]:
             )
         )
     return clients
+
+
+def _validate_reality_inbound(connection) -> None:
+    rows = connection.execute(
+        "SELECT port, protocol, enable, stream_settings FROM inbounds"
+    ).fetchall()
+    reality = [
+        row for row in rows if row[1] == "vless" and "reality" in str(row[3]).lower()
+    ]
+    if (
+        len(reality) != 1
+        or reality[0][2] not in (0, 1)
+        or reality[0][0] != _REALITY_INBOUND_PORT
+    ):
+        _fail()
+
+
+def read_panel_port(path: Path) -> int:
+    """Read the 3x-ui web panel port from the settings table."""
+    try:
+        connection = sqlite3.connect(
+            "file:%s?mode=ro" % quote(str(path)), uri=True, timeout=1.0
+        )
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            _validate_schema(connection)
+            rows = connection.execute(
+                "SELECT value FROM settings WHERE key = 'port'"
+            ).fetchall()
+        finally:
+            connection.close()
+    except XuiCompatibilityError:
+        raise
+    except (OSError, sqlite3.Error, TypeError, ValueError, OverflowError):
+        raise XuiCompatibilityError(_ERROR) from None
+    if len(rows) != 1:
+        _fail()
+    return _port(rows[0][0])
 
 
 def _port(value) -> int:
