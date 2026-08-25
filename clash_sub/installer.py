@@ -199,6 +199,35 @@ class Installer:
         self._run(["sysctl", "-p", str(self.paths.sysctl_conf)])
         self._phase_done("low_memory")
 
+    # -- phase 2 ---------------------------------------------------------
+    def install_nginx_packages(self):
+        self._run(
+            [
+                "apt-get",
+                "install",
+                "-y",
+                "--no-install-recommends",
+                "nginx",
+                "libnginx-mod-stream",
+            ]
+        )
+        self._ensure_stream_include()
+        self._phase_done("nginx_packages")
+
+    def _ensure_stream_include(self):
+        marker = "# clash-sub stream include"
+        text = self.paths.nginx_conf.read_text(encoding="utf-8")
+        if marker in text:
+            return False
+        block = (
+            "\n%s\nstream {\n    include %s/*.conf;\n}\n"
+            % (marker, self.paths.stream_conf_dir)
+        )
+        self._write_file(
+            self.paths.nginx_conf, text.rstrip("\n") + "\n" + block, 0o644
+        )
+        return True
+
     def _write_file(self, path, contents, mode):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

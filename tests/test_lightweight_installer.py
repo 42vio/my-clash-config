@@ -264,5 +264,69 @@ class LowMemoryPhaseTests(unittest.TestCase):
             installer.optimize_low_memory(swap_mb=0)
 
 
+class NginxPackagePhaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.nginx_conf = self.root / "nginx.conf"
+        self.nginx_conf.write_text(
+            "user www-data;\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n",
+            encoding="utf-8",
+        )
+        self.paths = InstallPaths(
+            nginx_conf=self.nginx_conf,
+            stream_conf_dir=self.root / "stream-conf.d",
+        )
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def test_installs_packages_and_appends_stream_include_once(self):
+        installer = self._installer()
+
+        installer.install_nginx_packages()
+        text_one = self.nginx_conf.read_text(encoding="utf-8")
+
+        installer.install_nginx_packages()
+        text_two = self.nginx_conf.read_text(encoding="utf-8")
+
+        self.assertIn("stream {", text_one)
+        self.assertIn(str(self.paths.stream_conf_dir), text_one)
+        self.assertEqual(text_one, text_two)
+        self.assertIn("user www-data;", text_one)
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(
+            any("apt-get" in item and "nginx" in item for item in joined)
+        )
+        self.assertTrue(any("libnginx-mod-stream" in item for item in joined))
+        self.assertIn("nginx_packages", load_install_state(self.root / "private" / "install-state.json").phases_done)
+
+    def test_appends_stream_include_to_empty_conf(self):
+        self.nginx_conf.write_text("", encoding="utf-8")
+
+        self._installer().install_nginx_packages()
+
+        text = self.nginx_conf.read_text(encoding="utf-8")
+        self.assertTrue(text.startswith("# clash-sub stream include") or text.startswith("\n# clash-sub stream include") or "stream {" in text)
+        self.assertIn("stream {", text)
+
+    def test_skips_append_when_marker_present(self):
+        marked = self.nginx_conf.read_text(encoding="utf-8") + "\n# clash-sub stream include\nstream {\n    include %s/*.conf;\n}\n" % self.paths.stream_conf_dir
+        self.nginx_conf.write_text(marked, encoding="utf-8")
+
+        self._installer().install_nginx_packages()
+
+        self.assertEqual(self.nginx_conf.read_text(encoding="utf-8"), marked)
+
+
 if __name__ == "__main__":
     unittest.main()
