@@ -50,11 +50,11 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
     unknown = set(data) - _CONFIG_KEYS
     if unknown:
         raise ConfigError("unsupported configuration key")
+    if data.get("schema-version") != 2 or isinstance(data.get("schema-version"), bool):
+        raise ConfigError("unsupported configuration schema")
     missing = _CONFIG_KEYS - set(data)
     if missing:
         raise ConfigError("missing required configuration")
-    if data["schema-version"] != 2 or isinstance(data["schema-version"], bool):
-        raise ConfigError("unsupported configuration schema")
 
     owner_email = _nonempty_string(data["owner-email"], "owner email")
     subscription_authority = _subscription_authority(data["subscription-authority"])

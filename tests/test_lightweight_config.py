@@ -162,8 +162,23 @@ class LightweightConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "public endpoint"):
             load_config(self.path, self.root)
 
-    def test_rejects_schema_version_1(self):
-        self.write_config(replacement=CONFIG.replace("schema-version: 2", "schema-version: 1"))
+    def test_rejects_public_endpoint_with_scheme(self):
+        self.write_config(replacement=CONFIG.replace("example.com:443\nxui-database", "https://example.com:443\nxui-database"))
+
+        with self.assertRaisesRegex(ConfigError, "xui public endpoint"):
+            load_config(self.path, self.root)
+
+    def test_rejects_public_endpoint_with_whitespace(self):
+        self.write_config(replacement=CONFIG.replace("example.com:443\nxui-database", "example.com :443\nxui-database"))
+
+        with self.assertRaisesRegex(ConfigError, "xui public endpoint"):
+            load_config(self.path, self.root)
+
+    def test_rejects_genuine_v1_configuration_with_schema_error(self):
+        v1 = CONFIG.replace("schema-version: 2", "schema-version: 1").replace(
+            "xui-public-endpoint: example.com:443\n", ""
+        )
+        self.write_config(replacement=v1)
 
         with self.assertRaisesRegex(ConfigError, "schema"):
             load_config(self.path, self.root)
