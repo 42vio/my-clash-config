@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from clash_sub.domain import ServiceConfig
 from clash_sub.service import ServiceError, _OperationLock
-from clash_sub.cli import MENU, _default_service_factory, main
+from clash_sub.cli import MENU, main
+from clash_sub.runtime import build_service
 
 
 TOKEN = "x" * 43 + "-ABC234"
@@ -423,8 +424,8 @@ class LightweightCliTests(unittest.TestCase):
             Path("/routes"), Path("/mihomo"), Path("/nginx"), Path("/systemctl"), Path("/templates"),
         )
         built = []
-        with patch("clash_sub.cli.load_config", return_value=config) as load, patch("clash_sub.cli.ClashSubService", side_effect=lambda *args, **kwargs: built.append((args, kwargs)) or object()):
-            _default_service_factory()
+        with patch("clash_sub.runtime.load_config", return_value=config) as load, patch("clash_sub.runtime.ClashSubService", side_effect=lambda *args, **kwargs: built.append((args, kwargs)) or object()):
+            build_service()
 
         self.assertEqual(load.call_args.args, (root / "private" / "config" / "service.yaml", root))
         self.assertIs(built[0][1]["runner"], subprocess.run)

@@ -9,19 +9,10 @@ from datetime import datetime, timezone
 from getpass import getpass
 from pathlib import Path
 
-from clash_sub.checks import MihomoValidator, validate_clash
 from clash_sub.config import load_config
-from clash_sub.generator import render_user_bundle
-from clash_sub.nginx import activate_runtime, recover_runtime, render_routes
-from clash_sub.release_store import ReleaseStore
-from clash_sub.service import ClashSubService, ServiceError, _OperationLock
-from clash_sub.sources import (
-    download_airport_proxies,
-    fetch_xui_proxies,
-    load_proxy_snapshot,
-)
-from clash_sub.state import load_state, reconcile_state, reinitialize_owner, rotate_user_token
-from clash_sub.xui import read_xui_snapshot
+from clash_sub.nginx import recover_runtime
+from clash_sub.runtime import build_service, repo_root as default_repo_root
+from clash_sub.service import ServiceError, _OperationLock
 
 
 MENU = (
@@ -45,7 +36,7 @@ def main(argv=None, stdin=None, stdout=None, stderr=None, service_factory=None) 
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
     arguments = list(sys.argv[1:] if argv is None and stdin is sys.stdin else (argv or ()))
-    factory = service_factory or _default_service_factory
+    factory = service_factory or (lambda: build_service())
 
     if not arguments:
         return _menu(stdin, stdout, stderr, factory)
@@ -254,8 +245,8 @@ def _recover(stdout, stderr):
     if os.geteuid() != 0:
         return _error(stderr, "recovery_not_authorized", 1)
     try:
-        repo_root = Path(__file__).resolve().parents[1]
-        config = load_config(repo_root / "private" / "config" / "service.yaml", repo_root)
+        root = default_repo_root()
+        config = load_config(root / "private" / "config" / "service.yaml", root)
         with _OperationLock(Path(config.private_root) / "operation.lock"):
             recover_runtime(config, subprocess.run, reload=False)
     except ServiceError as error:
@@ -264,32 +255,3 @@ def _recover(stdout, stderr):
         return _error(stderr, "runtime_recovery_failed", 1)
     stdout.write("运行时恢复已完成。\n")
     return 0
-
-
-def _default_service_factory():
-    repo_root = Path(__file__).resolve().parents[1]
-    config = load_config(repo_root / "private" / "config" / "service.yaml", repo_root)
-    runner = subprocess.run
-    return ClashSubService(
-        config,
-        read_snapshot=read_xui_snapshot,
-        load_state=load_state,
-        reconcile_state=reconcile_state,
-        rotate_user_token=rotate_user_token,
-        reinitialize_owner=reinitialize_owner,
-        fetch_xui_proxies=fetch_xui_proxies,
-        download_airport_proxies=download_airport_proxies,
-        load_proxy_snapshot=load_proxy_snapshot,
-        render_user_bundle=render_user_bundle,
-        validate_clash=validate_clash,
-        mihomo_validator=MihomoValidator(config.mihomo_binary, runner=runner),
-        release_store=ReleaseStore(
-            config.private_root,
-            config.public_root,
-            activation_paths=(config.nginx_routes,),
-        ),
-        render_routes=render_routes,
-        activate_runtime=activate_runtime,
-        recover_runtime=recover_runtime,
-        runner=runner,
-    )
