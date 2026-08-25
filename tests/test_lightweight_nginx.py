@@ -17,6 +17,7 @@ import clash_sub.nginx as nginx_module
 try:
     from clash_sub.nginx import (
         NginxError,
+        activate_nginx_files,
         activate_runtime,
         recover_runtime,
         render_routes,
@@ -25,6 +26,7 @@ try:
     )
 except ImportError:
     NginxError = RuntimeError
+    activate_nginx_files = None
     activate_runtime = None
     recover_runtime = None
     render_routes = None
@@ -852,6 +854,72 @@ class NginxTemplateRenderTests(unittest.TestCase):
             with self.subTest(key=key, value=value):
                 with self.assertRaisesRegex(NginxError, "invalid sub server parameters"):
                     render_sub_server(self._config(), **{**kwargs, key: value})
+
+
+class ActivateNginxFilesTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name).resolve()
+        self.target = self.root / "conf.d" / "clash-sub.conf"
+        self.target.parent.mkdir()
+        self.runner_calls = []
+        self.fail_validation = False
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        returncode = 1 if (self.fail_validation and arguments[0] == "/usr/sbin/nginx") else 0
+        return subprocess.CompletedProcess(arguments, returncode)
+
+    def _activate(self, files, *, reload=False):
+        return activate_nginx_files(
+            files,
+            self._runner,
+            nginx_binary="/usr/sbin/nginx",
+            systemctl_binary="/usr/bin/systemctl",
+            reload=reload,
+        )
+
+    def test_installs_new_file_and_runs_nginx_t(self):
+        contents = b"# new\n"
+
+        self._activate(((self.target, contents, 0o640),))
+
+        self.assertEqual(self.target.read_bytes(), contents)
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.runner_calls[0][:2], ["/usr/sbin/nginx", "-t"])
+
+    def test_restores_previous_contents_when_validation_fails(self):
+        self.target.write_text("# old\n", encoding="utf-8")
+        os.chmod(self.target, 0o640)
+        self.fail_validation = True
+
+        with self.assertRaisesRegex(NginxError, "Nginx validation failed"):
+            self._activate(((self.target, b"# new\n", 0o640),))
+
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# old\n")
+
+    def test_removes_new_file_when_validation_fails(self):
+        self.fail_validation = True
+
+        with self.assertRaisesRegex(NginxError, "Nginx validation failed"):
+            self._activate(((self.target, b"# new\n", 0o640),))
+
+        self.assertFalse(self.target.exists())
+
+    def test_reloads_when_requested(self):
+        self._activate(((self.target, b"# new\n", 0o640),), reload=True)
+
+        self.assertEqual(
+            [call[:3] for call in self.runner_calls],
+            [["/usr/sbin/nginx", "-t"], ["/usr/bin/systemctl", "reload", "nginx"]],
+        )
+
+    def test_rejects_relative_path(self):
+        with self.assertRaisesRegex(NginxError, "invalid nginx file"):
+            self._activate(((Path("relative.conf"), b"x", 0o640),))
 
 
 if __name__ == "__main__":

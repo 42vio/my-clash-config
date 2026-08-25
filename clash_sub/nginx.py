@@ -181,6 +181,76 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
             _remove_candidate(candidate)
 
 
+def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, reload=False):
+    """Atomically install nginx configuration files with rollback on failure.
+
+    ``files`` is an iterable of ``(path, contents, mode)`` tuples.  Existing
+    targets are snapshotted in memory; if ``nginx -t`` (or the optional
+    reload) fails, every target is restored and newly created targets are
+    removed again.
+    """
+    if isinstance(files, (str, bytes)) or not callable(runner):
+        raise NginxError("invalid nginx file activation")
+    if not isinstance(nginx_binary, (str, Path)) or not str(nginx_binary):
+        raise NginxError("invalid nginx file activation")
+    if reload and (not isinstance(systemctl_binary, (str, Path)) or not str(systemctl_binary)):
+        raise NginxError("invalid nginx file activation")
+    try:
+        entries = tuple(files)
+    except TypeError:
+        raise NginxError("invalid nginx file activation") from None
+    artifacts = []
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, tuple) or len(entry) != 3:
+            raise NginxError("invalid nginx file activation")
+        path, contents, mode = entry
+        try:
+            path = _target(path)
+            _directory(path.parent, private=False)
+        except NginxError:
+            raise NginxError("invalid nginx file activation") from None
+        if (
+            path in seen
+            or not isinstance(contents, bytes)
+            or not contents
+            or isinstance(mode, bool)
+            or mode not in (_PRIVATE_MODE, _ROUTE_MODE, 0o640)
+        ):
+            raise NginxError("invalid nginx file activation")
+        seen.add(path)
+        artifacts.append((path, contents, mode))
+
+    snapshots = [(path, _snapshot(path)) for path, _, _ in artifacts]
+    candidates = []
+    try:
+        for path, contents, mode in artifacts:
+            candidates.append((path, _write_candidate(path, contents, mode)))
+        for path, candidate in candidates:
+            os.replace(candidate, path)
+            _fsync_directory(path.parent)
+        if not _command_ok(runner, (str(nginx_binary), "-t")):
+            raise _ValidationFailed()
+        if reload and not _command_ok(
+            runner, (str(systemctl_binary), "reload", "nginx")
+        ):
+            raise _ReloadFailed()
+    except _ValidationFailed:
+        _restore_files(snapshots)
+        raise NginxError("Nginx validation failed") from None
+    except _ReloadFailed:
+        _restore_files(snapshots)
+        raise NginxError("Nginx reload failed") from None
+    except Exception:
+        _restore_files(snapshots)
+        raise NginxError("Nginx activation failed") from None
+    finally:
+        for _, candidate in candidates:
+            if candidate is not None:
+                _remove_candidate(candidate)
+    return True
+
+
 def recover_runtime(config, runner, *, reload=False):
     """Recover an interrupted activation without exposing runtime contents.
 
@@ -671,6 +741,25 @@ def _write_candidate(path, contents, mode):
         if candidate is not None:
             _remove_candidate(candidate)
         raise
+
+
+class _ValidationFailed(Exception):
+    pass
+
+
+class _ReloadFailed(Exception):
+    pass
+
+
+def _restore_files(snapshots):
+    for path, (exists, contents, mode) in snapshots:
+        try:
+            if exists:
+                os.replace(_write_candidate(path, contents, mode), path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _restore(snapshots):
