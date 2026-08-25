@@ -1,5 +1,7 @@
 # Managed by clash-sub install. SNI routing for the unified 443 entry.
 # Stream context: include from nginx.conf's stream{} block.
+# NOTE: no PROXY protocol here on purpose — it is server-scoped and would also
+# prepend the PROXY header to the Reality default route, which Xray rejects.
 map $ssl_preread_server_name $clash_sub_backend {
     default             127.0.0.1:10443;
     sub.{{ domain }}    127.0.0.1:30443;
@@ -9,7 +11,6 @@ map $ssl_preread_server_name $clash_sub_backend {
 server {
     listen 443;
     proxy_pass $clash_sub_backend;
-    proxy_protocol on;
     ssl_preread on;
     proxy_connect_timeout 5s;
 }

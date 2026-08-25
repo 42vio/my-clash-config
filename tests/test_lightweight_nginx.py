@@ -800,7 +800,7 @@ class NginxTemplateRenderTests(unittest.TestCase):
         self.assertIn("default", rendered)
         self.assertIn("127.0.0.1:10443", rendered)
         self.assertIn("ssl_preread on;", rendered)
-        self.assertIn("proxy_protocol on;", rendered)
+        self.assertNotIn("proxy_protocol", rendered)
         self.assertIn("listen 443;", rendered)
 
     def test_renders_sub_server_with_panel_and_routes(self):
@@ -814,9 +814,7 @@ class NginxTemplateRenderTests(unittest.TestCase):
             privkey="/etc/ssl/domain/privkey.pem",
         )
 
-        self.assertIn("listen 127.0.0.1:30443 ssl proxy_protocol;", rendered)
-        self.assertIn("set_real_ip_from 127.0.0.1;", rendered)
-        self.assertIn("real_ip_header proxy_protocol;", rendered)
+        self.assertIn("listen 127.0.0.1:30443 ssl;", rendered)
         self.assertIn("server_name sub.example.com;", rendered)
         self.assertIn("ssl_certificate /etc/ssl/domain/fullchain.pem;", rendered)
         self.assertIn("include /etc/nginx/clash-sub/routes.conf;", rendered)
