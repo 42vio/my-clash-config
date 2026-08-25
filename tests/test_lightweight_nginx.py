@@ -800,6 +800,7 @@ class NginxTemplateRenderTests(unittest.TestCase):
         self.assertIn("default", rendered)
         self.assertIn("127.0.0.1:10443", rendered)
         self.assertIn("ssl_preread on;", rendered)
+        self.assertIn("proxy_protocol on;", rendered)
         self.assertIn("listen 443;", rendered)
 
     def test_renders_sub_server_with_panel_and_routes(self):
@@ -813,13 +814,46 @@ class NginxTemplateRenderTests(unittest.TestCase):
             privkey="/etc/ssl/domain/privkey.pem",
         )
 
-        self.assertIn("listen 127.0.0.1:30443 ssl;", rendered)
+        self.assertIn("listen 127.0.0.1:30443 ssl proxy_protocol;", rendered)
+        self.assertIn("set_real_ip_from 127.0.0.1;", rendered)
+        self.assertIn("real_ip_header proxy_protocol;", rendered)
         self.assertIn("server_name sub.example.com;", rendered)
         self.assertIn("ssl_certificate /etc/ssl/domain/fullchain.pem;", rendered)
         self.assertIn("include /etc/nginx/clash-sub/routes.conf;", rendered)
         self.assertIn("location = /p-1a2b3c4d {", rendered)
         self.assertIn("proxy_pass http://127.0.0.1:2053/p-1a2b3c4d/;", rendered)
+        self.assertIn('proxy_set_header X-Forwarded-For "";', rendered)
         self.assertIn("limit_req_zone $binary_remote_addr zone=clash_subscription", rendered)
+
+    def test_rejects_domain_with_config_syntax_characters(self):
+        for domain in ("example.com }\nserver { listen 12345;", "exa mple.com", "example.com;", "localhost", ""):
+            with self.subTest(domain=domain):
+                with self.assertRaisesRegex(NginxError, "invalid domain"):
+                    render_stream_config(self._config(), domain)
+
+    def test_rejects_sub_server_parameter_abuse(self):
+        kwargs = dict(
+            domain="example.com",
+            panel_port=2053,
+            panel_base_path="/p-1a2b3c4d",
+            routes_include="/etc/nginx/clash-sub/routes.conf",
+            fullchain="/etc/ssl/domain/fullchain.pem",
+            privkey="/etc/ssl/domain/privkey.pem",
+        )
+        cases = (
+            ("panel_port", True),
+            ("panel_port", 443),
+            ("panel_port", 30443),
+            ("panel_base_path", "/p/x"),
+            ("panel_base_path", "/p-x/"),
+            ("routes_include", "etc/nginx/routes.conf"),
+            ("fullchain", "/etc/ssl/x;\n}"),
+            ("privkey", "/key'#"),
+        )
+        for key, value in cases:
+            with self.subTest(key=key, value=value):
+                with self.assertRaisesRegex(NginxError, "invalid sub server parameters"):
+                    render_sub_server(self._config(), **{**kwargs, key: value})
 
 
 if __name__ == "__main__":

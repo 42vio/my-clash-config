@@ -15,6 +15,7 @@ from clash_sub.state import TOKEN_RE, _state_to_payload
 
 
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
+_DOMAIN_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$")
 _ROUTE_MODE = 0o640
 _PRIVATE_MODE = 0o600
 _ACTIVATION_JOURNAL = ".activation-journal.json"
@@ -44,7 +45,7 @@ def _nginx_template_environment(config):
 
 def render_stream_config(config, domain):
     """Render the 443 stream SNI routing configuration."""
-    if not isinstance(domain, str) or not domain.strip():
+    if not isinstance(domain, str) or not _DOMAIN_RE.fullmatch(domain):
         raise NginxError("invalid domain")
     try:
         return _nginx_template_environment(config).get_template(
@@ -60,18 +61,22 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
     """Render the loopback TLS server for subscriptions and the panel."""
     if (
         not isinstance(domain, str)
-        or not domain.strip()
+        or not _DOMAIN_RE.fullmatch(domain)
         or isinstance(panel_port, bool)
         or not isinstance(panel_port, int)
         or not 1 <= panel_port <= 65535
+        or panel_port in (443, 10443, 20443, 30443)
         or not isinstance(panel_base_path, str)
         or not re.fullmatch(r"/[A-Za-z0-9_-]+", panel_base_path)
         or not isinstance(routes_include, str)
         or not routes_include.startswith("/")
+        or any(c in _UNSAFE_PATH_CHARACTERS for c in routes_include)
         or not isinstance(fullchain, str)
         or not fullchain.startswith("/")
+        or any(c in _UNSAFE_PATH_CHARACTERS for c in fullchain)
         or not isinstance(privkey, str)
         or not privkey.startswith("/")
+        or any(c in _UNSAFE_PATH_CHARACTERS for c in privkey)
     ):
         raise NginxError("invalid sub server parameters")
     try:
