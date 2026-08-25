@@ -228,6 +228,61 @@ class Installer:
         )
         return True
 
+    # -- phase 3 ---------------------------------------------------------
+    def issue_certificate(self, domain, cf_token):
+        if not isinstance(domain, str) or not domain.strip():
+            raise InstallerError("invalid_domain")
+        if not isinstance(cf_token, str) or not cf_token.strip():
+            raise InstallerError("missing_cf_token")
+        acme = self.paths.acme_home / "acme.sh"
+        if not acme.is_file():
+            bootstrap = self.repo_root / "private" / "acme-install.sh"
+            bootstrap.parent.mkdir(parents=True, exist_ok=True)
+            self._run(["curl", "-fsSL", "https://get.acme.sh", "-o", str(bootstrap)])
+            self._run(["sh", str(bootstrap), "--home", str(self.paths.acme_home)])
+        environment = {"CF_Token": cf_token}
+        self._run(
+            [
+                str(acme),
+                "--issue",
+                "--dns",
+                "dns_cf",
+                "-d",
+                domain,
+                "-d",
+                "*." + domain,
+                "--keylength",
+                "ec-256",
+                "--server",
+                "letsencrypt",
+                "--home",
+                str(self.paths.acme_home),
+            ],
+            env=environment,
+        )
+        self.paths.ssl_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.paths.ssl_dir, 0o700)
+        self._run(
+            [
+                str(acme),
+                "--install-cert",
+                "-d",
+                domain,
+                "--ecc",
+                "--fullchain-file",
+                str(self.paths.fullchain()),
+                "--key-file",
+                str(self.paths.privkey()),
+                "--reloadcmd",
+                "systemctl reload nginx || true",
+                "--home",
+                str(self.paths.acme_home),
+            ],
+            env=environment,
+        )
+        os.chmod(self.paths.privkey(), 0o600)
+        self._phase_done("certificate")
+
     def _write_file(self, path, contents, mode):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -328,5 +328,81 @@ class NginxPackagePhaseTests(unittest.TestCase):
         self.assertEqual(self.nginx_conf.read_text(encoding="utf-8"), marked)
 
 
+class CertificatePhaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.paths = InstallPaths(
+            ssl_dir=self.root / "ssl",
+            acme_home=self.root / "acme",
+        )
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append({"argv": list(arguments), "env": None})
+        acme = self.paths.acme_home / "acme.sh"
+        if (
+            arguments
+            and arguments[0] == str(acme)
+            and "--install-cert" in arguments
+        ):
+            self.paths.fullchain().parent.mkdir(parents=True, exist_ok=True)
+            self.paths.fullchain().write_text("CERT", encoding="ascii")
+            self.paths.privkey().write_text("KEY", encoding="ascii")
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def test_issues_wildcard_and_installs_cert(self):
+        installer = self._installer()
+        captured = self.runner_calls
+
+        def env_runner(arguments, **kwargs):
+            captured.append({"argv": list(arguments), "env": kwargs.get("env")})
+            if (
+                arguments
+                and arguments[0] == str(installer.paths.acme_home / "acme.sh")
+                and "--install-cert" in arguments
+            ):
+                installer.paths.ssl_dir.mkdir(parents=True, exist_ok=True)
+                installer.paths.fullchain().write_text("CERT", encoding="ascii")
+                installer.paths.privkey().write_text("KEY", encoding="ascii")
+            return subprocess.CompletedProcess(list(arguments), 0)
+
+        installer.runner = env_runner
+        installer.issue_certificate("example.com", "cf-token-value")
+
+        issue = next(call for call in captured if "--issue" in call["argv"])
+        self.assertIn("-d", issue["argv"])
+        self.assertIn("example.com", issue["argv"])
+        self.assertIn("*.example.com", issue["argv"])
+        self.assertIn("dns_cf", issue["argv"])
+        self.assertEqual(issue["env"]["CF_Token"], "cf-token-value")
+        install = next(call for call in captured if "--install-cert" in call["argv"])
+        self.assertIn(str(self.paths.fullchain()), install["argv"])
+        self.assertIn(str(self.paths.privkey()), install["argv"])
+        self.assertTrue(
+            any("get.acme.sh" in " ".join(call["argv"]) for call in captured),
+            "acme.sh bootstrap must be downloaded",
+        )
+        self.assertEqual(self.paths.privkey().stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.paths.ssl_dir.stat().st_mode & 0o777, 0o700)
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn("certificate", state.phases_done)
+
+    def test_rejects_empty_inputs(self):
+        installer = self._installer()
+
+        for domain, token in (("", "t"), ("example.com", ""), (None, "t")):
+            with self.subTest(domain=domain):
+                with self.assertRaisesRegex(InstallerError, "invalid_domain|missing_cf_token"):
+                    installer.issue_certificate(domain, token)
+
+
 if __name__ == "__main__":
     unittest.main()
