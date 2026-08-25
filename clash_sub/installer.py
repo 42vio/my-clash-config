@@ -2,12 +2,20 @@
 
 import json
 import os
+import secrets
 import socket
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from clash_sub.domain import ServiceConfig
+from clash_sub.nginx import (
+    NginxError,
+    activate_nginx_files,
+    render_stream_config,
+    render_sub_server,
+)
 from clash_sub.xui import XuiCompatibilityError, read_panel_port, read_xui_snapshot
 
 _MINIMUM_FREE_BYTES = 1024 ** 3
@@ -282,6 +290,92 @@ class Installer:
         )
         os.chmod(self.paths.privkey(), 0o600)
         self._phase_done("certificate")
+
+    # -- phase 4 ---------------------------------------------------------
+    def activate_nginx(self, *, domain, panel_port):
+        panel_base_path = self.state().panel_base_path or "/p-" + secrets.token_hex(8)
+        config = ServiceConfig(
+            owner_email="pending",
+            subscription_authority="sub.%s:443" % domain,
+            xui_public_endpoint="%s:443" % domain,
+            xui_database=self.paths.xui_database,
+            private_root=self.paths.private_root,
+            public_root=self.paths.public_root,
+            nginx_routes=self.paths.routes_conf,
+            mihomo_binary=Path("/usr/local/lib/clash-sub/mihomo"),
+            nginx_binary=Path("/usr/sbin/nginx"),
+            systemctl_binary=Path("/usr/bin/systemctl"),
+            template_root=self.repo_root / "templates",
+        )
+        stream = render_stream_config(config, domain)
+        sub_server = render_sub_server(
+            config,
+            domain=domain,
+            panel_port=panel_port,
+            panel_base_path=panel_base_path,
+            routes_include=str(self.paths.routes_conf),
+            fullchain=str(self.paths.fullchain()),
+            privkey=str(self.paths.privkey()),
+        )
+        self.paths.stream_conf_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.http_conf_dir.mkdir(parents=True, exist_ok=True)
+        self.paths.routes_conf.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            activate_nginx_files(
+                (
+                    (self.paths.stream_conf(), stream.encode("utf-8"), 0o640),
+                    (self.paths.http_conf(), sub_server.encode("utf-8"), 0o640),
+                    (self.paths.routes_conf, b"# clash-sub routes placeholder\n", 0o640),
+                ),
+                self.runner,
+                nginx_binary="/usr/sbin/nginx",
+            )
+        except NginxError:
+            raise InstallerError("nginx_activation_failed") from None
+        self._phase_done(
+            "nginx_activation",
+            domain=domain,
+            panel_port=panel_port,
+            panel_base_path=panel_base_path,
+        )
+        state = self.state()
+        for path in (
+            self.paths.stream_conf(),
+            self.paths.http_conf(),
+            self.paths.routes_conf,
+        ):
+            if str(path) not in state.files_written:
+                state.files_written.append(str(path))
+        self._save_state(state)
+        self._run(["systemctl", "enable", "--now", "nginx"])
+
+    # -- phase 5 ---------------------------------------------------------
+    def harden_systemd(self):
+        self._write_file(
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
+            "[Service]\nRestart=on-failure\nRestartSec=2s\n",
+            0o644,
+        )
+        assets = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+        for unit in (
+            "clash-sub-traffic.service",
+            "clash-sub-traffic.timer",
+            "clash-sub-recover.service",
+        ):
+            self._write_file(
+                self.paths.systemd_dir / unit,
+                (assets / unit).read_text(encoding="utf-8"),
+                0o644,
+            )
+        drop_in_source = assets / "nginx.service.d" / "clash-sub-recover.conf"
+        self._write_file(
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
+            drop_in_source.read_text(encoding="utf-8"),
+            0o644,
+        )
+        self._run(["systemctl", "daemon-reload"])
+        self._run(["systemctl", "enable", "--now", "clash-sub-traffic.timer"])
+        self._phase_done("systemd_harden")
 
     def _write_file(self, path, contents, mode):
         path = Path(path)

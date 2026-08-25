@@ -1,4 +1,5 @@
 import json
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -402,6 +403,99 @@ class CertificatePhaseTests(unittest.TestCase):
             with self.subTest(domain=domain):
                 with self.assertRaisesRegex(InstallerError, "invalid_domain|missing_cf_token"):
                     installer.issue_certificate(domain, token)
+
+
+class NginxActivationPhaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        (self.root / "templates" / "nginx").mkdir(parents=True)
+        source = Path(__file__).resolve().parents[1] / "templates" / "nginx"
+        for template in source.iterdir():
+            shutil.copy(template, self.root / "templates" / "nginx" / template.name)
+        self.paths = InstallPaths(
+            stream_conf_dir=self.root / "stream-conf.d",
+            http_conf_dir=self.root / "conf.d",
+            routes_conf=self.root / "clash-sub" / "routes.conf",
+            ssl_dir=self.root / "ssl",
+            systemd_dir=self.root / "systemd",
+            nginx_conf=self.root / "nginx.conf",
+        )
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def test_activates_stream_and_sub_server_and_records_state(self):
+        installer = self._installer()
+
+        installer.activate_nginx(domain="example.com", panel_port=2053)
+
+        stream_text = self.paths.stream_conf().read_text(encoding="utf-8")
+        http_text = self.paths.http_conf().read_text(encoding="utf-8")
+        self.assertIn("sub.example.com", stream_text)
+        self.assertIn("sub.example.com", http_text)
+        self.assertIn("/p-", http_text)
+        self.assertIn("127.0.0.1:10443", stream_text)
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn("nginx_activation", state.phases_done)
+        self.assertEqual(state.domain, "example.com")
+        self.assertEqual(state.panel_port, 2053)
+        self.assertTrue(state.panel_base_path.startswith("/p-"))
+        self.assertEqual(
+            state.files_written,
+            [str(self.paths.stream_conf()), str(self.paths.http_conf()), str(self.paths.routes_conf)],
+        )
+        self.assertTrue(self.paths.routes_conf.exists())
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("nginx" in item and "-t" in item for item in joined))
+        self.assertTrue(any("enable" in item and "nginx" in item for item in joined))
+
+    def test_reuses_recorded_panel_base_path(self):
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(panel_base_path="/p-fixedpath"),
+        )
+
+        installer.activate_nginx(domain="example.com", panel_port=2053)
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertEqual(state.panel_base_path, "/p-fixedpath")
+
+    def test_hardens_systemd_units(self):
+        installer = self._installer()
+
+        installer.harden_systemd()
+
+        restart = self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf"
+        self.assertEqual(
+            restart.read_text(encoding="utf-8"),
+            "[Service]\nRestart=on-failure\nRestartSec=2s\n",
+        )
+        traffic = self.paths.systemd_dir / "clash-sub-traffic.service"
+        self.assertTrue(traffic.exists())
+        timer = self.paths.systemd_dir / "clash-sub-traffic.timer"
+        self.assertTrue(timer.exists())
+        recover = self.paths.systemd_dir / "clash-sub-recover.service"
+        self.assertTrue(recover.exists())
+        recover_drop_in = (
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf"
+        )
+        self.assertTrue(recover_drop_in.exists())
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("daemon-reload" in item for item in joined))
+        self.assertTrue(any("enable" in item and "clash-sub-traffic.timer" in item for item in joined))
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn("systemd_harden", state.phases_done)
 
 
 if __name__ == "__main__":
