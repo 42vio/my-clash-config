@@ -1,6 +1,7 @@
 import base64
 import grp
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -14,12 +15,21 @@ from clash_sub.state import load_state, save_state
 import clash_sub.nginx as nginx_module
 
 try:
-    from clash_sub.nginx import NginxError, activate_runtime, recover_runtime, render_routes
+    from clash_sub.nginx import (
+        NginxError,
+        activate_runtime,
+        recover_runtime,
+        render_routes,
+        render_stream_config,
+        render_sub_server,
+    )
 except ImportError:
     NginxError = RuntimeError
     activate_runtime = None
     recover_runtime = None
     render_routes = None
+    render_stream_config = None
+    render_sub_server = None
 
 
 def token(byte, code):
@@ -750,6 +760,66 @@ class LightweightNginxTests(unittest.TestCase):
                 ("/usr/bin/systemctl", "reload", "nginx"),
             ],
         )
+
+
+class NginxTemplateRenderTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.template_root = Path(self.tempdir.name) / "templates" / "nginx"
+        self.template_root.mkdir(parents=True)
+        source_root = Path(__file__).resolve().parents[1] / "templates" / "nginx"
+        for template in source_root.iterdir():
+            shutil.copy(template, self.template_root / template.name)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _config(self):
+        return ServiceConfig(
+            owner_email="owner-example",
+            subscription_authority="sub.example.com:443",
+            xui_public_endpoint="example.com:443",
+            xui_database=Path("/etc/x-ui/x-ui.db"),
+            private_root=Path("/var/lib/clash-sub/private"),
+            public_root=Path("/var/lib/clash-sub/public"),
+            nginx_routes=Path("/etc/nginx/clash-sub/routes.conf"),
+            mihomo_binary=Path("/usr/local/lib/clash-sub/mihomo"),
+            nginx_binary=Path("/usr/sbin/nginx"),
+            systemctl_binary=Path("/usr/bin/systemctl"),
+            template_root=self.template_root.parent,
+        )
+
+    def test_renders_stream_map_with_default_reality(self):
+        rendered = render_stream_config(self._config(), "example.com")
+
+        self.assertIn("map $ssl_preread_server_name", rendered)
+        self.assertIn("sub.example.com", rendered)
+        self.assertIn("127.0.0.1:30443", rendered)
+        self.assertIn("trojan.example.com", rendered)
+        self.assertIn("127.0.0.1:20443", rendered)
+        self.assertIn("default", rendered)
+        self.assertIn("127.0.0.1:10443", rendered)
+        self.assertIn("ssl_preread on;", rendered)
+        self.assertIn("listen 443;", rendered)
+
+    def test_renders_sub_server_with_panel_and_routes(self):
+        rendered = render_sub_server(
+            self._config(),
+            domain="example.com",
+            panel_port=2053,
+            panel_base_path="/p-1a2b3c4d",
+            routes_include="/etc/nginx/clash-sub/routes.conf",
+            fullchain="/etc/ssl/domain/fullchain.pem",
+            privkey="/etc/ssl/domain/privkey.pem",
+        )
+
+        self.assertIn("listen 127.0.0.1:30443 ssl;", rendered)
+        self.assertIn("server_name sub.example.com;", rendered)
+        self.assertIn("ssl_certificate /etc/ssl/domain/fullchain.pem;", rendered)
+        self.assertIn("include /etc/nginx/clash-sub/routes.conf;", rendered)
+        self.assertIn("location = /p-1a2b3c4d {", rendered)
+        self.assertIn("proxy_pass http://127.0.0.1:2053/p-1a2b3c4d/;", rendered)
+        self.assertIn("limit_req_zone $binary_remote_addr zone=clash_subscription", rendered)
 
 
 if __name__ == "__main__":

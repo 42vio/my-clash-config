@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, RuntimeState, ServiceConfig, XuiClient
 from clash_sub.state import TOKEN_RE, _state_to_payload
 
@@ -27,6 +29,66 @@ _TITLES = {
 
 class NginxError(RuntimeError):
     pass
+
+
+def _nginx_template_environment(config):
+    directory = Path(config.template_root) / "nginx"
+    if not directory.is_dir():
+        raise NginxError("invalid service configuration")
+    return Environment(
+        loader=FileSystemLoader(str(directory)),
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+    )
+
+
+def render_stream_config(config, domain):
+    """Render the 443 stream SNI routing configuration."""
+    if not isinstance(domain, str) or not domain.strip():
+        raise NginxError("invalid domain")
+    try:
+        return _nginx_template_environment(config).get_template(
+            "stream.conf.j2"
+        ).render(domain=domain)
+    except NginxError:
+        raise
+    except Exception:
+        raise NginxError("stream rendering failed") from None
+
+
+def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_include, fullchain, privkey):
+    """Render the loopback TLS server for subscriptions and the panel."""
+    if (
+        not isinstance(domain, str)
+        or not domain.strip()
+        or isinstance(panel_port, bool)
+        or not isinstance(panel_port, int)
+        or not 1 <= panel_port <= 65535
+        or not isinstance(panel_base_path, str)
+        or not re.fullmatch(r"/[A-Za-z0-9_-]+", panel_base_path)
+        or not isinstance(routes_include, str)
+        or not routes_include.startswith("/")
+        or not isinstance(fullchain, str)
+        or not fullchain.startswith("/")
+        or not isinstance(privkey, str)
+        or not privkey.startswith("/")
+    ):
+        raise NginxError("invalid sub server parameters")
+    try:
+        return _nginx_template_environment(config).get_template(
+            "sub-server.conf.j2"
+        ).render(
+            domain=domain,
+            panel_port=panel_port,
+            panel_base_path=panel_base_path,
+            routes_include=routes_include,
+            fullchain=fullchain,
+            privkey=privkey,
+        )
+    except NginxError:
+        raise
+    except Exception:
+        raise NginxError("sub server rendering failed") from None
 
 
 def render_routes(config, state, clients):
