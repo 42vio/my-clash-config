@@ -889,6 +889,7 @@ class ActivateNginxFilesTests(unittest.TestCase):
 
         self.assertEqual(self.target.read_bytes(), contents)
         self.assertEqual(self.target.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(len(self.runner_calls), 1)
         self.assertEqual(self.runner_calls[0][:2], ["/usr/sbin/nginx", "-t"])
 
     def test_restores_previous_contents_when_validation_fails(self):
@@ -920,6 +921,49 @@ class ActivateNginxFilesTests(unittest.TestCase):
     def test_rejects_relative_path(self):
         with self.assertRaisesRegex(NginxError, "invalid nginx file"):
             self._activate(((Path("relative.conf"), b"x", 0o640),))
+
+    def test_multi_file_install_rolls_back_mixed_targets(self):
+        existing = self.root / "conf.d" / "existing.conf"
+        existing.write_text("# keep\n", encoding="utf-8")
+        os.chmod(existing, 0o600)
+        fresh = self.root / "conf.d" / "fresh.conf"
+        self.fail_validation = True
+
+        with self.assertRaisesRegex(NginxError, "Nginx validation failed"):
+            self._activate(
+                (
+                    (existing, b"# replaced\n", 0o640),
+                    (fresh, b"# new\n", 0o640),
+                )
+            )
+
+        self.assertEqual(existing.read_text(encoding="utf-8"), "# keep\n")
+        self.assertEqual(existing.stat().st_mode & 0o777, 0o600)
+        self.assertFalse(fresh.exists())
+        self.assertEqual(
+            [name for name in os.listdir(self.target.parent) if name.startswith(".")],
+            [],
+        )
+
+    def test_reload_failure_restores_previous_contents(self):
+        self.target.write_text("# old\n", encoding="utf-8")
+        os.chmod(self.target, 0o640)
+
+        def runner(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            returncode = 1 if arguments[:2] == ["/usr/bin/systemctl", "reload"] else 0
+            return subprocess.CompletedProcess(arguments, returncode)
+
+        with self.assertRaisesRegex(NginxError, "Nginx reload failed"):
+            activate_nginx_files(
+                ((self.target, b"# new\n", 0o640),),
+                runner,
+                nginx_binary="/usr/sbin/nginx",
+                systemctl_binary="/usr/bin/systemctl",
+                reload=True,
+            )
+
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# old\n")
 
 
 if __name__ == "__main__":
