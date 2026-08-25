@@ -175,10 +175,10 @@ class AcceptanceHarness:
             raise AssertionError("state save/load must preserve reconciled identities")
         self.xui_bodies = {
             self.source_urls[self.owner_id]: self._document(
-                [self._proxy("Owner 3x-ui", "owner-current")]
+                [self._proxy("Owner 3x-ui", "owner-current", port=10443)]
             ),
             self.source_urls[self.member_id]: self._document(
-                [self._proxy("Member 3x-ui", "member-current")]
+                [self._proxy("Member 3x-ui", "member-current", port=10443)]
             ),
         }
         write_proxy_snapshot(
@@ -210,12 +210,12 @@ class AcceptanceHarness:
         )
 
     @staticmethod
-    def _proxy(name, password):
+    def _proxy(name, password, port=443):
         return {
             "name": name,
             "type": "trojan",
             "server": "node.example.test",
-            "port": 443,
+            "port": port,
             "password": password,
         }
 
@@ -245,7 +245,7 @@ class AcceptanceHarness:
 
     def set_xui_proxy(self, client_id, name):
         self.xui_bodies[self.source_urls[client_id]] = self._document(
-            [self._proxy(name, "%s-password" % name.lower().replace(" ", "-"))]
+            [self._proxy(name, "%s-password" % name.lower().replace(" ", "-"), port=10443)]
         )
 
     def set_traffic(self, client_id, upload, download):

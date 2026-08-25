@@ -7,6 +7,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, RuntimeState
+from clash_sub.sources import normalize_xui_endpoints
 from clash_sub.state import StateError
 
 class ServiceError(RuntimeError):
@@ -142,7 +143,7 @@ class ClashSubService:
             self._observe(next_state); self._journal(self._clock(),())
             return {"owner_client_id":client_id}
     def _prepare(self,client,owner,url,airport,home,tokens,transient=None,candidates=None):
-        xui=self._fetch(url,self.config.max_source_bytes); bundle=self._render(owner,xui,airport,home,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
+        xui=normalize_xui_endpoints(self._fetch(url,self.config.max_source_bytes),self.config.xui_public_endpoint); bundle=self._render(owner,xui,airport,home,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
         for text in bundle.values(): self._validate(text,forbidden)
         release=self._releases.prepare(client.client_id,bundle,{"inputs":_digest(xui,airport,home)})
         if release:

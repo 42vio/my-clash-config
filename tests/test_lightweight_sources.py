@@ -19,6 +19,7 @@ from clash_sub.sources import (
     fetch_xui_proxies,
     load_proxy_snapshot,
     merge_proxy_sources,
+    normalize_xui_endpoints,
     parse_subscription_userinfo,
     write_proxy_snapshot,
 )
@@ -331,3 +332,52 @@ class TrafficHeaderTests(unittest.TestCase):
             with self.subTest(value=value[:32]):
                 with self.assertRaises(SourceError):
                     parse_subscription_userinfo(value)
+
+
+class EndpointNormalizationTests(unittest.TestCase):
+    def setUp(self):
+        self.proxies = [
+            {
+                "name": "reality-node",
+                "type": "vless",
+                "server": "panel.example.com",
+                "port": 10443,
+                "uuid": "uuid-value",
+                "tls": True,
+                "servername": "www.example.com",
+                "reality-opts": {"public-key": "key", "short-id": "sid"},
+            }
+        ]
+
+    def test_rewrites_server_and_port_only(self):
+        normalized = normalize_xui_endpoints(self.proxies, "example.com:443")
+
+        self.assertEqual(normalized[0]["server"], "example.com")
+        self.assertEqual(normalized[0]["port"], 443)
+        self.assertEqual(normalized[0]["servername"], "www.example.com")
+        self.assertEqual(normalized[0]["uuid"], "uuid-value")
+        self.assertEqual(normalized[0]["reality-opts"]["public-key"], "key")
+
+    def test_rejects_node_with_unexpected_inbound_port(self):
+        self.proxies[0]["port"] = 10544
+
+        with self.assertRaisesRegex(SourceError, "proxy source rejected"):
+            normalize_xui_endpoints(self.proxies, "example.com:443")
+
+    def test_rejects_node_without_port(self):
+        del self.proxies[0]["port"]
+
+        with self.assertRaisesRegex(SourceError, "proxy source rejected"):
+            normalize_xui_endpoints(self.proxies, "example.com:443")
+
+    def test_rejects_invalid_endpoint(self):
+        for endpoint in ("", "example.com", "https://example.com:443", "example.com:8443"):
+            with self.assertRaisesRegex(SourceError, "proxy source rejected"):
+                normalize_xui_endpoints(self.proxies, endpoint)
+
+    def test_does_not_mutate_input(self):
+        original = copy.deepcopy(self.proxies)
+
+        normalize_xui_endpoints(self.proxies, "example.com:443")
+
+        self.assertEqual(self.proxies, original)

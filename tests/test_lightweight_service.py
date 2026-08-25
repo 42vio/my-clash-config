@@ -179,7 +179,7 @@ class ServiceTests(unittest.TestCase):
         self.fetch_calls.append(url)
         if self.fail_client and url.endswith("/%s" % self.fail_client):
             raise RuntimeError("source URL should never escape")
-        return [{"name": "Node " + url.rsplit("/", 1)[-1]}]
+        return [{"name": "Node " + url.rsplit("/", 1)[-1], "server": "panel.example.test", "port": 10443}]
 
     def _render(self, is_owner, xui, airport, home, template_root):
         self.generator_calls.append(is_owner)

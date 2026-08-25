@@ -24,6 +24,7 @@ _USERINFO_ERROR = "subscription traffic rejected"
 _TIMEOUT_SECONDS = 15
 _MAX_AIRPORT_REDIRECTS = 3
 _MAX_USERINFO_BYTES = 512
+XUI_INBOUND_PORT = 10443
 
 
 def fetch_xui_proxies(url, max_bytes, opener=None):
@@ -91,6 +92,20 @@ def write_proxy_snapshot(path, proxies):
         raise
     except (OSError, TypeError, ValueError, yaml.YAMLError, UnicodeError):
         _snapshot_fail()
+
+
+def normalize_xui_endpoints(proxies, endpoint):
+    """Rewrite 3x-ui node addresses to the public entry endpoint."""
+    host, port = _parse_public_endpoint(endpoint)
+    normalized = []
+    for proxy in _normalize_proxies({"proxies": proxies}):
+        copied = copy.deepcopy(proxy)
+        if copied.get("port") != XUI_INBOUND_PORT or not isinstance(copied.get("server"), str):
+            _source_fail()
+        copied["server"] = host
+        copied["port"] = port
+        normalized.append(copied)
+    return normalized
 
 
 def merge_proxy_sources(labeled_sources):
@@ -238,6 +253,28 @@ def _normalize_proxies(document):
             _source_fail()
         normalized.append(copy.deepcopy(dict(proxy)))
     return normalized
+
+
+def _parse_public_endpoint(endpoint):
+    if not isinstance(endpoint, str):
+        _source_fail()
+    try:
+        parts = urlsplit("//" + endpoint)
+        host, port = parts.hostname, parts.port
+        valid = (
+            host is not None
+            and port == 443
+            and parts.username is None
+            and parts.password is None
+            and not parts.path
+            and not parts.query
+            and not parts.fragment
+        )
+    except ValueError:
+        _source_fail()
+    if not valid:
+        _source_fail()
+    return host, port
 
 
 def _valid_xui_url(url):
