@@ -121,9 +121,10 @@ class AcceptanceHarness:
         config_path.write_text(
             "\n".join(
                 (
-                    "schema-version: 1",
+                    "schema-version: 2",
                     "owner-email: owner@example.test",
-                    "subscription-authority: sub.example.test:8443",
+                    "subscription-authority: sub.example.test:443",
+                    "xui-public-endpoint: example.com:443",
                     "xui-database: %s" % self.database,
                     "private-root: %s" % self.private_root,
                     "public-root: %s" % self.public_root,
@@ -370,7 +371,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
                 self.assertIn("-%s/" % item["readable_code"], url)
                 self.assertRegex(
                     url,
-                    r"^https://sub\.example\.test:8443/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/clash-(?:balanced|standard|privacy)\.yaml$",
+                    r"^https://sub\.example\.test:443/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/clash-(?:balanced|standard|privacy)\.yaml$",
                 )
 
     def test_routes_authorize_only_exact_token_user_and_variant_combinations(self):

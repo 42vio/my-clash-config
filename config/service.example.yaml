@@ -1,6 +1,7 @@
-schema-version: 1
+schema-version: 2
 owner-email: owner-example
-subscription-authority: sub.example.com:8443
+subscription-authority: sub.example.com:443
+xui-public-endpoint: example.com:443
 xui-database: /etc/x-ui/x-ui.db
 private-root: /var/lib/clash-sub/private
 public-root: /var/lib/clash-sub/public

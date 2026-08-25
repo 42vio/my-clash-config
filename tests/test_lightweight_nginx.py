@@ -48,6 +48,7 @@ class LightweightNginxTests(unittest.TestCase):
         self.config = ServiceConfig(
             owner_email="owner@example.invalid",
             subscription_authority="sub.example.invalid:8443",
+            xui_public_endpoint="example.com:443",
             xui_database=root / "x-ui.db",
             private_root=self.private_root,
             public_root=self.public_root,

@@ -21,9 +21,10 @@ from clash_sub.domain import (
 
 
 CONFIG = """\
-schema-version: 1
+schema-version: 2
 owner-email: owner-example
-subscription-authority: sub.example.com:8443
+subscription-authority: sub.example.com:443
+xui-public-endpoint: example.com:443
 xui-database: /etc/x-ui/x-ui.db
 private-root: /var/lib/clash-sub/private
 public-root: /var/lib/clash-sub/public
@@ -56,7 +57,7 @@ class LightweightConfigTests(unittest.TestCase):
         config = load_config(self.path, self.root)
 
         self.assertEqual(config.owner_email, "owner-example")
-        self.assertEqual(config.subscription_authority, "sub.example.com:8443")
+        self.assertEqual(config.subscription_authority, "sub.example.com:443")
         self.assertEqual(VARIANTS, ("balanced", "standard", "privacy"))
         self.assertEqual(OWNER_VARIANTS, VARIANTS)
         self.assertEqual(MEMBER_VARIANTS, ("standard",))
@@ -131,17 +132,40 @@ class LightweightConfigTests(unittest.TestCase):
     def test_rejects_authority_with_url_scheme(self):
         self.write_config(
             replacement=CONFIG.replace(
-                "sub.example.com:8443", "https://sub.example.com:8443"
+                "sub.example.com:443", "https://sub.example.com:443"
             )
         )
 
         with self.assertRaisesRegex(ConfigError, "subscription authority"):
             load_config(self.path, self.root)
 
-    def test_rejects_authority_without_port_8443(self):
-        self.write_config(replacement=CONFIG.replace("sub.example.com:8443", "sub.example.com"))
+    def test_rejects_authority_without_port_443(self):
+        self.write_config(replacement=CONFIG.replace("sub.example.com:443", "sub.example.com"))
 
-        with self.assertRaisesRegex(ConfigError, "8443"):
+        with self.assertRaisesRegex(ConfigError, "443"):
+            load_config(self.path, self.root)
+
+    def test_loads_public_endpoint(self):
+        config = load_config(self.path, self.root)
+
+        self.assertEqual(config.xui_public_endpoint, "example.com:443")
+
+    def test_rejects_missing_public_endpoint(self):
+        self.write_config(replacement=CONFIG.replace("xui-public-endpoint: example.com:443\n", ""))
+
+        with self.assertRaisesRegex(ConfigError, "missing required configuration"):
+            load_config(self.path, self.root)
+
+    def test_rejects_public_endpoint_without_port_443(self):
+        self.write_config(replacement=CONFIG.replace("example.com:443\nxui-database", "example.com\nxui-database"))
+
+        with self.assertRaisesRegex(ConfigError, "public endpoint"):
+            load_config(self.path, self.root)
+
+    def test_rejects_schema_version_1(self):
+        self.write_config(replacement=CONFIG.replace("schema-version: 2", "schema-version: 1"))
+
+        with self.assertRaisesRegex(ConfigError, "schema"):
             load_config(self.path, self.root)
 
     def test_rejects_empty_owner_email(self):

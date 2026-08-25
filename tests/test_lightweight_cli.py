@@ -23,6 +23,7 @@ def recovery_config(private_root):
     return ServiceConfig(
         "owner",
         "sub.example.test:8443",
+        "example.com:443",
         root / "xui",
         private_root,
         root / "public",
@@ -418,7 +419,7 @@ class LightweightCliTests(unittest.TestCase):
     def test_default_factory_uses_private_repo_config_and_injects_subprocess_runner(self):
         root = Path(__file__).resolve().parents[1]
         config = ServiceConfig(
-            "owner", "sub.example.test:8443", Path("/xui"), Path("/private"), Path("/public"),
+            "owner", "sub.example.test:8443", "example.com:443", Path("/xui"), Path("/private"), Path("/public"),
             Path("/routes"), Path("/mihomo"), Path("/nginx"), Path("/systemctl"), Path("/templates"),
         )
         built = []

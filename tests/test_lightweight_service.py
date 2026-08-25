@@ -127,7 +127,7 @@ class ServiceTests(unittest.TestCase):
         private_root.mkdir(parents=True)
         os.chmod(private_root, 0o700)
         self.clock_value = 1750000000.0
-        self.config = ServiceConfig("owner@example.test", "sub.example.test:8443", root / "xui.db", private_root, root / "public", root / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), root / "templates")
+        self.config = ServiceConfig("owner@example.test", "sub.example.test:8443", "example.com:443", root / "xui.db", private_root, root / "public", root / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), root / "templates")
         self.generator_calls = []
         self.mihomo_calls = []
         self.fetch_calls = []

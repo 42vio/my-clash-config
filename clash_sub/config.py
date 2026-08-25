@@ -16,6 +16,7 @@ _CONFIG_KEYS = {
     "schema-version",
     "owner-email",
     "subscription-authority",
+    "xui-public-endpoint",
     "xui-database",
     "private-root",
     "public-root",
@@ -52,11 +53,12 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
     missing = _CONFIG_KEYS - set(data)
     if missing:
         raise ConfigError("missing required configuration")
-    if data["schema-version"] != 1 or isinstance(data["schema-version"], bool):
+    if data["schema-version"] != 2 or isinstance(data["schema-version"], bool):
         raise ConfigError("unsupported configuration schema")
 
     owner_email = _nonempty_string(data["owner-email"], "owner email")
     subscription_authority = _subscription_authority(data["subscription-authority"])
+    xui_public_endpoint = _xui_public_endpoint(data["xui-public-endpoint"])
     configured_paths = {
         field: _absolute_path(data[key]) for key, field in _PATH_KEYS.items()
     }
@@ -71,6 +73,7 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
     return ServiceConfig(
         owner_email=owner_email,
         subscription_authority=subscription_authority,
+        xui_public_endpoint=xui_public_endpoint,
         template_root=Path(repo_root) / "templates",
         max_source_bytes=max_source_bytes,
         **configured_paths,
@@ -114,7 +117,7 @@ def _subscription_authority(value: Any) -> str:
         parsed = urlsplit("//" + authority)
         valid = (
             parsed.hostname is not None
-            and parsed.port == 8443
+            and parsed.port == 443
             and parsed.username is None
             and parsed.password is None
             and not parsed.path
@@ -124,8 +127,30 @@ def _subscription_authority(value: Any) -> str:
     except ValueError:
         valid = False
     if not valid:
-        raise ConfigError("subscription authority must use port 8443")
+        raise ConfigError("subscription authority must use port 443")
     return authority
+
+
+def _xui_public_endpoint(value: Any) -> str:
+    endpoint = _nonempty_string(value, "xui public endpoint")
+    if "://" in endpoint or any(character.isspace() for character in endpoint):
+        raise ConfigError("invalid xui public endpoint")
+    try:
+        parsed = urlsplit("//" + endpoint)
+        valid = (
+            parsed.hostname is not None
+            and parsed.port == 443
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.path
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigError("xui public endpoint must use port 443")
+    return endpoint
 
 
 def _absolute_path(value: Any) -> Path:

@@ -14,6 +14,7 @@ MEMBER_VARIANTS = ("standard",)
 class ServiceConfig:
     owner_email: str
     subscription_authority: str
+    xui_public_endpoint: str
     xui_database: Path
     private_root: Path
     public_root: Path
