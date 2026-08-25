@@ -164,7 +164,7 @@ def _validate_reality_inbound(connection) -> None:
     ]
     if (
         len(reality) != 1
-        or reality[0][2] not in (0, 1)
+        or reality[0][2] != 1
         or reality[0][0] != _REALITY_INBOUND_PORT
     ):
         _fail()

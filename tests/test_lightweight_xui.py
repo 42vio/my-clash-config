@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
 
-from clash_sub.xui import XuiCompatibilityError, read_xui_snapshot
+from clash_sub.xui import XuiCompatibilityError, read_panel_port, read_xui_snapshot
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "xui-3.6.0.sql"
@@ -245,6 +245,11 @@ class XuiSnapshotTests(unittest.TestCase):
             connection.execute("UPDATE inbounds SET port = 10544 WHERE id = 1")
         self.assert_incompatible()
 
+    def test_rejects_disabled_reality_inbound(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE inbounds SET enable = 0 WHERE id = 1")
+        self.assert_incompatible()
+
     def test_allows_non_reality_inbound_for_future_extension(self):
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute(
@@ -259,14 +264,15 @@ class XuiSnapshotTests(unittest.TestCase):
             connection.execute("DROP TABLE inbounds")
         self.assert_incompatible()
 
-    def test_read_panel_port_returns_web_port(self):
-        from clash_sub.xui import read_panel_port
+    def test_rejects_empty_inbounds_table(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("DELETE FROM inbounds")
+        self.assert_incompatible()
 
+    def test_read_panel_port_returns_web_port(self):
         self.assertEqual(read_panel_port(self.database), 2053)
 
     def test_read_panel_port_rejects_invalid_port(self):
-        from clash_sub.xui import read_panel_port
-
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("UPDATE settings SET value = 'not-a-port' WHERE key = 'port'")
         with self.assertRaises(XuiCompatibilityError):
