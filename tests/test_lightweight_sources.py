@@ -14,6 +14,7 @@ from urllib.request import Request
 from clash_sub.domain import Traffic
 from clash_sub.sources import (
     SourceError,
+    XUI_INBOUND_PORT,
     _HttpsRedirectHandler,
     download_airport_proxies,
     fetch_xui_proxies,
@@ -372,8 +373,9 @@ class EndpointNormalizationTests(unittest.TestCase):
 
     def test_rejects_invalid_endpoint(self):
         for endpoint in ("", "example.com", "https://example.com:443", "example.com:8443"):
-            with self.assertRaisesRegex(SourceError, "proxy source rejected"):
-                normalize_xui_endpoints(self.proxies, endpoint)
+            with self.subTest(endpoint=endpoint):
+                with self.assertRaisesRegex(SourceError, "proxy source rejected"):
+                    normalize_xui_endpoints(self.proxies, endpoint)
 
     def test_does_not_mutate_input(self):
         original = copy.deepcopy(self.proxies)
@@ -381,3 +383,8 @@ class EndpointNormalizationTests(unittest.TestCase):
         normalize_xui_endpoints(self.proxies, "example.com:443")
 
         self.assertEqual(self.proxies, original)
+
+    def test_inbound_port_constant_matches_xui_gate(self):
+        from clash_sub import xui as xui_module
+
+        self.assertEqual(XUI_INBOUND_PORT, xui_module._REALITY_INBOUND_PORT)

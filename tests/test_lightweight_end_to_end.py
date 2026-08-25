@@ -344,15 +344,22 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
             variant: [proxy["name"] for proxy in yaml.safe_load(path.read_text())["proxies"]]
             for variant, path in owner.public_paths.items()
         }
-        member_names = [
-            proxy["name"]
-            for proxy in yaml.safe_load(member.public_paths["standard"].read_text())["proxies"]
-        ]
+        member_standard = yaml.safe_load(member.public_paths["standard"].read_text())["proxies"]
+        member_names = [proxy["name"] for proxy in member_standard]
 
         self.assertEqual(owner_names["balanced"], ["Owner 3x-ui", "Airport", "Home"])
         self.assertEqual(owner_names["standard"], ["Owner 3x-ui", "Airport"])
         self.assertEqual(owner_names["privacy"], ["Owner 3x-ui", "Airport", "Home"])
         self.assertEqual(member_names, ["Member 3x-ui"])
+
+        owner_standard = yaml.safe_load(owner.public_paths["standard"].read_text())["proxies"]
+        owner_xui = next(proxy for proxy in owner_standard if proxy["name"] == "Owner 3x-ui")
+        self.assertEqual((owner_xui["server"], owner_xui["port"]), ("example.com", 443))
+        self.assertEqual(
+            [(proxy["server"], proxy["port"]) for proxy in member_standard],
+            [("example.com", 443)],
+        )
+        self.assertNotIn("node.example.test", member.public_paths["standard"].read_text())
         harness.assert_lock_and_markers(self)
 
     def test_links_are_anonymous_full_urls_with_unique_readable_codes(self):
