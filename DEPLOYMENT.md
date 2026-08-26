@@ -8,7 +8,8 @@
 
 1. 域名 NS 托管在 Cloudflare。
 2. 添加 DNS 记录：`sub.<你的域名>` → A 记录 → VPS 公网 IP（仅此一条必须；Reality 客户端连的 server 也用这个域名）。
-3. 创建 API Token：权限 Zone → DNS → Edit，Zone Resources 限定该域名。安装时粘贴一次。
+3. A 记录须为「仅 DNS」（灰云，不开橙色云代理），否则解析到 Cloudflare 节点会导致 preflight 失败且 Reality 不可用。
+4. 创建 API Token：权限 Zone → DNS → Edit，Zone Resources 限定该域名。安装时粘贴一次。
 
 ## Phase 1：基础代理（手动，约 10 分钟）
 
@@ -53,6 +54,7 @@ ss -tlnp | grep -E '443|10443|30443'
 ~~~
 
 - `ss` 输出：443=nginx；10443/30443 仅 127.0.0.1（收口后）
+- `ss -tlnp | grep ':80 '`：应无输出（默认站点已移除；如有输出说明 default site 残留）
 - `clash-sub sync && clash-sub links`：订阅 URL 以 https://sub.<域名>/s/<token>/ 开头（443 端口）
 - `clash-sub status`：状态正常；`clash-sub cert`：证书到期时间
 - 面板：install 报告输出的 https://sub.<域名>/<panel-path>/
@@ -63,7 +65,7 @@ ss -tlnp | grep -E '443|10443|30443'
 - `clash-sub backup`：全量备份到 backups/（含 x-ui.db、运行时 private/、nginx 配置）
 - `clash-sub update`：git pull + 依赖同步 + nginx 配置重渲染（变更前自动快照）
 - `clash-sub cert` / `clash-sub cert --renew`：证书状态 / 强制续期
-- `clash-sub rollback --install`：回滚整合安装（Reality 回到公网 10443 直连，代理不断）
+- `clash-sub rollback --install`：回滚整合安装（Reality 回到公网 10443 直连，代理不断）（注：收口后 Reality 监听 127.0.0.1，回滚需同时在 3x-ui 面板把入站 listen 改回 0.0.0.0 才能恢复公网直连）
 
 日常运维（机场更新、流量、历史、版本回滚、轮换）见 [docs/operations.md](docs/operations.md)；
 重装恢复与域名变更见 [docs/recovery.md](docs/recovery.md)。

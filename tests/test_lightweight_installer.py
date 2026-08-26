@@ -329,6 +329,68 @@ class NginxPackagePhaseTests(unittest.TestCase):
         self.assertEqual(self.nginx_conf.read_text(encoding="utf-8"), marked)
 
 
+class DefaultSiteRemovalTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        base = Path(self.tempdir.name).resolve()
+        self.available = base / "sites-available" / "default"
+        self.available.parent.mkdir(parents=True)
+        self.available.write_text("server { listen 80; }\n", encoding="utf-8")
+        self.enabled_dir = base / "sites-enabled"
+        self.enabled_dir.mkdir()
+        self.paths = InstallPaths(nginx_conf=self.root / "nginx.conf")
+        self.paths.nginx_conf.write_text("http {\n}\n", encoding="utf-8")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _installer(self):
+        return Installer(
+            self.root,
+            paths=self.paths,
+            runner=lambda arguments, **_: subprocess.CompletedProcess(list(arguments), 0),
+        )
+
+    def test_removes_stock_default_site_symlink(self):
+        installer = self._installer()
+        enabled = self.enabled_dir / "default"
+        enabled.symlink_to(self.available)
+
+        self.assertTrue(installer._remove_default_site_at(enabled, self.available))
+        self.assertFalse(enabled.exists() or enabled.is_symlink())
+        self.assertTrue(self.available.exists())
+
+    def test_keeps_non_default_link(self):
+        installer = self._installer()
+        other_target = self.enabled_dir.parent / "sites-available" / "other"
+        other_target.write_text("# other\n", encoding="utf-8")
+        enabled = self.enabled_dir / "default"
+        enabled.symlink_to(other_target)
+
+        self.assertFalse(installer._remove_default_site_at(enabled, self.available))
+        self.assertTrue(enabled.is_symlink())
+
+    def test_missing_link_is_noop(self):
+        installer = self._installer()
+
+        self.assertFalse(
+            installer._remove_default_site_at(
+                self.enabled_dir / "default", self.available
+            )
+        )
+
+    def test_install_nginx_packages_removes_default_site(self):
+        installer = self._installer()
+        with patch.object(
+            Installer, "_remove_default_site", return_value=True
+        ) as remover:
+            installer.install_nginx_packages()
+
+        remover.assert_called_once()
+
+
 class CertificatePhaseTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()

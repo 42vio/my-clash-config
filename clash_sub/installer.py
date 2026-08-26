@@ -220,8 +220,28 @@ class Installer:
                 "libnginx-mod-stream",
             ]
         )
+        self._remove_default_site()
         self._ensure_stream_include()
         self._phase_done("nginx_packages")
+
+    def _remove_default_site(self):
+        return self._remove_default_site_at(
+            Path("/etc/nginx/sites-enabled/default"),
+            Path("/etc/nginx/sites-available/default"),
+        )
+
+    def _remove_default_site_at(self, enabled, available):
+        try:
+            resolved = enabled.resolve(strict=True)
+        except OSError:
+            return False
+        if resolved != available:
+            return False
+        try:
+            enabled.unlink()
+        except OSError:
+            raise InstallerError("default_site_removal_failed") from None
+        return True
 
     def _ensure_stream_include(self):
         marker = "# clash-sub stream include"
