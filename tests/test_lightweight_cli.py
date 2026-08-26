@@ -492,5 +492,42 @@ class LightweightCliTests(unittest.TestCase):
             self.assertTrue(recorded[0].endswith("clash-sub"), recorded)
 
 
+class InstallCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.stderr = io.StringIO()
+
+    def test_install_requires_root(self):
+        with patch("clash_sub.cli.Installer") as installer:
+            installer.return_value.install.return_value = {}
+            with patch("clash_sub.installer.os.geteuid", return_value=1000):
+                code = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(code, 1)
+        self.assertIn("not_root", self.stderr.getvalue())
+
+    def test_rollback_install_flag_requires_root(self):
+        with patch("clash_sub.cli.Installer"):
+            with patch("clash_sub.installer.os.geteuid", return_value=1000):
+                code = main(["rollback", "--install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(code, 1)
+        self.assertIn("not_root", self.stderr.getvalue())
+
+    def test_rollback_rejects_install_flag_with_positionals(self):
+        code = main(["rollback", "--install", "1", "release-id"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("invalid_command", self.stderr.getvalue())
+
+    def test_rollback_still_accepts_user_release(self):
+        with patch("clash_sub.cli.build_service") as factory:
+            service = factory.return_value
+            service.rollback.return_value = None
+            code = main(["rollback", "1", "release-id"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(code, 0)
+        service.rollback.assert_called_once_with(1, "release-id")
+
+
 if __name__ == "__main__":
     unittest.main()

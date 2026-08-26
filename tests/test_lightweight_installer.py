@@ -661,13 +661,23 @@ class RollbackInstallTests(unittest.TestCase):
 
     def test_rolls_back_install_artifacts(self):
         installer = self._installer()
+        systemd_units = (
+            self.paths.systemd_dir / "clash-sub-traffic.service",
+            self.paths.systemd_dir / "clash-sub-traffic.timer",
+            self.paths.systemd_dir / "clash-sub-recover.service",
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
+        )
+        for unit in systemd_units:
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            unit.write_text("# unit\n", encoding="utf-8")
         save_install_state(
             self.root / "private" / "install-state.json",
             InstallState(
                 domain="example.com",
                 panel_port=2053,
                 panel_base_path="/p-x",
-                phases_done=["nginx_activation"],
+                phases_done=["nginx_activation", "systemd_harden"],
                 files_written=[
                     str(self.paths.stream_conf()),
                     str(self.paths.http_conf()),
@@ -683,10 +693,13 @@ class RollbackInstallTests(unittest.TestCase):
         text = self.paths.nginx_conf.read_text(encoding="utf-8")
         self.assertNotIn("clash-sub stream include", text)
         self.assertIn("http {", text)
+        for unit in systemd_units:
+            self.assertFalse(unit.exists())
         self.assertFalse((self.root / "private" / "install-state.json").exists())
         joined = [" ".join(c) for c in self.runner_calls]
         self.assertTrue(any("stop" in item and "nginx" in item for item in joined))
         self.assertTrue(any("disable" in item and "nginx" in item for item in joined))
+        self.assertTrue(any("clash-sub-traffic.timer" in item for item in joined))
         self.assertTrue(any("daemon-reload" in item for item in joined))
 
     def test_rollback_without_journal_leaves_files(self):

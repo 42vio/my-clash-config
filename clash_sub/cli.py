@@ -10,6 +10,7 @@ from getpass import getpass
 from pathlib import Path
 
 from clash_sub.config import load_config
+from clash_sub.installer import Installer, InstallerError
 from clash_sub.nginx import recover_runtime
 from clash_sub.runtime import build_service, repo_root as default_repo_root
 from clash_sub.service import ServiceError, _OperationLock
@@ -87,24 +88,35 @@ def _parser():
     history = commands.add_parser("history", add_help=False)
     history.add_argument("user")
     rollback = commands.add_parser("rollback", add_help=False)
-    rollback.add_argument("user")
-    rollback.add_argument("release")
+    rollback.add_argument("user", nargs="?")
+    rollback.add_argument("release", nargs="?")
+    rollback.add_argument("--install", action="store_true")
     rotate = commands.add_parser("rotate-link", add_help=False)
     rotate.add_argument("user")
     reinitialize = commands.add_parser("reinitialize-owner", add_help=False)
     reinitialize.add_argument("user")
     commands.add_parser("recover", add_help=False)
+    commands.add_parser("install", add_help=False)
     return parser
 
 
 def _run_command(parsed, stdout, stderr, factory):
     command = parsed.command
     if command in {"history", "rollback", "rotate-link", "reinitialize-owner"}:
-        user = _user_id(parsed.user)
-        if user is None:
+        user = _user_id(parsed.user) if parsed.user is not None else None
+        if user is None and not (command == "rollback" and parsed.install):
             return _error(stderr, "invalid_command", 2)
     else:
         user = None
+    if command == "rollback":
+        if parsed.install:
+            if parsed.user is not None or parsed.release is not None:
+                return _error(stderr, "invalid_command", 2)
+            return _rollback_install(stdout, stderr)
+        if parsed.user is None or parsed.release is None:
+            return _error(stderr, "invalid_command", 2)
+    if command == "install":
+        return _install(stdout, stderr)
     if command == "sync":
         return _call("sync", None, stdout, stderr, factory)
     if command == "traffic-update":
@@ -239,6 +251,50 @@ def _looks_like_url(value):
 def _error(stderr, code, status):
     stderr.write(_ERROR_TEMPLATE % code)
     return status
+
+
+def _install(stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1)
+    domain = os.environ.get("CLASH_SUB_DOMAIN", "")
+    if not domain:
+        try:
+            stdout.write("请输入主域名（例如 example.com）：\n")
+            domain = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            return _error(stderr, "invalid_domain", 2)
+    try:
+        token = getpass("请输入 Cloudflare API Token：")
+    except (EOFError, KeyboardInterrupt):
+        return _error(stderr, "missing_cf_token", 2)
+    try:
+        swap_mb = int(os.environ.get("CLASH_SUB_SWAP_MB", "0"))
+    except ValueError:
+        return _error(stderr, "invalid_swap", 2)
+    owner = os.environ.get("CLASH_SUB_OWNER_EMAIL", "owner-example")
+    try:
+        installer = Installer(
+            default_repo_root(), print_fn=lambda message: stdout.write("%s\n" % message)
+        )
+        report = installer.install(
+            domain=domain, cf_token=token, swap_mb=swap_mb, owner_email=owner
+        )
+    except InstallerError as error:
+        return _error(stderr, error.code, 1)
+    stdout.write("面板地址：%s\n" % report.get("panel_url", ""))
+    stdout.write("%s\n" % report.get("gate_instruction", ""))
+    return 0
+
+
+def _rollback_install(stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1)
+    try:
+        Installer(default_repo_root()).rollback_install()
+    except InstallerError as error:
+        return _error(stderr, error.code, 1)
+    stdout.write("已回滚安装；Reality 保持公网 10443 直连。\n")
+    return 0
 
 
 def _recover(stdout, stderr):

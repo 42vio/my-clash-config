@@ -488,6 +488,18 @@ class Installer:
             if path.is_file() or path.is_symlink():
                 path.unlink(missing_ok=True)
         self._remove_stream_include()
+        self._run_best_effort(
+            ["systemctl", "disable", "--now", "clash-sub-traffic.timer"]
+        )
+        for unit in (
+            self.paths.systemd_dir / "clash-sub-traffic.service",
+            self.paths.systemd_dir / "clash-sub-traffic.timer",
+            self.paths.systemd_dir / "clash-sub-recover.service",
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
+        ):
+            if unit.is_file() or unit.is_symlink():
+                unit.unlink(missing_ok=True)
         self._run(["systemctl", "daemon-reload"])
         try:
             (self.repo_root / "private" / "install-state.json").unlink(missing_ok=True)
