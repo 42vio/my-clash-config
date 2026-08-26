@@ -22,6 +22,12 @@
    端口检查会暂时报 port_443_taken，等待后重跑即可。
 4. 按部署手册 Phase 3 收口 listen=127.0.0.1，`clash-sub sync` 验证订阅。
 
+## 回滚说明
+
+`clash-sub rollback --install` 停用 nginx 并移除整合配置。若回滚前已收口（inbound
+listen=127.0.0.1），需在 3x-ui 面板把 Reality 入站 listen 改回 0.0.0.0 才能恢复公网 10443 直连；
+未收口状态下回滚则代理始终未中断。
+
 ## 域名变更（手动流程）
 
 1. Cloudflare 为新域名配好 NS 与 sub A 记录、新 API Token。

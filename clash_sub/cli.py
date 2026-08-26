@@ -315,7 +315,7 @@ def _rollback_install(stdout, stderr):
         Installer(default_repo_root()).rollback_install()
     except InstallerError as error:
         return _error(stderr, error.code, 1)
-    stdout.write("已回滚安装；Reality 保持公网 10443 直连。\n")
+    stdout.write("已回滚安装。若此前已收口（inbound listen=127.0.0.1），请在 3x-ui 面板把 Reality 入站 listen 改回 0.0.0.0 以恢复公网 10443 直连。\n")
     return 0
 
 
