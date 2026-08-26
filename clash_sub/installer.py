@@ -146,10 +146,23 @@ class Installer:
         self._save_state(state)
 
     def _record_replacement(self, state, path):
-        """Remember pre-existing file content so rollback can restore it."""
+        """Remember pre-existing file/symlink so rollback can restore it."""
         path = Path(path)
         key = str(path)
-        if key in state.replaced_files or not path.exists() or path.is_symlink():
+        if (
+            key in state.replaced_files
+            # Paths already journaled as written are our own files; a re-run
+            # must not adopt them as foreign content to "restore".
+            or key in state.files_written
+            or not (path.exists() or path.is_symlink())
+        ):
+            return
+        if path.is_symlink():
+            try:
+                target = os.readlink(path)
+            except OSError:
+                return
+            state.replaced_files[key] = {"kind": "symlink", "target": target}
             return
         try:
             content = path.read_bytes()
@@ -157,6 +170,7 @@ class Installer:
         except OSError:
             return
         state.replaced_files[key] = {
+            "kind": "file",
             "content": base64.b64encode(content).decode("ascii"),
             "mode": mode,
         }
@@ -284,6 +298,13 @@ class Installer:
             ]
         )
         default_site_removed = self._remove_default_site()
+        if default_site_removed:
+            # Crash-safety metadata, not phase completion: persist ownership of
+            # the removal right away so a failure in any later step (e.g. the
+            # stream-include write) still lets rollback restore the site.
+            state = self.state()
+            state.default_site_removed = True
+            self._save_state(state)
         self._ensure_stream_include()
         state = self.state()
         state.default_site_removed = state.default_site_removed or default_site_removed
@@ -660,17 +681,24 @@ class Installer:
         if not self._state_path.exists():
             return
         state = self.state()
-        touched = [phase for phase in state.phases_done if phase != "preflight"]
-        if touched:
+        # Every destructive action gates on the phase that owns it; a journal
+        # from an aborted early phase must not touch unrelated services.
+        if "nginx_packages" in state.phases_done:
             self._run_best_effort(["systemctl", "stop", "nginx"])
             self._run_best_effort(["systemctl", "disable", "nginx"])
-        for recorded in state.files_written:
+        # Crash-window coverage: a path can be journaled in replaced_files yet
+        # never reach files_written when the process died between the write
+        # and the phase save; restoring the recorded bytes is idempotent.
+        for recorded in dict.fromkeys([*state.files_written, *state.replaced_files]):
             self._rollback_file(Path(recorded), state)
-        if touched:
-            self._sweep_unjournaled_artifacts(state)
-            self._remove_stream_include()
-            if state.default_site_removed:
-                self._restore_default_site()
+        # Content-evidence actions stay unconditional: the sweep removes only
+        # marker/resolution-verified files and the include removal strips only
+        # our verbatim block, so neither can touch foreign content.
+        self._sweep_unjournaled_artifacts(state)
+        self._remove_stream_include()
+        if state.default_site_removed:
+            self._restore_default_site()
+        if "systemd_harden" in state.phases_done:
             self._run_best_effort(
                 ["systemctl", "disable", "--now", "clash-sub-traffic.timer"]
             )
@@ -683,6 +711,12 @@ class Installer:
     def _rollback_file(self, path, state):
         recorded = state.replaced_files.get(str(path))
         if recorded is not None:
+            if recorded.get("kind") == "symlink":
+                # Entries without "kind" are legacy regular-file backups.
+                # Dangling targets recreate fine as dangling symlinks.
+                path.unlink(missing_ok=True)
+                os.symlink(recorded["target"], path)
+                return
             self._write_file(
                 path,
                 None,

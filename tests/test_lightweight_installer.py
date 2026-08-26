@@ -71,6 +71,12 @@ class InstallStateTests(unittest.TestCase):
 
     def test_old_journal_without_new_fields_loads(self):
         path = self.root / "install-state.json"
+        legacy_replacement = {
+            # Old journals predate the "kind" key; entries must keep loading
+            # and be treated as regular-file backups by rollback.
+            "content": base64.b64encode(b"# operator unit\n").decode("ascii"),
+            "mode": 0o644,
+        }
         legacy = {
             "schema_version": 1,
             "domain": "example.com",
@@ -80,6 +86,7 @@ class InstallStateTests(unittest.TestCase):
             "phases_done": ["preflight"],
             "files_written": [],
             "backups": {},
+            "replaced_files": {"/etc/systemd/system/clash-sub-traffic.service": legacy_replacement},
         }
         path.write_text(json.dumps(legacy), encoding="utf-8")
 
@@ -88,7 +95,10 @@ class InstallStateTests(unittest.TestCase):
         self.assertEqual(loaded.domain, "example.com")
         self.assertEqual(loaded.phases_done, ["preflight"])
         self.assertFalse(loaded.default_site_removed)
-        self.assertEqual(loaded.replaced_files, {})
+        self.assertEqual(
+            loaded.replaced_files,
+            {"/etc/systemd/system/clash-sub-traffic.service": legacy_replacement},
+        )
 
     def test_save_rejects_foreign_object(self):
         with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
@@ -1376,7 +1386,7 @@ class RollbackInstallTests(unittest.TestCase):
                 domain="example.com",
                 panel_port=2053,
                 panel_base_path="/p-x",
-                phases_done=["nginx_activation", "systemd_harden"],
+                phases_done=["nginx_packages", "nginx_activation", "systemd_harden"],
                 files_written=[
                     str(self.paths.stream_conf()),
                     str(self.paths.http_conf()),
@@ -1478,6 +1488,12 @@ class RollbackInstallTests(unittest.TestCase):
         unit.write_text("# original unit\n", encoding="utf-8")
         os.chmod(unit, 0o600)
         installer = self._installer()
+        # Real installs reach harden with nginx packages already installed;
+        # seeding the phase keeps rollback's stop/disable gating realistic.
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(phases_done=["nginx_packages"]),
+        )
 
         installer.harden_systemd()
 
@@ -1607,7 +1623,9 @@ class RollbackInstallTests(unittest.TestCase):
         save_install_state(
             self.root / "private" / "install-state.json",
             InstallState(
-                phases_done=["nginx_activation"],
+                # nginx_packages owns the stop/disable actions, so it must be
+                # present for this test to actually exercise the stop failure.
+                phases_done=["nginx_packages", "nginx_activation"],
                 files_written=[str(self.paths.http_conf())],
             ),
         )
@@ -1616,6 +1634,420 @@ class RollbackInstallTests(unittest.TestCase):
 
         self.assertFalse(self.paths.http_conf().exists())
         self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+
+class RollbackPhaseGatingTests(unittest.TestCase):
+    """Defect A: rollback actions must gate on the phase that owns them.
+
+    A ``low_memory``-only journal never touches nginx or systemd, so its
+    rollback must not issue any systemctl command at all.
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.paths = InstallPaths(
+            nginx_conf=self.root / "nginx.conf",
+            stream_conf_dir=self.root / "stream-conf.d",
+            http_conf_dir=self.root / "conf.d",
+            systemd_dir=self.root / "systemd",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
+            sysctl_conf=self.root / "99-clash-sub.conf",
+            journald_conf_dir=self.root / "journald",
+            swap_file=self.root / "swap.img",
+        )
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def test_low_memory_only_journal_runs_no_systemctl_and_keeps_tuning(self):
+        decoy_conf = (
+            "user www-data;\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n"
+        )
+        self.paths.sysctl_conf.write_text("vm.swappiness=10\n", encoding="utf-8")
+        journald = self.paths.journald_conf_dir / "99-clash-sub.conf"
+        journald.parent.mkdir(parents=True, exist_ok=True)
+        journald.write_text("[Journal]\nSystemMaxUse=50M\n", encoding="utf-8")
+        self.paths.swap_file.write_bytes(b"SWAP")
+        self.paths.nginx_conf.write_text(decoy_conf, encoding="utf-8")
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="example.com", phases_done=["low_memory"]),
+        )
+        installer = self._installer()
+
+        installer.rollback_install()
+
+        self.assertEqual(self.runner_calls, [])
+        self.assertEqual(
+            self.paths.sysctl_conf.read_text(encoding="utf-8"), "vm.swappiness=10\n"
+        )
+        self.assertEqual(
+            journald.read_text(encoding="utf-8"), "[Journal]\nSystemMaxUse=50M\n"
+        )
+        self.assertEqual(self.paths.swap_file.read_bytes(), b"SWAP")
+        self.assertEqual(self.paths.nginx_conf.read_text(encoding="utf-8"), decoy_conf)
+        self.assertFalse(
+            (self.root / "private" / "install-state.json").exists()
+        )
+
+
+class HardenSystemdRollbackTests(unittest.TestCase):
+    """G2: install harden, post-update re-run, then rollback removes all units."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.root / "usr-local-bin").mkdir()
+        self.paths = InstallPaths(
+            nginx_conf=self.root / "nginx.conf",
+            systemd_dir=self.root / "systemd",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
+        )
+        self.paths.nginx_conf.write_text(
+            "user www-data;\nhttp {\n}\n", encoding="utf-8"
+        )
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def test_double_harden_then_rollback_removes_all_project_units(self):
+        installer = self._installer()
+        journal = self.root / "private" / "install-state.json"
+        save_install_state(
+            journal,
+            InstallState(domain="example.com", phases_done=["nginx_packages"]),
+        )
+
+        installer.harden_systemd()
+        installer.harden_systemd()
+
+        state = load_install_state(journal)
+        self.assertIn("systemd_harden", state.phases_done)
+        # The re-run must not adopt its own first-run files as "replaced":
+        # doing so would make rollback restore our units instead of removing.
+        self.assertEqual(state.replaced_files, {})
+
+        installer.rollback_install()
+
+        systemd_units = (
+            self.paths.systemd_dir / "clash-sub-traffic.service",
+            self.paths.systemd_dir / "clash-sub-traffic.timer",
+            self.paths.systemd_dir / "clash-sub-recover.service",
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
+        )
+        for unit in systemd_units:
+            self.assertFalse(unit.exists() or unit.is_symlink(), str(unit))
+        self.assertFalse(
+            self.paths.cli_symlink.exists() or self.paths.cli_symlink.is_symlink()
+        )
+        self.assertFalse(journal.exists())
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("stop" in item and "nginx" in item for item in joined))
+        self.assertTrue(any("disable" in item and "nginx" in item for item in joined))
+        self.assertTrue(
+            any(
+                "disable" in item and "clash-sub-traffic.timer" in item
+                for item in joined
+            )
+        )
+        self.assertTrue(any("daemon-reload" in item for item in joined))
+
+
+class ForeignUnitReplacementTests(unittest.TestCase):
+    """Defect C: foreign symlinks at unit paths must be backed up and restored."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.root / "usr-local-bin").mkdir()
+        self.paths = InstallPaths(
+            nginx_conf=self.root / "nginx.conf",
+            systemd_dir=self.root / "systemd",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
+        )
+        self.paths.nginx_conf.write_text(
+            "user www-data;\nhttp {\n}\n", encoding="utf-8"
+        )
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def test_foreign_regular_unit_is_restored_byte_identical(self):
+        unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        original = "# operator unit\n"
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text(original, encoding="utf-8")
+        os.chmod(unit, 0o600)
+        installer = self._installer()
+
+        installer.harden_systemd()
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertEqual(state.replaced_files[str(unit)]["kind"], "file")
+        self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
+
+        installer.rollback_install()
+
+        self.assertEqual(unit.read_text(encoding="utf-8"), original)
+        self.assertEqual(unit.stat().st_mode & 0o777, 0o600)
+
+    def test_foreign_valid_symlink_unit_is_recreated(self):
+        unit = self.paths.systemd_dir / "clash-sub-recover.service"
+        target = Path(self.tempdir.name) / "operator-target"
+        target.write_text("# operator target\n", encoding="utf-8")
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.symlink_to(target)
+        installer = self._installer()
+
+        installer.harden_systemd()
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertEqual(state.replaced_files[str(unit)]["kind"], "symlink")
+        self.assertEqual(state.replaced_files[str(unit)]["target"], str(target))
+        self.assertFalse(unit.is_symlink())
+
+        installer.rollback_install()
+
+        self.assertTrue(unit.is_symlink())
+        self.assertEqual(os.readlink(unit), str(target))
+        self.assertTrue(target.exists())
+
+    def test_foreign_dangling_symlink_drop_in_is_recreated_dangling(self):
+        drop_in = (
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf"
+        )
+        drop_in.parent.mkdir(parents=True, exist_ok=True)
+        drop_in.symlink_to("/nonexistent/target")
+        installer = self._installer()
+
+        installer.harden_systemd()
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertEqual(state.replaced_files[str(drop_in)]["kind"], "symlink")
+        self.assertEqual(
+            state.replaced_files[str(drop_in)]["target"], "/nonexistent/target"
+        )
+        self.assertFalse(drop_in.is_symlink())
+
+        installer.rollback_install()
+
+        self.assertTrue(drop_in.is_symlink())
+        self.assertEqual(os.readlink(drop_in), "/nonexistent/target")
+
+    def test_dangling_cli_symlink_is_refused_without_clobber(self):
+        installer = self._installer()
+        link = self.paths.cli_symlink
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to("/nonexistent/clash-sub-target")
+
+        with self.assertRaisesRegex(InstallerError, "cli_symlink_conflict"):
+            installer._install_cli_symlink()
+
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(os.readlink(link), "/nonexistent/clash-sub-target")
+
+
+class HardenCrashWindowTests(unittest.TestCase):
+    """Defect D: crash between a unit write and the journal save must still restore.
+
+    A failure after ``_record_replacement`` persisted but before the tail save
+    leaves the path absent from ``files_written``; rollback must consult
+    ``replaced_files`` too or the foreign content is never restored.
+    """
+
+    def test_crash_window_still_restores_replaced_unit(self):
+        for mode in ("daemon-reload", "timer-enable", "unit-write"):
+            with self.subTest(mode=mode):
+                self._assert_crash_window_restores_foreign_unit(mode)
+
+    def _assert_crash_window_restores_foreign_unit(self, mode):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = (Path(tempdir) / "repo").resolve()
+            (root / "private").mkdir(parents=True)
+            (root / "bin").mkdir()
+            (root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+            (root / "usr-local-bin").mkdir()
+            paths = InstallPaths(
+                nginx_conf=root / "nginx.conf",
+                systemd_dir=root / "systemd",
+                cli_symlink=root / "usr-local-bin" / "clash-sub",
+            )
+            paths.nginx_conf.write_text(
+                "user www-data;\nhttp {\n}\n", encoding="utf-8"
+            )
+            runner_calls = []
+
+            def runner(arguments, **_):
+                runner_calls.append(list(arguments))
+                if mode == "daemon-reload" and "daemon-reload" in arguments:
+                    return subprocess.CompletedProcess(arguments, 1)
+                if (
+                    mode == "timer-enable"
+                    and "enable" in arguments
+                    and "clash-sub-traffic.timer" in arguments
+                ):
+                    return subprocess.CompletedProcess(arguments, 1)
+                return subprocess.CompletedProcess(arguments, 0)
+
+            unit = paths.systemd_dir / "clash-sub-traffic.service"
+            original = "# operator unit\n"
+            unit.parent.mkdir(parents=True, exist_ok=True)
+            unit.write_text(original, encoding="utf-8")
+            os.chmod(unit, 0o600)
+            journal = root / "private" / "install-state.json"
+            save_install_state(journal, InstallState(domain="example.com"))
+            installer = Installer(root, paths=paths, runner=runner)
+
+            if mode == "unit-write":
+                real_write = Installer._write_file
+                unit_writes = {"count": 0}
+
+                def flaky_write(installer_self, path, contents, file_mode, data=None):
+                    # Unit files sit directly in systemd_dir; drop-ins do not.
+                    if Path(path).parent == paths.systemd_dir:
+                        unit_writes["count"] += 1
+                        if unit_writes["count"] == 2:
+                            raise InstallerError("command_failed")
+                    return real_write(
+                        installer_self, path, contents, file_mode, data=data
+                    )
+
+                with patch.object(Installer, "_write_file", flaky_write):
+                    with self.assertRaisesRegex(InstallerError, "command_failed"):
+                        installer.harden_systemd()
+            else:
+                with self.assertRaisesRegex(InstallerError, "command_failed"):
+                    installer.harden_systemd()
+
+            state = load_install_state(journal)
+            self.assertIn(str(unit), state.replaced_files)
+            self.assertNotIn("systemd_harden", state.phases_done)
+            self.assertEqual(state.files_written, [])
+            # Our unit content did overwrite the foreign file before the crash.
+            self.assertNotEqual(unit.read_text(encoding="utf-8"), original)
+
+            calls_before_rollback = len(runner_calls)
+            installer.rollback_install()
+
+            self.assertEqual(unit.read_text(encoding="utf-8"), original)
+            self.assertEqual(unit.stat().st_mode & 0o777, 0o600)
+            joined = [" ".join(c) for c in runner_calls]
+            self.assertFalse(
+                any("stop" in item and "nginx" in item for item in joined)
+            )
+            self.assertFalse(
+                any("disable" in item and "nginx" in item for item in joined)
+            )
+            self.assertEqual(len(runner_calls), calls_before_rollback)
+            self.assertFalse(journal.exists())
+
+
+class DefaultSiteRemovalWindowTests(unittest.TestCase):
+    """Defect B: the default-site removal flag must outlive later failures.
+
+    A failure in ``_ensure_stream_include`` happens after the site link is
+    gone; if the flag is only saved with the phase, rollback never restores
+    the site.
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        base = Path(self.tempdir.name).resolve()
+        self.available = base / "sites-available" / "default"
+        self.available.parent.mkdir(parents=True)
+        self.available.write_text("server { listen 80; }\n", encoding="utf-8")
+        self.enabled_dir = base / "sites-enabled"
+        self.enabled_dir.mkdir()
+        self.paths = InstallPaths(
+            nginx_conf=self.root / "nginx.conf",
+            stream_conf_dir=self.root / "stream-conf.d",
+        )
+        self.paths.nginx_conf.write_text("http {\n}\n", encoding="utf-8")
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def test_flag_survives_stream_include_failure_and_rollback_restores_site(self):
+        enabled = self.enabled_dir / "default"
+        enabled.symlink_to(self.available)
+        journal = self.root / "private" / "install-state.json"
+        save_install_state(journal, InstallState(phases_done=[]))
+        installer = Installer(self.root, paths=self.paths, runner=self._runner)
+
+        with patch.object(
+            Installer,
+            "_remove_default_site",
+            lambda installer_self: installer_self._remove_default_site_at(
+                enabled, self.available
+            ),
+        ), patch.object(
+            Installer,
+            "_ensure_stream_include",
+            side_effect=InstallerError("command_failed"),
+        ):
+            with self.assertRaisesRegex(InstallerError, "command_failed"):
+                installer.install_nginx_packages()
+
+        state = load_install_state(journal)
+        self.assertTrue(state.default_site_removed)
+        self.assertNotIn("nginx_packages", state.phases_done)
+        self.assertFalse(enabled.exists() or enabled.is_symlink())
+
+        with patch.object(
+            Installer,
+            "_restore_default_site",
+            lambda installer_self: installer_self._restore_default_site_at(
+                enabled, self.available
+            ),
+        ):
+            installer.rollback_install()
+
+        self.assertTrue(enabled.is_symlink())
+        self.assertEqual(enabled.resolve(), self.available.resolve())
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertFalse(any("stop" in item and "nginx" in item for item in joined))
+        self.assertFalse(any("disable" in item and "nginx" in item for item in joined))
+        self.assertFalse(journal.exists())
 
 
 class InstallResumeGuardTests(unittest.TestCase):
