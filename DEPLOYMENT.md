@@ -7,9 +7,13 @@
 ## 部署前准备清单（Cloudflare）
 
 1. 域名 NS 托管在 Cloudflare。
-2. 添加 DNS 记录：`sub.<你的域名>` → A 记录 → VPS 公网 IP（仅此一条必须；Reality 客户端连的 server 也用这个域名）。
-3. A 记录须为「仅 DNS」（灰云，不开橙色云代理），否则解析到 Cloudflare 节点会导致 preflight 失败且 Reality 不可用。
-4. 创建 API Token：权限 Zone → DNS → Edit，Zone Resources 限定该域名。安装时粘贴一次。
+2. 添加 DNS 记录（以 42io.cc 为例）：
+   - `sub.<域名>` → A → VPS IP，**仅 DNS（灰云）**——订阅与面板入口，橙云会导致安装校验失败
+   - `node.<域名>` → A → VPS IP，**仅 DNS（灰云）**——Reality 节点地址（默认 node. 子域，
+     可用 `CLASH_SUB_NODE_HOST` 覆盖）；裸域若走橙云代理，节点不能使用裸域
+   - 裸域 `@`/`www` 可自由使用橙云（网站等），与本方案无关
+   - 不需要 panel 记录：面板经 `sub.<域名>/<随机路径>/` 访问
+3. 创建 API Token：权限 Zone → DNS → Edit，Zone Resources 限定该域名。安装时粘贴一次。
 
 ## Phase 1：基础代理（手动，约 10 分钟）
 

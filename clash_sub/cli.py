@@ -294,12 +294,17 @@ def _install(stdout, stderr):
     except ValueError:
         return _error(stderr, "invalid_swap", 2)
     owner = os.environ.get("CLASH_SUB_OWNER_EMAIL", "owner-example")
+    node_host = os.environ.get("CLASH_SUB_NODE_HOST", "") or None
     try:
         installer = Installer(
             default_repo_root(), print_fn=lambda message: stdout.write("%s\n" % message)
         )
         report = installer.install(
-            domain=domain, cf_token=token, swap_mb=swap_mb, owner_email=owner
+            domain=domain,
+            cf_token=token,
+            swap_mb=swap_mb,
+            owner_email=owner,
+            node_host=node_host,
         )
     except InstallerError as error:
         return _error(stderr, error.code, 1)

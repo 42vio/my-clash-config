@@ -185,7 +185,7 @@ class PreflightTests(unittest.TestCase):
             "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
         ):
             with self.assertRaisesRegex(InstallerError, "dns_mismatch"):
-                installer._require_dns("example.com")
+                installer._require_host_resolves_locally("sub.example.com")
 
     def test_accepts_matching_dns(self):
         installer = self._installer()
@@ -193,7 +193,7 @@ class PreflightTests(unittest.TestCase):
         with patch("clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]), patch(
             "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1", "10.0.0.5"]
         ):
-            installer._require_dns("example.com")
+            installer._require_host_resolves_locally("sub.example.com")
 
 
 class LowMemoryPhaseTests(unittest.TestCase):
@@ -602,7 +602,7 @@ class SubscriptionInitPhaseTests(unittest.TestCase):
         self.assertIn("schema-version: 2", content)
         self.assertIn("owner-email: owner-example", content)
         self.assertIn("subscription-authority: sub.example.com:443", content)
-        self.assertIn("xui-public-endpoint: example.com:443", content)
+        self.assertIn("xui-public-endpoint: node.example.com:443", content)
         self.assertIn(str(self.paths.xui_database), content)
         mode = (self.root / "private" / "config" / "service.yaml").stat().st_mode & 0o777
         self.assertEqual(mode, 0o600)
@@ -619,6 +619,90 @@ class SubscriptionInitPhaseTests(unittest.TestCase):
         self.assertTrue(self.paths.public_root.is_dir())
         self.assertEqual(self.paths.public_root.stat().st_mode & 0o7777, 0o2750)
         self.assertTrue(self.paths.routes_conf.parent.is_dir())
+
+
+class NodeHostTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.paths = InstallPaths(
+            xui_database=self.root / "x-ui.db",
+            private_root=self.root / "var" / "private",
+            public_root=self.root / "var" / "public",
+            routes_conf=self.root / "clash-sub" / "routes.conf",
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _noop_runner(self, arguments, **_):
+        return subprocess.CompletedProcess(list(arguments), 0)
+
+    def test_service_yaml_uses_node_subdomain_by_default(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+
+        installer.initialize_subscription(domain="42io.cc", owner_email="owner-1")
+
+        content = (self.root / "private" / "config" / "service.yaml").read_text(encoding="utf-8")
+        self.assertIn("xui-public-endpoint: node.42io.cc:443", content)
+        self.assertIn("subscription-authority: sub.42io.cc:443", content)
+
+    def test_service_yaml_honors_explicit_node_host(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+
+        installer.initialize_subscription(
+            domain="42io.cc", owner_email="owner-1", node_host="proxy.42io.cc"
+        )
+
+        content = (self.root / "private" / "config" / "service.yaml").read_text(encoding="utf-8")
+        self.assertIn("xui-public-endpoint: proxy.42io.cc:443", content)
+
+    def test_preflight_checks_both_hosts_resolve_locally(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+        resolved = {"sub.42io.cc": ["192.0.2.1"], "node.42io.cc": ["192.0.2.1"]}
+
+        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
+            "clash_sub.installer._OS_RELEASE_PATH", self._os_release()
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch(
+            "clash_sub.installer.read_panel_port", lambda path: 2053
+        ), patch(
+            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
+        ), patch(
+            "clash_sub.installer._resolve_host",
+            lambda host: resolved.get(host, ["203.0.113.9"]),
+        ), patch(
+            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
+        ):
+            installer.preflight("42io.cc")
+
+    def test_preflight_rejects_node_host_not_pointing_here(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+        resolved = {"sub.42io.cc": ["192.0.2.1"], "node.42io.cc": ["203.0.113.9"]}
+
+        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
+            "clash_sub.installer._OS_RELEASE_PATH", self._os_release()
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch(
+            "clash_sub.installer.read_panel_port", lambda path: 2053
+        ), patch(
+            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
+        ), patch(
+            "clash_sub.installer._resolve_host",
+            lambda host: resolved.get(host, ["203.0.113.9"]),
+        ), patch(
+            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
+        ):
+            with self.assertRaisesRegex(InstallerError, "dns_mismatch"):
+                installer.preflight("42io.cc")
+
+    def _os_release(self):
+        path = self.root / "os-release"
+        path.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
+        return path
 
 
 class InstallOrchestrationTests(unittest.TestCase):
@@ -671,9 +755,12 @@ class InstallOrchestrationTests(unittest.TestCase):
         cert.assert_called_once_with("example.com", "tok")
         activate.assert_called_once_with(domain="example.com", panel_port=ANY)
         harden.assert_called_once()
-        init.assert_called_once_with(domain="example.com", owner_email="owner-example")
+        init.assert_called_once_with(
+            domain="example.com", owner_email="owner-example", node_host="node.example.com"
+        )
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertEqual(state.domain, "example.com")
+        self.assertEqual(state.node_host, "node.example.com")
         self.assertIn("report", state.phases_done)
 
     def test_finalize_reports_panel_url_and_gate(self):

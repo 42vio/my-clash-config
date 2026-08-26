@@ -28,7 +28,7 @@
 - 公网仅开放 443：`ssl_preread` 按 SNI 分流——`sub.<域名>` → 127.0.0.1:30443（订阅+面板，终止 TLS），
   其余任意 SNI → 127.0.0.1:10443（Xray Reality，不终止 TLS）；
   `trojan.<域名>` → 127.0.0.1:20443 为预留规则（后期扩展见 docs/recovery.md 预留说明）。
-- Reality inbound 监听 127.0.0.1:10443；客户端统一连 443（订阅层把节点端口改写为 443）。
+- Reality inbound 监听 127.0.0.1:10443；节点地址默认 `node.<域名>`（灰云，可用 `CLASH_SUB_NODE_HOST` 覆盖），客户端统一连 443（订阅层把节点端口改写为 443）。
 - 证书：acme.sh DNS-01（Cloudflare）wildcard，统一 /etc/ssl/domain/；公网不再开放 80。
 - 部署：`bash install.sh` 一键完成 443 整合（详见 DEPLOYMENT.md）；3x-ui 仍手动安装。
 - clash-sub 定位：本 VPS clash 订阅栈的全生命周期管理 CLI（install/backup/update/cert/rollback）。

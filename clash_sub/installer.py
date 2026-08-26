@@ -67,6 +67,7 @@ class InstallState:
 
     schema_version: int = 1
     domain: str = ""
+    node_host: str = ""
     panel_port: int = 0
     panel_base_path: str = ""
     phases_done: list = field(default_factory=list)
@@ -134,14 +135,15 @@ class Installer:
         self._save_state(state)
 
     # -- phase 0 ---------------------------------------------------------
-    def preflight(self, domain):
+    def preflight(self, domain, node_host=None):
         if os.geteuid() != 0:
             raise InstallerError("not_root")
         self._require_debian()
         self._require_disk()
         self._require_xui()
         self._require_free_tcp_port(443)
-        self._require_dns(domain)
+        self._require_host_resolves_locally("sub." + domain)
+        self._require_host_resolves_locally(node_host or ("node." + domain))
         self._phase_done("preflight")
         return True
 
@@ -178,8 +180,8 @@ class Installer:
     def _require_free_tcp_port(self, port):
         _require_free_tcp_port(self, port)
 
-    def _require_dns(self, domain):
-        resolved = _resolve_host("sub." + domain)
+    def _require_host_resolves_locally(self, host):
+        resolved = _resolve_host(host)
         local = _local_ipv4(self.runner)
         if not any(address in local for address in resolved):
             raise InstallerError("dns_mismatch")
@@ -398,7 +400,7 @@ class Installer:
         self._phase_done("systemd_harden")
 
     # -- phase 6 ---------------------------------------------------------
-    def initialize_subscription(self, *, domain, owner_email):
+    def initialize_subscription(self, *, domain, owner_email, node_host=None):
         config_dir = self.repo_root / "private" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         contents = (
@@ -417,7 +419,7 @@ class Installer:
             % (
                 owner_email,
                 domain,
-                domain,
+                node_host or ("node." + domain),
                 self.paths.xui_database,
                 self.paths.private_root,
                 self.paths.public_root,
@@ -458,15 +460,19 @@ class Installer:
         }
 
     # -- orchestration ---------------------------------------------------
-    def install(self, *, domain, cf_token, swap_mb=0, owner_email="owner-example"):
+    def install(
+        self, *, domain, cf_token, swap_mb=0, owner_email="owner-example", node_host=None
+    ):
+        node_host = node_host or ("node." + domain)
         state = self.state()
         if state.domain and state.domain != domain and state.phases_done:
             raise InstallerError("domain_mismatch")
         state.domain = domain
+        state.node_host = node_host
         self._save_state(state)
         done = set(state.phases_done)
         phases = (
-            ("preflight", lambda: self.preflight(domain)),
+            ("preflight", lambda: self.preflight(domain, node_host)),
             ("low_memory", lambda: self.optimize_low_memory(swap_mb)),
             ("nginx_packages", self.install_nginx_packages),
             ("certificate", lambda: self.issue_certificate(domain, cf_token)),
@@ -478,7 +484,7 @@ class Installer:
             (
                 "subscription_init",
                 lambda: self.initialize_subscription(
-                    domain=domain, owner_email=owner_email
+                    domain=domain, owner_email=owner_email, node_host=node_host
                 ),
             ),
             ("report", self.finalize),

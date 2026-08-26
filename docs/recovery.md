@@ -17,7 +17,8 @@
    —— 此时代理已恢复（公网 10443 直连）（若备份的 x-ui.db 来自已收口的服务器，需先把入站 listen 改回 0.0.0.0）。
 3. git clone 本仓库到 /opt/my-clash-config → 恢复 private/config/service.yaml 与运行时
    private-root（state.json 等）→ `CLASH_SUB_DOMAIN=<域名> CLASH_SUB_OWNER_EMAIL=<owner> bash install.sh`
-   （证书自动重签；幂等可重跑；否则 subscription_init 会以默认 owner-example 覆盖恢复的 service.yaml）。
+   （证书自动重签；幂等可重跑；否则 subscription_init 会以默认 owner-example 覆盖恢复的 service.yaml；
+   可选 `CLASH_SUB_NODE_HOST=<节点主机>` 覆盖默认节点地址 `node.<域名>`，原安装用过它则必须再次提供）。
    注意：rollback 后立即重装时，443 可能处于 TIME_WAIT（最长约 60 秒），preflight 的
    端口检查会暂时报 port_443_taken，等待后重跑即可。
 4. 按部署手册 Phase 3 收口 listen=127.0.0.1，`clash-sub sync` 验证订阅。
