@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from clash_sub.installer import (
     InstallPaths,
@@ -511,6 +511,120 @@ class NginxActivationPhaseTests(unittest.TestCase):
         self.assertTrue(any("enable" in item and "clash-sub-traffic.timer" in item for item in joined))
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("systemd_harden", state.phases_done)
+
+
+class SubscriptionInitPhaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.paths = InstallPaths(
+            xui_database=self.root / "x-ui.db",
+            private_root=self.root / "var" / "private",
+            public_root=self.root / "var" / "public",
+            routes_conf=self.root / "clash-sub" / "routes.conf",
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _noop_runner(self, arguments, **_):
+        return subprocess.CompletedProcess(list(arguments), 0)
+
+    def test_writes_service_yaml_with_expected_values(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+
+        installer.initialize_subscription(domain="example.com", owner_email="owner-example")
+
+        content = (self.root / "private" / "config" / "service.yaml").read_text(encoding="utf-8")
+        self.assertIn("schema-version: 2", content)
+        self.assertIn("owner-email: owner-example", content)
+        self.assertIn("subscription-authority: sub.example.com:443", content)
+        self.assertIn("xui-public-endpoint: example.com:443", content)
+        self.assertIn(str(self.paths.xui_database), content)
+        mode = (self.root / "private" / "config" / "service.yaml").stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn("subscription_init", state.phases_done)
+
+    def test_prepares_runtime_directories(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+
+        installer.initialize_subscription(domain="example.com", owner_email="owner-example")
+
+        self.assertTrue(self.paths.private_root.is_dir())
+        self.assertEqual(self.paths.private_root.stat().st_mode & 0o777, 0o700)
+        self.assertTrue(self.paths.public_root.is_dir())
+        self.assertEqual(self.paths.public_root.stat().st_mode & 0o7777, 0o2750)
+        self.assertTrue(self.paths.routes_conf.parent.is_dir())
+
+
+class InstallOrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.paths = InstallPaths()
+        self.printed = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _noop_runner(self, arguments, **_):
+        return subprocess.CompletedProcess(list(arguments), 0)
+
+    def test_install_skips_completed_phases_and_persists_domain(self):
+        installer = Installer(
+            self.root,
+            paths=self.paths,
+            runner=self._noop_runner,
+            print_fn=self.printed.append,
+        )
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="example.com", phases_done=["preflight", "low_memory"]),
+        )
+
+        with patch.object(Installer, "install_nginx_packages") as pkg, patch.object(
+            Installer, "issue_certificate"
+        ) as cert, patch.object(Installer, "activate_nginx") as activate, patch.object(
+            Installer, "harden_systemd"
+        ) as harden, patch.object(
+            Installer, "initialize_subscription"
+        ) as init, patch.object(
+            Installer, "preflight"
+        ) as preflight, patch.object(
+            Installer, "optimize_low_memory"
+        ) as low_memory, patch(
+            "clash_sub.installer.read_panel_port", lambda path: 2053
+        ):
+            installer.install(
+                domain="example.com", cf_token="tok", swap_mb=0, owner_email="owner-example"
+            )
+
+        preflight.assert_not_called()
+        low_memory.assert_not_called()
+        self.assertFalse(any("preflight" in message for message in self.printed))
+        pkg.assert_called_once()
+        cert.assert_called_once_with("example.com", "tok")
+        activate.assert_called_once_with(domain="example.com", panel_port=ANY)
+        harden.assert_called_once()
+        init.assert_called_once_with(domain="example.com", owner_email="owner-example")
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertEqual(state.domain, "example.com")
+        self.assertIn("report", state.phases_done)
+
+    def test_finalize_reports_panel_url_and_gate(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="example.com", panel_port=2053, panel_base_path="/p-abc"),
+        )
+
+        report = installer.finalize()
+
+        self.assertEqual(report["panel_url"], "https://sub.example.com/p-abc/")
+        self.assertIn("gate_instruction", report)
 
 
 if __name__ == "__main__":

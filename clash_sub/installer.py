@@ -1,5 +1,6 @@
 """One-shot integration installer for the unified 443 topology."""
 
+import grp
 import json
 import os
 import secrets
@@ -375,6 +376,100 @@ class Installer:
         self._run(["systemctl", "daemon-reload"])
         self._run(["systemctl", "enable", "--now", "clash-sub-traffic.timer"])
         self._phase_done("systemd_harden")
+
+    # -- phase 6 ---------------------------------------------------------
+    def initialize_subscription(self, *, domain, owner_email):
+        config_dir = self.repo_root / "private" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        contents = (
+            "schema-version: 2\n"
+            "owner-email: %s\n"
+            "subscription-authority: sub.%s:443\n"
+            "xui-public-endpoint: %s:443\n"
+            "xui-database: %s\n"
+            "private-root: %s\n"
+            "public-root: %s\n"
+            "nginx-routes: %s\n"
+            "mihomo-binary: /usr/local/lib/clash-sub/mihomo\n"
+            "nginx-binary: /usr/sbin/nginx\n"
+            "systemctl-binary: /usr/bin/systemctl\n"
+            "max-source-bytes: 5242880\n"
+            % (
+                owner_email,
+                domain,
+                domain,
+                self.paths.xui_database,
+                self.paths.private_root,
+                self.paths.public_root,
+                self.paths.routes_conf,
+            )
+        )
+        self._write_file(config_dir / "service.yaml", contents, 0o600)
+        self._prepare_runtime_directories()
+        self._phase_done("subscription_init")
+
+    def _prepare_runtime_directories(self):
+        self.paths.private_root.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.paths.private_root, 0o700)
+        self.paths.public_root.mkdir(parents=True, exist_ok=True)
+        try:
+            public_gid = grp.getgrnam("www-data").gr_gid
+        except KeyError:
+            public_gid = -1
+        if public_gid != -1:
+            os.chown(self.paths.public_root, -1, public_gid)
+        os.chmod(self.paths.public_root, 0o2750)
+        self.paths.routes_conf.parent.mkdir(parents=True, exist_ok=True)
+
+    # -- phase 7 ---------------------------------------------------------
+    def finalize(self):
+        self._phase_done("report")
+        return self._report(self.state())
+
+    def _report(self, state):
+        return {
+            "domain": state.domain,
+            "panel_url": "https://sub.%s%s/" % (state.domain, state.panel_base_path),
+            "subscription_note": "run `clash-sub sync` then `clash-sub links`",
+            "gate_instruction": (
+                "3x-ui 面板：把 Reality inbound 的 listen 从 0.0.0.0 改为 127.0.0.1"
+                "（保持端口 10443），公网仅保留 443。"
+            ),
+        }
+
+    # -- orchestration ---------------------------------------------------
+    def install(self, *, domain, cf_token, swap_mb=0, owner_email="owner-example"):
+        state = self.state()
+        state.domain = domain
+        self._save_state(state)
+        done = set(state.phases_done)
+        phases = (
+            ("preflight", lambda: self.preflight(domain)),
+            ("low_memory", lambda: self.optimize_low_memory(swap_mb)),
+            ("nginx_packages", self.install_nginx_packages),
+            ("certificate", lambda: self.issue_certificate(domain, cf_token)),
+            (
+                "nginx_activation",
+                lambda: self.activate_nginx(domain=domain, panel_port=self._panel_port()),
+            ),
+            ("systemd_harden", self.harden_systemd),
+            (
+                "subscription_init",
+                lambda: self.initialize_subscription(
+                    domain=domain, owner_email=owner_email
+                ),
+            ),
+            ("report", self.finalize),
+        )
+        for name, action in phases:
+            if name in done:
+                continue
+            action()
+            self.print_fn("phase %s: done" % name)
+        return self._report(self.state())
+
+    def _panel_port(self):
+        return read_panel_port(self.paths.xui_database)
 
     def _write_file(self, path, contents, mode):
         path = Path(path)
