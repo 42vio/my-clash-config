@@ -269,8 +269,10 @@ class XuiSnapshotTests(unittest.TestCase):
             connection.execute("DELETE FROM inbounds")
         self.assert_incompatible()
 
-    def test_read_panel_settings_returns_web_port_and_base_path(self):
-        self.assertEqual(read_panel_settings(self.database), (2053, "/xui7k2m/"))
+    def test_read_panel_settings_returns_web_port_base_path_and_listen(self):
+        self.assertEqual(
+            read_panel_settings(self.database), (2053, "/xui7k2m/", "127.0.0.1")
+        )
 
     def test_read_panel_settings_normalizes_base_path_like_upstream(self):
         cases = (
@@ -289,7 +291,7 @@ class XuiSnapshotTests(unittest.TestCase):
                         (raw,),
                     )
                 self.assertEqual(
-                    read_panel_settings(self.database), (2053, expected)
+                    read_panel_settings(self.database), (2053, expected, "127.0.0.1")
                 )
 
     def test_read_panel_settings_rejects_invalid_port(self):
@@ -315,6 +317,21 @@ class XuiSnapshotTests(unittest.TestCase):
     def test_read_panel_settings_rejects_missing_base_path_row(self):
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("DELETE FROM settings WHERE key = 'webBasePath'")
+        with self.assertRaises(XuiCompatibilityError):
+            read_panel_settings(self.database)
+
+    def test_read_panel_settings_rejects_missing_web_listen(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("DELETE FROM settings WHERE key = 'webListen'")
+        with self.assertRaises(XuiCompatibilityError):
+            read_panel_settings(self.database)
+
+    def test_read_panel_settings_rejects_non_string_listen(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                "UPDATE settings SET value = CAST('127.0.0.1' AS BLOB)"
+                " WHERE key = 'webListen'"
+            )
         with self.assertRaises(XuiCompatibilityError):
             read_panel_settings(self.database)
 

@@ -181,9 +181,11 @@ class Installer:
             raise InstallerError("xui_incompatible") from None
 
     def _require_panel_base_path(self):
-        _, base_path = self._panel_settings()
+        _, base_path, listen = self._panel_settings()
         if not re.fullmatch(r"/[A-Za-z0-9_-]+/", base_path):
             raise InstallerError("panel_base_path_required")
+        if listen != "127.0.0.1":
+            raise InstallerError("panel_listen_unsafe")
 
     def _require_free_tcp_port(self, port):
         _require_free_tcp_port(self, port)
@@ -564,7 +566,7 @@ class Installer:
             raise InstallerError("xui_incompatible") from None
 
     def _activate_with_panel(self, domain):
-        port, base_path = self._panel_settings()
+        port, base_path, _ = self._panel_settings()
         return self.activate_nginx(
             domain=domain, panel_port=port, panel_base_path=base_path
         )

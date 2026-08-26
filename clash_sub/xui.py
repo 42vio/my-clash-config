@@ -33,7 +33,7 @@ _REQUIRED_SETTINGS = (
     "subClashEnable",
     "subClashPath",
 )
-_PANEL_SETTINGS = ("webPort", "webBasePath")
+_PANEL_SETTINGS = ("webPort", "webBasePath", "webListen")
 _RAW_BASE_PATH = re.compile(r"^/?[A-Za-z0-9_-]*/?$")
 
 
@@ -173,11 +173,12 @@ def _validate_reality_inbound(connection) -> None:
         _fail()
 
 
-def read_panel_settings(path: Path) -> tuple[int, str]:
-    """Read the 3x-ui web panel port and base path from the settings table.
+def read_panel_settings(path: Path) -> tuple[int, str, str]:
+    """Read the 3x-ui web panel port, base path, and listen address.
 
     The base path is returned in the normalized upstream ``GetBasePath()``
-    form (leading and trailing slash, ``"/"`` when unset).
+    form (leading and trailing slash, ``"/"`` when unset). The listen value
+    is returned verbatim; callers decide whether the address is safe.
     """
     try:
         connection = sqlite3.connect(
@@ -187,7 +188,8 @@ def read_panel_settings(path: Path) -> tuple[int, str]:
             connection.execute("PRAGMA query_only=ON")
             _validate_schema(connection)
             rows = connection.execute(
-                "SELECT key, value FROM settings WHERE key IN (?, ?)",
+                "SELECT key, value FROM settings WHERE key IN (%s)"
+                % ", ".join("?" for _ in _PANEL_SETTINGS),
                 _PANEL_SETTINGS,
             ).fetchall()
         finally:
@@ -203,7 +205,11 @@ def read_panel_settings(path: Path) -> tuple[int, str]:
         values[key] = value
     if set(values) != set(_PANEL_SETTINGS):
         _fail()
-    return _port(values["webPort"]), _base_path(values["webBasePath"])
+    return (
+        _port(values["webPort"]),
+        _base_path(values["webBasePath"]),
+        _listen(values["webListen"]),
+    )
 
 
 def _port(value) -> int:
@@ -224,6 +230,12 @@ def _base_path(value) -> str:
     if not segment:
         return "/"
     return "/%s/" % segment
+
+
+def _listen(value) -> str:
+    if not isinstance(value, str):
+        _fail()
+    return value
 
 
 def _current_time_ms(now_ms: int | None) -> int:

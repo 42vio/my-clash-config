@@ -22,3 +22,4 @@ CREATE TABLE inbounds (id INTEGER PRIMARY KEY, port INTEGER NOT NULL, protocol T
 INSERT INTO inbounds VALUES (1, 10443, 'vless', 1, '0.0.0.0', '{}', '{"security":"reality","realitySettings":{"serverName":"www.example.com"}}', 'reality-main');
 INSERT INTO settings VALUES ('webPort', '2053');
 INSERT INTO settings VALUES ('webBasePath', '/xui7k2m/');
+INSERT INTO settings VALUES ('webListen', '127.0.0.1');

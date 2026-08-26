@@ -131,7 +131,8 @@ class PreflightTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -153,7 +154,8 @@ class PreflightTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -173,7 +175,8 @@ class PreflightTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/bad path/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/bad path/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -183,6 +186,51 @@ class PreflightTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(InstallerError, "panel_base_path_required"):
                 self._installer().preflight("example.com")
+
+    def test_rejects_panel_listen_on_all_interfaces(self):
+        installer = self._installer()
+
+        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
+            "clash_sub.installer._OS_RELEASE_PATH", self._os_release_debian()
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch(
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "0.0.0.0"),
+        ), patch(
+            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
+        ), patch(
+            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
+        ), patch(
+            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
+        ):
+            with self.assertRaisesRegex(InstallerError, "panel_listen_unsafe"):
+                installer.preflight("example.com")
+
+    def test_rejects_empty_panel_listen_default(self):
+        installer = self._installer()
+
+        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
+            "clash_sub.installer._OS_RELEASE_PATH", self._os_release_debian()
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch(
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", ""),
+        ), patch(
+            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
+        ), patch(
+            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
+        ), patch(
+            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
+        ):
+            with self.assertRaisesRegex(InstallerError, "panel_listen_unsafe"):
+                installer.preflight("example.com")
+
+    def _os_release_debian(self):
+        path = self.root / "os-release"
+        path.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
+        return path
 
     def test_rejects_xui_database_problems(self):
         os_release = self.root / "os-release"
@@ -867,7 +915,8 @@ class NodeHostTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -887,7 +936,8 @@ class NodeHostTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -942,7 +992,8 @@ class InstallOrchestrationTests(unittest.TestCase):
         ) as preflight, patch.object(
             Installer, "optimize_low_memory"
         ) as low_memory, patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
         ):
             installer.install(
                 domain="example.com", cf_token="tok", swap_mb=0, owner_email="owner-example"
@@ -1147,7 +1198,8 @@ class InstallResumeGuardTests(unittest.TestCase):
         ), patch.object(
             Installer, "initialize_subscription"
         ), patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
         ):
             installer.install(domain="same.com", cf_token="t")
 
@@ -1164,13 +1216,16 @@ class InstallResumeGuardTests(unittest.TestCase):
             with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
                 installer._panel_settings()
 
-    def test_panel_settings_returns_port_and_base_path(self):
+    def test_panel_settings_returns_port_base_path_and_listen(self):
         installer = Installer(self.root, runner=self._noop_runner)
 
         with patch(
-            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
         ):
-            self.assertEqual(installer._panel_settings(), (2053, "/xui7k2m/"))
+            self.assertEqual(
+                installer._panel_settings(), (2053, "/xui7k2m/", "127.0.0.1")
+            )
 
 
 if __name__ == "__main__":
