@@ -131,7 +131,7 @@ class PreflightTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_port", lambda path: 2053
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -143,6 +143,46 @@ class PreflightTests(unittest.TestCase):
 
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("preflight", state.phases_done)
+
+    def test_rejects_default_panel_base_path(self):
+        os_release = self.root / "os-release"
+        os_release.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
+
+        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
+            "clash_sub.installer._OS_RELEASE_PATH", os_release
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch(
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/")
+        ), patch(
+            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
+        ), patch(
+            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
+        ), patch(
+            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
+        ):
+            with self.assertRaisesRegex(InstallerError, "panel_base_path_required"):
+                self._installer().preflight("example.com")
+
+    def test_rejects_malformed_panel_base_path(self):
+        os_release = self.root / "os-release"
+        os_release.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
+
+        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
+            "clash_sub.installer._OS_RELEASE_PATH", os_release
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch(
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/bad path/")
+        ), patch(
+            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
+        ), patch(
+            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
+        ), patch(
+            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
+        ):
+            with self.assertRaisesRegex(InstallerError, "panel_base_path_required"):
+                self._installer().preflight("example.com")
 
     def test_rejects_xui_database_problems(self):
         os_release = self.root / "os-release"
@@ -473,6 +513,9 @@ class NginxActivationPhaseTests(unittest.TestCase):
         self.root = (Path(self.tempdir.name) / "repo").resolve()
         (self.root / "private").mkdir(parents=True)
         (self.root / "templates" / "nginx").mkdir(parents=True)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.root / "usr-local-bin").mkdir()
         source = Path(__file__).resolve().parents[1] / "templates" / "nginx"
         for template in source.iterdir():
             shutil.copy(template, self.root / "templates" / "nginx" / template.name)
@@ -483,6 +526,7 @@ class NginxActivationPhaseTests(unittest.TestCase):
             ssl_dir=self.root / "ssl",
             systemd_dir=self.root / "systemd",
             nginx_conf=self.root / "nginx.conf",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
         self.runner_calls = []
 
@@ -499,19 +543,21 @@ class NginxActivationPhaseTests(unittest.TestCase):
     def test_activates_stream_and_sub_server_and_records_state(self):
         installer = self._installer()
 
-        installer.activate_nginx(domain="example.com", panel_port=2053)
+        installer.activate_nginx(
+            domain="example.com", panel_port=2053, panel_base_path="/xui7k2m"
+        )
 
         stream_text = self.paths.stream_conf().read_text(encoding="utf-8")
         http_text = self.paths.http_conf().read_text(encoding="utf-8")
         self.assertIn("sub.example.com", stream_text)
         self.assertIn("sub.example.com", http_text)
-        self.assertIn("/p-", http_text)
+        self.assertIn("/xui7k2m", http_text)
         self.assertIn("127.0.0.1:10443", stream_text)
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("nginx_activation", state.phases_done)
         self.assertEqual(state.domain, "example.com")
         self.assertEqual(state.panel_port, 2053)
-        self.assertTrue(state.panel_base_path.startswith("/p-"))
+        self.assertEqual(state.panel_base_path, "/xui7k2m")
         self.assertEqual(
             state.files_written,
             [str(self.paths.stream_conf()), str(self.paths.http_conf()), str(self.paths.routes_conf)],
@@ -521,17 +567,19 @@ class NginxActivationPhaseTests(unittest.TestCase):
         self.assertTrue(any("nginx" in item and "-t" in item for item in joined))
         self.assertTrue(any("enable" in item and "nginx" in item for item in joined))
 
-    def test_reuses_recorded_panel_base_path(self):
+    def test_activate_nginx_strips_trailing_slash(self):
         installer = self._installer()
-        save_install_state(
-            self.root / "private" / "install-state.json",
-            InstallState(panel_base_path="/p-fixedpath"),
+
+        installer.activate_nginx(
+            domain="example.com", panel_port=2053, panel_base_path="/xui7k2m/"
         )
 
-        installer.activate_nginx(domain="example.com", panel_port=2053)
-
         state = load_install_state(self.root / "private" / "install-state.json")
-        self.assertEqual(state.panel_base_path, "/p-fixedpath")
+        self.assertEqual(state.panel_base_path, "/xui7k2m")
+        self.assertIn(
+            "location = /xui7k2m {",
+            self.paths.http_conf().read_text(encoding="utf-8"),
+        )
 
     def test_enable_failure_does_not_journal_phase(self):
         def failing_enable_runner(arguments, **_):
@@ -543,7 +591,9 @@ class NginxActivationPhaseTests(unittest.TestCase):
         installer = Installer(self.root, paths=self.paths, runner=failing_enable_runner)
 
         with self.assertRaisesRegex(InstallerError, "command_failed"):
-            installer.activate_nginx(domain="example.com", panel_port=2053)
+            installer.activate_nginx(
+                domain="example.com", panel_port=2053, panel_base_path="/xui7k2m"
+            )
 
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertNotIn("nginx_activation", state.phases_done)
@@ -573,6 +623,55 @@ class NginxActivationPhaseTests(unittest.TestCase):
         self.assertTrue(any("enable" in item and "clash-sub-traffic.timer" in item for item in joined))
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("systemd_harden", state.phases_done)
+
+
+class CliSymlinkTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        self.symlink_dir = Path(self.tempdir.name) / "usr-local-bin"
+        self.symlink_dir.mkdir()
+        self.paths = InstallPaths(
+            systemd_dir=self.root / "systemd",
+            cli_symlink=self.symlink_dir / "clash-sub",
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _installer(self):
+        return Installer(
+            self.root,
+            paths=self.paths,
+            runner=lambda a, **_: subprocess.CompletedProcess(list(a), 0),
+        )
+
+    def test_harden_systemd_creates_symlink_and_journals_it(self):
+        installer = self._installer()
+
+        installer.harden_systemd()
+
+        link = self.symlink_dir / "clash-sub"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.resolve(), (self.root / "bin" / "clash-sub").resolve())
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn(str(link), state.files_written)
+
+    def test_harden_systemd_is_idempotent_for_existing_link(self):
+        installer = self._installer()
+        installer.harden_systemd()
+        installer.harden_systemd()
+
+        self.assertTrue((self.symlink_dir / "clash-sub").is_symlink())
+
+    def test_missing_cli_entry_fails(self):
+        (self.root / "bin" / "clash-sub").unlink()
+
+        with self.assertRaisesRegex(InstallerError, "cli_entry_missing"):
+            self._installer().harden_systemd()
 
 
 class SubscriptionInitPhaseTests(unittest.TestCase):
@@ -667,7 +766,7 @@ class NodeHostTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_port", lambda path: 2053
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -687,7 +786,7 @@ class NodeHostTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
-            "clash_sub.installer.read_panel_port", lambda path: 2053
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
         ), patch(
@@ -742,7 +841,7 @@ class InstallOrchestrationTests(unittest.TestCase):
         ) as preflight, patch.object(
             Installer, "optimize_low_memory"
         ) as low_memory, patch(
-            "clash_sub.installer.read_panel_port", lambda path: 2053
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
         ):
             installer.install(
                 domain="example.com", cf_token="tok", swap_mb=0, owner_email="owner-example"
@@ -753,7 +852,9 @@ class InstallOrchestrationTests(unittest.TestCase):
         self.assertFalse(any("preflight" in message for message in self.printed))
         pkg.assert_called_once()
         cert.assert_called_once_with("example.com", "tok")
-        activate.assert_called_once_with(domain="example.com", panel_port=ANY)
+        activate.assert_called_once_with(
+            domain="example.com", panel_port=ANY, panel_base_path=ANY
+        )
         harden.assert_called_once()
         init.assert_called_once_with(
             domain="example.com", owner_email="owner-example", node_host="node.example.com"
@@ -786,6 +887,7 @@ class RollbackInstallTests(unittest.TestCase):
             stream_conf_dir=self.root / "stream-conf.d",
             http_conf_dir=self.root / "conf.d",
             systemd_dir=self.root / "systemd",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
         self.paths.nginx_conf.write_text(
             "http {\n}\n# clash-sub stream include\nstream {\n    include %s/*.conf;\n}\n"
@@ -820,6 +922,8 @@ class RollbackInstallTests(unittest.TestCase):
         for unit in systemd_units:
             unit.parent.mkdir(parents=True, exist_ok=True)
             unit.write_text("# unit\n", encoding="utf-8")
+        self.paths.cli_symlink.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.cli_symlink.symlink_to(self.root / "bin" / "clash-sub")
         save_install_state(
             self.root / "private" / "install-state.json",
             InstallState(
@@ -830,6 +934,7 @@ class RollbackInstallTests(unittest.TestCase):
                 files_written=[
                     str(self.paths.stream_conf()),
                     str(self.paths.http_conf()),
+                    str(self.paths.cli_symlink),
                 ],
                 backups={},
             ),
@@ -839,6 +944,7 @@ class RollbackInstallTests(unittest.TestCase):
 
         self.assertFalse(self.paths.stream_conf().exists())
         self.assertFalse(self.paths.http_conf().exists())
+        self.assertFalse(self.paths.cli_symlink.exists() or self.paths.cli_symlink.is_symlink())
         text = self.paths.nginx_conf.read_text(encoding="utf-8")
         self.assertNotIn("clash-sub stream include", text)
         self.assertIn("http {", text)
@@ -936,22 +1042,30 @@ class InstallResumeGuardTests(unittest.TestCase):
         ), patch.object(
             Installer, "initialize_subscription"
         ), patch(
-            "clash_sub.installer.read_panel_port", lambda path: 2053
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
         ):
             installer.install(domain="same.com", cf_token="t")
 
         preflight.assert_not_called()
         pkg.assert_called_once()
 
-    def test_panel_port_maps_to_installer_error(self):
+    def test_panel_settings_maps_to_installer_error(self):
         installer = Installer(self.root, runner=self._noop_runner)
 
         def broken(path):
             raise XuiCompatibilityError("boom")
 
-        with patch("clash_sub.installer.read_panel_port", broken):
+        with patch("clash_sub.installer.read_panel_settings", broken):
             with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
-                installer._panel_port()
+                installer._panel_settings()
+
+    def test_panel_settings_returns_port_and_base_path(self):
+        installer = Installer(self.root, runner=self._noop_runner)
+
+        with patch(
+            "clash_sub.installer.read_panel_settings", lambda path: (2053, "/xui7k2m/")
+        ):
+            self.assertEqual(installer._panel_settings(), (2053, "/xui7k2m/"))
 
 
 if __name__ == "__main__":

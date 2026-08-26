@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import quote
 
-from clash_sub.xui import XuiCompatibilityError, read_panel_port, read_xui_snapshot
+from clash_sub.xui import XuiCompatibilityError, read_panel_settings, read_xui_snapshot
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "xui-3.6.0.sql"
@@ -269,14 +269,54 @@ class XuiSnapshotTests(unittest.TestCase):
             connection.execute("DELETE FROM inbounds")
         self.assert_incompatible()
 
-    def test_read_panel_port_returns_web_port(self):
-        self.assertEqual(read_panel_port(self.database), 2053)
+    def test_read_panel_settings_returns_web_port_and_base_path(self):
+        self.assertEqual(read_panel_settings(self.database), (2053, "/xui7k2m/"))
 
-    def test_read_panel_port_rejects_invalid_port(self):
+    def test_read_panel_settings_normalizes_base_path_like_upstream(self):
+        cases = (
+            ("xui7k2m", "/xui7k2m/"),
+            ("/xui7k2m", "/xui7k2m/"),
+            ("xui7k2m/", "/xui7k2m/"),
+            ("", "/"),
+            ("/", "/"),
+        )
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self._initialize_database()
+                with closing(sqlite3.connect(self.database)) as connection, connection:
+                    connection.execute(
+                        "UPDATE settings SET value = ? WHERE key = 'webBasePath'",
+                        (raw,),
+                    )
+                self.assertEqual(
+                    read_panel_settings(self.database), (2053, expected)
+                )
+
+    def test_read_panel_settings_rejects_invalid_port(self):
         with closing(sqlite3.connect(self.database)) as connection, connection:
-            connection.execute("UPDATE settings SET value = 'not-a-port' WHERE key = 'port'")
+            connection.execute(
+                "UPDATE settings SET value = 'not-a-port' WHERE key = 'webPort'"
+            )
         with self.assertRaises(XuiCompatibilityError):
-            read_panel_port(self.database)
+            read_panel_settings(self.database)
+
+    def test_read_panel_settings_rejects_unnormalizable_base_path(self):
+        for raw in ("/xui/extra/", "x ui", "/xui..", "主题"):
+            with self.subTest(raw=raw):
+                self._initialize_database()
+                with closing(sqlite3.connect(self.database)) as connection, connection:
+                    connection.execute(
+                        "UPDATE settings SET value = ? WHERE key = 'webBasePath'",
+                        (raw,),
+                    )
+                with self.assertRaises(XuiCompatibilityError):
+                    read_panel_settings(self.database)
+
+    def test_read_panel_settings_rejects_missing_base_path_row(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("DELETE FROM settings WHERE key = 'webBasePath'")
+        with self.assertRaises(XuiCompatibilityError):
+            read_panel_settings(self.database)
 
 
 if __name__ == "__main__":

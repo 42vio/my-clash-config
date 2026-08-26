@@ -575,6 +575,113 @@ class InstallCommandTests(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertIn("invalid_domain", self.stderr.getvalue())
 
+    def test_install_prompts_owner_with_snapshot_default(self):
+        captured = {}
+
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None):
+                captured["print_fn"] = print_fn
+
+            def install(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return {"panel_url": "https://sub.example.com/xui7k2m/", "gate_instruction": ""}
+
+        with patch.dict(
+            "os.environ", {"CLASH_SUB_DOMAIN": "example.com"}, clear=False
+        ), patch(
+            "clash_sub.cli.getpass", return_value="tok"
+        ), patch(
+            "builtins.input", return_value=""
+        ), patch(
+            "clash_sub.cli._suggest_owner_email", return_value="real-owner@x"
+        ), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["kwargs"]["owner_email"], "real-owner@x")
+
+    def test_install_uses_typed_owner_over_suggestion(self):
+        captured = {}
+
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None):
+                pass
+
+            def install(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return {"panel_url": "https://sub.example.com/xui7k2m/", "gate_instruction": ""}
+
+        with patch.dict(
+            "os.environ", {"CLASH_SUB_DOMAIN": "example.com"}, clear=False
+        ), patch(
+            "clash_sub.cli.getpass", return_value="tok"
+        ), patch(
+            "builtins.input", return_value="typed-owner@x"
+        ), patch(
+            "clash_sub.cli._suggest_owner_email", return_value="real-owner@x"
+        ), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["kwargs"]["owner_email"], "typed-owner@x")
+
+    def test_install_rejects_missing_owner_without_suggestion(self):
+        with patch.dict(
+            "os.environ", {"CLASH_SUB_DOMAIN": "example.com"}, clear=False
+        ), patch(
+            "clash_sub.cli.getpass", return_value="tok"
+        ), patch(
+            "builtins.input", return_value=""
+        ), patch(
+            "clash_sub.cli._suggest_owner_email", return_value=""
+        ), patch(
+            "clash_sub.cli.Installer"
+        ), patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 2)
+        self.assertIn("invalid_owner", self.stderr.getvalue())
+
+    def test_install_uses_owner_email_from_environment(self):
+        captured = {}
+
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None):
+                pass
+
+            def install(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return {"panel_url": "https://sub.example.com/xui7k2m/", "gate_instruction": ""}
+
+        with patch.dict(
+            "os.environ",
+            {"CLASH_SUB_DOMAIN": "example.com", "CLASH_SUB_OWNER_EMAIL": "env-owner@x"},
+            clear=False,
+        ), patch(
+            "clash_sub.cli.getpass", return_value="tok"
+        ), patch(
+            "clash_sub.cli._suggest_owner_email"
+        ) as suggest, patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["kwargs"]["owner_email"], "env-owner@x")
+        suggest.assert_not_called()
+
     def test_rollback_with_user_only_is_invalid(self):
         status = main(["rollback", "1"], stdout=io.StringIO(), stderr=self.stderr)
 

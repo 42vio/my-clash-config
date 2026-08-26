@@ -1,3 +1,4 @@
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -32,6 +33,8 @@ _REQUIRED_SETTINGS = (
     "subClashEnable",
     "subClashPath",
 )
+_PANEL_SETTINGS = ("webPort", "webBasePath")
+_RAW_BASE_PATH = re.compile(r"^/?[A-Za-z0-9_-]*/?$")
 
 
 def read_xui_snapshot(path: Path, now_ms: int | None = None) -> XuiSnapshot:
@@ -170,8 +173,12 @@ def _validate_reality_inbound(connection) -> None:
         _fail()
 
 
-def read_panel_port(path: Path) -> int:
-    """Read the 3x-ui web panel port from the settings table."""
+def read_panel_settings(path: Path) -> tuple[int, str]:
+    """Read the 3x-ui web panel port and base path from the settings table.
+
+    The base path is returned in the normalized upstream ``GetBasePath()``
+    form (leading and trailing slash, ``"/"`` when unset).
+    """
     try:
         connection = sqlite3.connect(
             "file:%s?mode=ro" % quote(str(path)), uri=True, timeout=1.0
@@ -180,7 +187,8 @@ def read_panel_port(path: Path) -> int:
             connection.execute("PRAGMA query_only=ON")
             _validate_schema(connection)
             rows = connection.execute(
-                "SELECT value FROM settings WHERE key = 'port'"
+                "SELECT key, value FROM settings WHERE key IN (?, ?)",
+                _PANEL_SETTINGS,
             ).fetchall()
         finally:
             connection.close()
@@ -188,9 +196,14 @@ def read_panel_port(path: Path) -> int:
         raise
     except (OSError, sqlite3.Error, TypeError, ValueError, OverflowError):
         raise XuiCompatibilityError(_ERROR) from None
-    if len(rows) != 1:
+    values = {}
+    for key, value in rows:
+        if key in values:
+            _fail()
+        values[key] = value
+    if set(values) != set(_PANEL_SETTINGS):
         _fail()
-    return _port(rows[0][0])
+    return _port(values["webPort"]), _base_path(values["webBasePath"])
 
 
 def _port(value) -> int:
@@ -202,6 +215,15 @@ def _port(value) -> int:
     ):
         _fail()
     return int(value)
+
+
+def _base_path(value) -> str:
+    if not isinstance(value, str) or not _RAW_BASE_PATH.fullmatch(value):
+        _fail()
+    segment = value.strip("/")
+    if not segment:
+        return "/"
+    return "/%s/" % segment
 
 
 def _current_time_ms(now_ms: int | None) -> int:

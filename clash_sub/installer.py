@@ -3,7 +3,7 @@
 import grp
 import json
 import os
-import secrets
+import re
 import socket
 import subprocess
 import tempfile
@@ -17,7 +17,7 @@ from clash_sub.nginx import (
     render_stream_config,
     render_sub_server,
 )
-from clash_sub.xui import XuiCompatibilityError, read_panel_port, read_xui_snapshot
+from clash_sub.xui import XuiCompatibilityError, read_panel_settings, read_xui_snapshot
 
 _MINIMUM_FREE_BYTES = 1024 ** 3
 _DEBIAN_MAJOR = "12"
@@ -43,6 +43,7 @@ class InstallPaths:
     sysctl_conf: Path = Path("/etc/sysctl.d/99-clash-sub.conf")
     journald_conf_dir: Path = Path("/etc/systemd/journald.conf.d")
     systemd_dir: Path = Path("/etc/systemd/system")
+    cli_symlink: Path = Path("/usr/local/bin/clash-sub")
     swap_file: Path = Path("/swapfile-clash-sub.img")
     xui_database: Path = Path("/etc/x-ui/x-ui.db")
     private_root: Path = Path("/var/lib/clash-sub/private")
@@ -141,6 +142,7 @@ class Installer:
         self._require_debian()
         self._require_disk()
         self._require_xui()
+        self._require_panel_base_path()
         self._require_free_tcp_port(443)
         self._require_host_resolves_locally("sub." + domain)
         self._require_host_resolves_locally(node_host or ("node." + domain))
@@ -173,9 +175,14 @@ class Installer:
     def _require_xui(self):
         try:
             read_xui_snapshot(self.paths.xui_database)
-            read_panel_port(self.paths.xui_database)
+            read_panel_settings(self.paths.xui_database)
         except XuiCompatibilityError:
             raise InstallerError("xui_incompatible") from None
+
+    def _require_panel_base_path(self):
+        _, base_path = self._panel_settings()
+        if not re.fullmatch(r"/[A-Za-z0-9_-]+/", base_path):
+            raise InstallerError("panel_base_path_required")
 
     def _require_free_tcp_port(self, port):
         _require_free_tcp_port(self, port)
@@ -315,8 +322,8 @@ class Installer:
         self._phase_done("certificate")
 
     # -- phase 4 ---------------------------------------------------------
-    def activate_nginx(self, *, domain, panel_port):
-        panel_base_path = self.state().panel_base_path or "/p-" + secrets.token_hex(8)
+    def activate_nginx(self, *, domain, panel_port, panel_base_path):
+        base_path = panel_base_path.rstrip("/")
         config = ServiceConfig(
             owner_email="pending",
             subscription_authority="sub.%s:443" % domain,
@@ -335,7 +342,7 @@ class Installer:
             config,
             domain=domain,
             panel_port=panel_port,
-            panel_base_path=panel_base_path,
+            panel_base_path=base_path,
             routes_include=str(self.paths.routes_conf),
             fullchain=str(self.paths.fullchain()),
             privkey=str(self.paths.privkey()),
@@ -361,7 +368,7 @@ class Installer:
             state.phases_done.append("nginx_activation")
         state.domain = domain
         state.panel_port = panel_port
-        state.panel_base_path = panel_base_path
+        state.panel_base_path = base_path
         for path in (
             self.paths.stream_conf(),
             self.paths.http_conf(),
@@ -373,6 +380,7 @@ class Installer:
 
     # -- phase 5 ---------------------------------------------------------
     def harden_systemd(self):
+        self._install_cli_symlink()
         self._write_file(
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
             "[Service]\nRestart=on-failure\nRestartSec=2s\n",
@@ -398,6 +406,27 @@ class Installer:
         self._run(["systemctl", "daemon-reload"])
         self._run(["systemctl", "enable", "--now", "clash-sub-traffic.timer"])
         self._phase_done("systemd_harden")
+        state = self.state()
+        if str(self.paths.cli_symlink) not in state.files_written:
+            state.files_written.append(str(self.paths.cli_symlink))
+            self._save_state(state)
+
+    def _install_cli_symlink(self):
+        target = self.repo_root / "bin" / "clash-sub"
+        if not target.is_file():
+            raise InstallerError("cli_entry_missing")
+        link = self.paths.cli_symlink
+        if link.is_symlink() and link.resolve() == target.resolve():
+            return False
+        temporary = link.parent / (".%s.tmp" % link.name)
+        temporary.unlink(missing_ok=True)
+        try:
+            temporary.symlink_to(target)
+            os.replace(temporary, link)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            raise InstallerError("cli_symlink_failed") from None
+        return True
 
     # -- phase 6 ---------------------------------------------------------
     def initialize_subscription(self, *, domain, owner_email, node_host=None):
@@ -478,7 +507,7 @@ class Installer:
             ("certificate", lambda: self.issue_certificate(domain, cf_token)),
             (
                 "nginx_activation",
-                lambda: self.activate_nginx(domain=domain, panel_port=self._panel_port()),
+                lambda: self._activate_with_panel(domain),
             ),
             ("systemd_harden", self.harden_systemd),
             (
@@ -496,11 +525,17 @@ class Installer:
             self.print_fn("phase %s: done" % name)
         return self._report(self.state())
 
-    def _panel_port(self):
+    def _panel_settings(self):
         try:
-            return read_panel_port(self.paths.xui_database)
+            return read_panel_settings(self.paths.xui_database)
         except XuiCompatibilityError:
             raise InstallerError("xui_incompatible") from None
+
+    def _activate_with_panel(self, domain):
+        port, base_path = self._panel_settings()
+        return self.activate_nginx(
+            domain=domain, panel_port=port, panel_base_path=base_path
+        )
 
     # -- rollback --------------------------------------------------------
     def rollback_install(self):

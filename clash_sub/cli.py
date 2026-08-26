@@ -293,7 +293,16 @@ def _install(stdout, stderr):
         swap_mb = int(os.environ.get("CLASH_SUB_SWAP_MB", "0"))
     except ValueError:
         return _error(stderr, "invalid_swap", 2)
-    owner = os.environ.get("CLASH_SUB_OWNER_EMAIL", "owner-example")
+    owner = os.environ.get("CLASH_SUB_OWNER_EMAIL", "")
+    if not owner:
+        suggested = _suggest_owner_email()
+        try:
+            stdout.write("owner 的 3x-ui client email（回车使用 %s）：\n" % (suggested or "无建议"))
+            owner = input().strip() or suggested
+        except (EOFError, KeyboardInterrupt):
+            owner = suggested
+        if not owner:
+            return _error(stderr, "invalid_owner", 2)
     node_host = os.environ.get("CLASH_SUB_NODE_HOST", "") or None
     try:
         installer = Installer(
@@ -311,6 +320,18 @@ def _install(stdout, stderr):
     stdout.write("面板地址：%s\n" % report.get("panel_url", ""))
     stdout.write("%s\n" % report.get("gate_instruction", ""))
     return 0
+
+
+def _suggest_owner_email():
+    try:
+        from clash_sub.installer import InstallPaths
+        from clash_sub.xui import read_xui_snapshot
+
+        snapshot = read_xui_snapshot(InstallPaths().xui_database)
+        enabled = [client.email for client in snapshot.clients if client.enabled]
+        return enabled[0] if enabled else ""
+    except Exception:
+        return ""
 
 
 def _rollback_install(stdout, stderr):
