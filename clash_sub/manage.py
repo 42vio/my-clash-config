@@ -236,6 +236,11 @@ def _rerender_nginx(repo_root, runner, state):
 
 
 def run_update(repo_root, runner):
+    """Pull new code, then delegate post-update work to a fresh process.
+
+    This process still runs the pre-pull code objects, so any systemd/nginx
+    work must happen in a child that loads the newly pulled code from disk.
+    """
     auto_snapshot(repo_root, runner, label="pre-update")
     result = runner(
         ["git", "-C", str(repo_root), "pull", "--ff-only"],
@@ -262,6 +267,32 @@ def run_update(repo_root, runner):
     )
     if result.returncode != 0:
         raise RuntimeError("pip_sync_failed")
+    try:
+        child = runner(
+            [
+                str(Path(repo_root) / ".venv" / "bin" / "python"),
+                str(Path(repo_root) / "bin" / "clash-sub"),
+                "update",
+                "--post-update",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=900,
+            check=False,
+        )
+    except Exception:
+        raise RuntimeError("post_update_failed") from None
+    if child.returncode != 0:
+        raise RuntimeError("post_update_failed")
+    return True
+
+
+def run_post_update(repo_root, runner):
+    """Apply systemd/nginx post-update steps with the newly pulled code.
+
+    Runs only in the child spawned by run_update; never spawns another child.
+    """
     Installer(Path(repo_root), runner=runner).harden_systemd()
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state)

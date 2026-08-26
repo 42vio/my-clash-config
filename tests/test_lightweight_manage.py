@@ -124,23 +124,95 @@ class UpdateTests(unittest.TestCase):
         self.runner_calls.append(list(arguments))
         return subprocess.CompletedProcess(list(arguments), 0)
 
-    def test_update_snapshots_pulls_and_rerenders(self):
+    def _post_update_spawn_argv(self):
+        return [
+            str(self.root / ".venv" / "bin" / "python"),
+            str(self.root / "bin" / "clash-sub"),
+            "update",
+            "--post-update",
+        ]
+
+    def test_update_snapshots_pulls_pips_and_spawns_post_update(self):
         from clash_sub.manage import run_update
 
-        state = InstallState(domain="example.com", panel_port=2053, panel_base_path="/p-x")
-        with patch("clash_sub.manage._load_install_state", return_value=state), patch(
-            "clash_sub.manage.auto_snapshot"
-        ) as snapshot, patch("clash_sub.manage._rerender_nginx") as rerender, patch(
+        with patch("clash_sub.manage.auto_snapshot") as snapshot:
+            run_update(self.root, self._runner)
+
+        snapshot.assert_called_once()
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("git" in item and "pull" in item for item in joined))
+        self.assertTrue(any("pip" in item and "install" in item for item in joined))
+        self.assertIn(self._post_update_spawn_argv(), self.runner_calls)
+
+    def test_update_spawns_post_update_process_after_pull(self):
+        from clash_sub.manage import run_update
+
+        with patch("clash_sub.manage.auto_snapshot"), patch(
             "clash_sub.installer.Installer.harden_systemd"
         ) as harden:
             run_update(self.root, self._runner)
 
+        expected = self._post_update_spawn_argv()
+        self.assertIn(expected, self.runner_calls)
+        pull_indexes = [
+            index for index, call in enumerate(self.runner_calls) if "pull" in call
+        ]
+        self.assertTrue(pull_indexes)
+        self.assertGreater(
+            self.runner_calls.index(expected), pull_indexes[0],
+            "post-update child must be spawned after the git pull",
+        )
+        harden.assert_not_called()
+
+    def test_update_post_failure_raises_stable_error(self):
+        from clash_sub.manage import run_update
+
+        def failing_spawn(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            returncode = 1 if "--post-update" in arguments else 0
+            return subprocess.CompletedProcess(list(arguments), returncode)
+
+        with patch("clash_sub.manage.auto_snapshot") as snapshot:
+            with self.assertRaisesRegex(RuntimeError, "post_update_failed"):
+                run_update(self.root, failing_spawn)
+
         snapshot.assert_called_once()
+        self.assertTrue(any("pull" in call for call in self.runner_calls))
+
+    def test_post_update_runs_harden_and_rerender_without_git_or_spawn(self):
+        from clash_sub.manage import run_post_update
+
+        state = InstallState(domain="example.com", panel_port=2053, panel_base_path="/p-x")
+        with patch("clash_sub.manage.Installer") as installer, patch(
+            "clash_sub.manage._rerender_nginx"
+        ) as rerender, patch(
+            "clash_sub.manage._load_install_state", return_value=state
+        ), patch("clash_sub.manage.auto_snapshot") as snapshot:
+            run_post_update(self.root, self._runner)
+
+        installer.return_value.harden_systemd.assert_called_once()
         rerender.assert_called_once()
-        harden.assert_called_once()
+        snapshot.assert_not_called()
         joined = [" ".join(c) for c in self.runner_calls]
-        self.assertTrue(any("git" in item and "pull" in item for item in joined))
-        self.assertTrue(any("pip" in item and "install" in item for item in joined))
+        self.assertFalse(any("git" in item or "pull" in item for item in joined))
+        self.assertFalse(any("--post-update" in item for item in joined))
+
+    def test_update_pull_failure_does_not_spawn(self):
+        from clash_sub.manage import run_update
+
+        def failing_pull(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            returncode = 1 if "pull" in arguments else 0
+            return subprocess.CompletedProcess(list(arguments), returncode)
+
+        with patch("clash_sub.manage.auto_snapshot"), patch(
+            "clash_sub.installer.Installer.harden_systemd"
+        ) as harden:
+            with self.assertRaisesRegex(RuntimeError, "git_pull_failed"):
+                run_update(self.root, failing_pull)
+
+        self.assertFalse(any("--post-update" in call for call in self.runner_calls))
+        harden.assert_not_called()
 
     def test_update_fails_when_pull_fails(self):
         from clash_sub.manage import run_update
@@ -150,10 +222,7 @@ class UpdateTests(unittest.TestCase):
             returncode = 1 if "pull" in arguments else 0
             return subprocess.CompletedProcess(list(arguments), returncode)
 
-        state = InstallState(domain="example.com")
-        with patch("clash_sub.manage._load_install_state", return_value=state), patch(
-            "clash_sub.manage.auto_snapshot"
-        ), patch("clash_sub.manage._rerender_nginx"):
+        with patch("clash_sub.manage.auto_snapshot"):
             with self.assertRaisesRegex(RuntimeError, "git_pull_failed"):
                 run_update(self.root, failing_pull)
 

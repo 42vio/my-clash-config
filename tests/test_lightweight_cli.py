@@ -829,6 +829,34 @@ class ManageCommandTests(unittest.TestCase):
         self.assertEqual(status, 0)
         renew.assert_called_once()
 
+    def test_update_post_update_flag_dispatches_to_post(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_post_update", return_value=True
+        ) as post, patch.object(
+            manage, "run_update", return_value=True
+        ) as update:
+            status = main(["update", "--post-update"], stdout=self.stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        post.assert_called_once()
+        update.assert_not_called()
+
+    def test_update_dispatches_run_update(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_post_update", return_value=True
+        ) as post, patch.object(
+            manage, "run_update", return_value=True
+        ) as update:
+            status = main(["update"], stdout=self.stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        update.assert_called_once()
+        post.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -99,7 +99,8 @@ def _parser():
     commands.add_parser("recover", add_help=False)
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
-    commands.add_parser("update", add_help=False)
+    update = commands.add_parser("update", add_help=False)
+    update.add_argument("--post-update", action="store_true")
     cert = commands.add_parser("cert", add_help=False)
     cert.add_argument("--renew", action="store_true")
     cert.add_argument("--domain")
@@ -126,7 +127,12 @@ def _run_command(parsed, stdout, stderr, factory):
     if command == "backup":
         return _managed(stdout, stderr, manage.create_backup)
     if command == "update":
-        return _managed(stdout, stderr, manage.run_update)
+        action = (
+            manage.run_post_update
+            if getattr(parsed, "post_update", False)
+            else manage.run_update
+        )
+        return _managed(stdout, stderr, action)
     if command == "cert":
         return _cert_command(parsed, stdout, stderr)
     if command == "sync":
