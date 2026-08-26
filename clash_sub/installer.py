@@ -234,30 +234,42 @@ class Installer:
             isinstance(swap_mb, int)
             and not isinstance(swap_mb, bool)
             and swap_mb > 0
-            and not self.paths.swap_file.exists()
         ):
-            self._run(
-                ["fallocate", "-l", "%sM" % swap_mb, str(self.paths.swap_file)]
-            )
-            self._run(["chmod", "600", str(self.paths.swap_file)])
-            self._run(["mkswap", str(self.paths.swap_file)])
-            self._run(["swapon", str(self.paths.swap_file)])
-            marker = "# clash-sub swap"
-            fstab_text = (
-                self.paths.fstab.read_text(encoding="utf-8")
-                if self.paths.fstab.is_file()
-                else ""
-            )
-            if marker not in fstab_text:
-                self._write_file(
-                    self.paths.fstab,
-                    fstab_text.rstrip("\n")
-                    + ("\n" if fstab_text.strip() else "")
-                    + "%s\n%s none swap sw 0 0\n" % (marker, self.paths.swap_file),
-                    0o644,
-                )
+            if not _swap_active(self.paths.swap_file):
+                if self.paths.swap_file.exists() or self.paths.swap_file.is_symlink():
+                    self.paths.swap_file.unlink(missing_ok=True)
+                try:
+                    self._run(
+                        ["fallocate", "-l", "%sM" % swap_mb, str(self.paths.swap_file)]
+                    )
+                    self._run(["chmod", "600", str(self.paths.swap_file)])
+                    self._run(["mkswap", str(self.paths.swap_file)])
+                    self._run(["swapon", str(self.paths.swap_file)])
+                    self._write_fstab_entry()
+                except Exception:
+                    self._run_best_effort(["swapoff", str(self.paths.swap_file)])
+                    self.paths.swap_file.unlink(missing_ok=True)
+                    raise
+            else:
+                self._write_fstab_entry()
         self._run(["sysctl", "-p", str(self.paths.sysctl_conf)])
         self._phase_done("low_memory")
+
+    def _write_fstab_entry(self):
+        marker = "# clash-sub swap"
+        fstab_text = (
+            self.paths.fstab.read_text(encoding="utf-8")
+            if self.paths.fstab.is_file()
+            else ""
+        )
+        if marker not in fstab_text:
+            self._write_file(
+                self.paths.fstab,
+                fstab_text.rstrip("\n")
+                + ("\n" if fstab_text.strip() else "")
+                + "%s\n%s none swap sw 0 0\n" % (marker, self.paths.swap_file),
+                0o644,
+            )
 
     # -- phase 2 ---------------------------------------------------------
     def install_nginx_packages(self):
@@ -774,6 +786,18 @@ def _require_free_tcp_port(installer, port):
         raise InstallerError("port_443_taken") from None
     finally:
         probe.close()
+
+
+def _swap_active(swap_file):
+    """True when the swap file is listed in /proc/swaps."""
+    try:
+        with open("/proc/swaps", encoding="ascii") as handle:
+            return any(
+                line.split() and line.split()[0] == str(swap_file)
+                for line in handle.read().splitlines()[1:]
+            )
+    except OSError:
+        return False
 
 
 def _resolve_host(hostname):

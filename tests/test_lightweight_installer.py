@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 from collections import namedtuple
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, patch
@@ -17,6 +18,7 @@ from clash_sub.installer import (
     InstallState,
     Installer,
     InstallerError,
+    _swap_active,
     load_install_state,
     save_install_state,
 )
@@ -383,12 +385,150 @@ class LowMemoryPhaseTests(unittest.TestCase):
         self.assertEqual(fstab, entry)
         self.assertEqual(fstab.count("# clash-sub swap"), 1)
 
-    def test_skips_swap_when_file_exists(self):
+    def test_skips_creation_when_swap_already_active(self):
         self.paths.swap_file.write_bytes(b"")
-        self._installer().optimize_low_memory(swap_mb=1024)
+        with patch("clash_sub.installer._swap_active", return_value=True):
+            self._installer().optimize_low_memory(swap_mb=1024)
 
         joined = [" ".join(c) for c in self.runner_calls]
         self.assertFalse(any("fallocate" in item for item in joined))
+        self.assertFalse(any("mkswap" in item for item in joined))
+        self.assertFalse(any("swapon" in item for item in joined))
+        fstab = self.paths.fstab.read_text(encoding="utf-8")
+        self.assertIn("# clash-sub swap", fstab)
+        self.assertIn("%s none swap sw 0 0" % self.paths.swap_file, fstab)
+
+    def test_inactive_orphan_swap_file_is_recreated(self):
+        self.paths.swap_file.write_bytes(b"")
+        with patch("clash_sub.installer._swap_active", return_value=False):
+            self._installer().optimize_low_memory(swap_mb=1024)
+
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("fallocate" in item for item in joined))
+        self.assertTrue(
+            any("swapon" in item and str(self.paths.swap_file) in item for item in joined)
+        )
+        self.assertFalse(self.paths.swap_file.exists())
+
+    def _failing_runner(self, keyword):
+        def runner(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            if keyword in arguments:
+                return subprocess.CompletedProcess(arguments, 1)
+            if arguments[0] == "fallocate":
+                self.paths.swap_file.write_bytes(b"\0" * 1024)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        return runner
+
+    def test_failure_after_fallocate_cleans_up(self):
+        installer = Installer(
+            self.root, paths=self.paths, runner=self._failing_runner("mkswap")
+        )
+
+        with self.assertRaisesRegex(InstallerError, "command_failed"):
+            installer.optimize_low_memory(swap_mb=1024)
+
+        self.assertFalse(self.paths.swap_file.exists())
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("swapoff" in item for item in joined))
+
+    def test_swap_failure_cleans_partial_file_and_rerun_completes(self):
+        for keyword in ["chmod", "mkswap", "swapon"]:
+            with self.subTest(keyword=keyword):
+                self._assert_swap_failure_then_rerun(keyword)
+
+    def _assert_swap_failure_then_rerun(self, keyword):
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = (Path(tempdir) / "repo").resolve()
+            (root / "private").mkdir(parents=True)
+            paths = InstallPaths(
+                sysctl_conf=root / "99-clash-sub.conf",
+                journald_conf_dir=root / "journald",
+                swap_file=root / "swap.img",
+                fstab=root / "fstab",
+            )
+            calls = []
+            armed = {"fail": True}
+
+            def runner(arguments, **_):
+                calls.append(list(arguments))
+                if armed["fail"] and keyword in arguments:
+                    armed["fail"] = False
+                    return subprocess.CompletedProcess(arguments, 1)
+                if arguments[0] == "fallocate":
+                    paths.swap_file.write_bytes(b"\0" * 1024)
+                return subprocess.CompletedProcess(arguments, 0)
+
+            installer = Installer(root, paths=paths, runner=runner)
+            with self.assertRaisesRegex(InstallerError, "command_failed"):
+                installer.optimize_low_memory(swap_mb=1024)
+            self.assertFalse(paths.swap_file.exists())
+
+            first_run_calls = len(calls)
+            installer.optimize_low_memory(swap_mb=1024)
+
+            second_run = [" ".join(c) for c in calls[first_run_calls:]]
+            self.assertTrue(any("fallocate" in item for item in second_run))
+            self.assertTrue(any("swapon" in item for item in second_run))
+            self.assertIn(
+                "low_memory",
+                load_install_state(root / "private" / "install-state.json").phases_done,
+            )
+            fstab = paths.fstab.read_text(encoding="utf-8")
+            self.assertEqual(fstab.count("# clash-sub swap"), 1)
+
+    def test_fstab_failure_cleans_up_and_rerun(self):
+        real_write = Installer._write_fstab_entry
+        flaky = {"armed": True}
+
+        def flaky_write(installer_self):
+            if flaky["armed"]:
+                flaky["armed"] = False
+                raise InstallerError("command_failed")
+            real_write(installer_self)
+
+        def runner(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            if arguments[0] == "fallocate":
+                self.paths.swap_file.write_bytes(b"\0" * 1024)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=runner)
+        with patch.object(Installer, "_write_fstab_entry", flaky_write):
+            with self.assertRaisesRegex(InstallerError, "command_failed"):
+                installer.optimize_low_memory(swap_mb=1024)
+        self.assertFalse(self.paths.swap_file.exists())
+        self.assertFalse(self.paths.fstab.exists())
+
+        installer.optimize_low_memory(swap_mb=1024)
+
+        self.assertIn(
+            "low_memory",
+            load_install_state(self.root / "private" / "install-state.json").phases_done,
+        )
+        fstab = self.paths.fstab.read_text(encoding="utf-8")
+        self.assertEqual(fstab.count("# clash-sub swap"), 1)
+        self.assertIn("%s none swap sw 0 0" % self.paths.swap_file, fstab)
+
+    def test_swap_active_matches_proc_swaps_listing(self):
+        content = (
+            "Filename                                Type        Size    Used    Priority\n"
+            "/dev/sda2                               partition   2048    0       -2\n"
+            "%s                              file        1024    0       -3\n"
+        )
+        for expected, text in [
+            (True, content % self.paths.swap_file),
+            (False, content % "/other/swap.img"),
+        ]:
+            with self.subTest(expected=expected):
+                handle = StringIO(text)
+                with patch("builtins.open", return_value=handle):
+                    self.assertEqual(_swap_active(self.paths.swap_file), expected)
+
+    def test_swap_active_false_when_proc_swaps_unreadable(self):
+        with patch("builtins.open", side_effect=OSError):
+            self.assertFalse(_swap_active(self.paths.swap_file))
 
     def test_raises_when_command_fails(self):
         def failing_runner(arguments, **_):
