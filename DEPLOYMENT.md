@@ -16,8 +16,13 @@
 2. 安装 3x-ui（官方脚本），记下面板端口/路径/凭据。版本 pin 与人工加固细节（2FA、随机
    Web Base Path、回环面板/订阅）见 [docs/3x-ui-setup.md](docs/3x-ui-setup.md)；
    该文的公网入站端口在本拓扑下为 10443（不再是 443）。
-3. 面板设置：启用 Clash 订阅（subListen=127.0.0.1 默认即可）。
-4. 建入站：协议 VLESS、端口 10443、listen 0.0.0.0、传输 TCP、Security=Reality
+3. 安装 Mihomo 校验二进制（`clash-sub sync` 的配置校验依赖它）：
+
+   从 https://github.com/MetaCubeX/mihomo/releases 下载 linux-amd64（与 CI 无关，
+   固定一个 release 版本即可），解压后先 `mkdir -p /usr/local/lib/clash-sub`，再把
+   二进制放到 `/usr/local/lib/clash-sub/mihomo` 并 `chmod 755`。
+4. 面板设置：启用 Clash 订阅（subListen=127.0.0.1 默认即可）。
+5. 建入站：协议 VLESS、端口 10443、listen 0.0.0.0、传输 TCP、Security=Reality
    （serverName 填第三方伪装域），添加 client（email 记住，作为 owner-email）。
    —— 此时代理已可用（公网 10443 直连）。
 

@@ -13,6 +13,10 @@
 | Xray-core | 26.6.27（在 3x-ui 内选择，关闭自动升级） |
 | 公网入站 | VLESS + RAW/TCP + REALITY，TCP 443，flow `xtls-rprx-vision` |
 
+> 注：自 2026-08 整合方案起，Reality 入站使用 127.0.0.1:10443（公网仅 443，经 nginx stream
+> 分流），本文的公网 443 直连描述为历史流程。见 DEPLOYMENT.md 与
+> docs/superpowers/specs/2026-08-25-clash-sub-integration-design.md。
+
 不要升级到更高版本：升级前必须先按
 [docs/operations.md](operations.md) 的「3x-ui 升级流程」做数据库兼容检查。
 
