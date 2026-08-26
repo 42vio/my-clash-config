@@ -27,7 +27,12 @@
    固定一个 release 版本即可，下载后建议核对 release 的 sha256），解压后先
    `mkdir -p /usr/local/lib/clash-sub`，再把
    二进制放到 `/usr/local/lib/clash-sub/mihomo` 并 `chmod 755`。
-4. 面板设置：启用 Clash 订阅（subListen=127.0.0.1 默认即可）。
+4. 面板设置（两项都必须）：
+   - **Web 根路径（webBasePath）**：设为随机串（如 `/xui7k2m/`）。preflight 会校验它非 `/`，
+     installer 直接读取该值作为面板反代路径——不再单独生成。
+   - **面板监听**：设为 127.0.0.1（上游默认监听 0.0.0.0，会裸奔公网端口；本方案经
+     nginx 反代访问，无需公网直连）。
+   - 启用 Clash 订阅（subListen=127.0.0.1 默认即可）。
 5. 建入站：协议 VLESS、端口 10443、listen 0.0.0.0、传输 TCP、Security=Reality
    （serverName 填第三方伪装域），添加 client（email 记住，作为 owner-email）。
    —— 此时代理已可用（公网 10443 直连）。
@@ -39,9 +44,11 @@
     git clone <repo> /opt/my-clash-config && cd /opt/my-clash-config
     bash install.sh
 
-交互输入：主域名、Cloudflare API Token（swap 扩容由 CLASH_SUB_SWAP_MB 环境变量决定，交互模式下也不询问）。
+交互输入：主域名、Cloudflare API Token、owner 的 client email（自动建议 3x-ui 中第一个
+启用的 client，回车即用；swap 扩容由 CLASH_SUB_SWAP_MB 环境变量决定，交互模式下也不询问）。
 非交互（CI/重装）：`CLASH_SUB_DOMAIN=example.com CLASH_SUB_OWNER_EMAIL=owner-1 CLASH_SUB_SWAP_MB=1024 bash install.sh`
-（CF Token 无环境变量，非交互场景下通过 stdin 提供）。
+（CF Token 无环境变量，非交互场景下通过 stdin 提供；未设 CLASH_SUB_OWNER_EMAIL 时自动取
+3x-ui 第一个启用 client 的 email）。
 
 installer 阶段：preflight（只读检查，含 DNS 前置与 443 空闲）→ 低配优化（swap/swappiness/journald）
 → 安装 nginx+stream 模块 → acme.sh 签发 wildcard → 激活 443 分流与订阅/面板 TLS → systemd 自愈补齐
@@ -70,9 +77,9 @@ ss -tlnp | grep -E '443|10443|30443'
 ## 日常管理
 
 - `clash-sub backup`：全量备份到 backups/（含 x-ui.db、运行时 private/、nginx 配置）
-- `clash-sub update`：git pull + 依赖同步 + nginx 配置重渲染（变更前自动快照）
+- `clash-sub update`：git pull + 依赖同步 + systemd 资产刷新（含 /usr/local/bin/clash-sub 链接）+ nginx 配置重渲染（变更前自动快照）
 - `clash-sub cert` / `clash-sub cert --renew`：证书状态 / 强制续期
-- `clash-sub rollback --install`：回滚整合安装（Reality 回到公网 10443 直连，代理不断）（注：收口后 Reality 监听 127.0.0.1，回滚需同时在 3x-ui 面板把入站 listen 改回 0.0.0.0 才能恢复公网直连）
+- `clash-sub rollback --install`：回滚整合安装——移除 nginx 配置与 stream include（仅精确移除 installer 写入的块）、停用 systemd 资产、恢复 Debian 默认站点（注：收口后 Reality 监听 127.0.0.1，回滚需同时在 3x-ui 面板把入站 listen 改回 0.0.0.0 才能恢复公网直连）
 
 日常运维（机场更新、流量、历史、版本回滚、轮换）见 [docs/operations.md](docs/operations.md)；
 重装恢复与域名变更见 [docs/recovery.md](docs/recovery.md)。
