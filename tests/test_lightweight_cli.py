@@ -546,5 +546,52 @@ class InstallCommandTests(unittest.TestCase):
         self.assertIn("invalid_command", self.stderr.getvalue())
 
 
+class ManageCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.stderr = io.StringIO()
+        self.stdout = io.StringIO()
+
+    def test_backup_requires_root(self):
+        with patch("clash_sub.cli.os.geteuid", return_value=1000):
+            status = main(["backup"], stdout=self.stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 1)
+        self.assertIn("not_root", self.stderr.getvalue())
+
+    def test_cert_domain_flag_is_unsupported(self):
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch(
+            "clash_sub.manage.cert_status"
+        ) as status_fn:
+            status = main(["cert", "--domain", "new.example.com"], stdout=self.stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 2)
+        self.assertIn("domain_change_unsupported", self.stderr.getvalue())
+        status_fn.assert_not_called()
+
+    def test_cert_prints_status(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage,
+            "cert_status",
+            return_value={"present": True, "not_after": "Sep 25 12:00:00 2026 GMT"},
+        ):
+            status = main(["cert"], stdout=self.stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertIn("Sep 25", self.stdout.getvalue())
+
+    def test_cert_renew_runs(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "cert_renew", return_value=True
+        ) as renew:
+            status = main(["cert", "--renew"], stdout=self.stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        renew.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

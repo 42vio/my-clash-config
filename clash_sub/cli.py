@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from getpass import getpass
 from pathlib import Path
 
+from clash_sub import manage
 from clash_sub.config import load_config
 from clash_sub.installer import Installer, InstallerError
 from clash_sub.nginx import recover_runtime
@@ -97,6 +98,11 @@ def _parser():
     reinitialize.add_argument("user")
     commands.add_parser("recover", add_help=False)
     commands.add_parser("install", add_help=False)
+    commands.add_parser("backup", add_help=False)
+    commands.add_parser("update", add_help=False)
+    cert = commands.add_parser("cert", add_help=False)
+    cert.add_argument("--renew", action="store_true")
+    cert.add_argument("--domain")
     return parser
 
 
@@ -117,6 +123,12 @@ def _run_command(parsed, stdout, stderr, factory):
             return _error(stderr, "invalid_command", 2)
     if command == "install":
         return _install(stdout, stderr)
+    if command == "backup":
+        return _managed(stdout, stderr, manage.create_backup)
+    if command == "update":
+        return _managed(stdout, stderr, manage.run_update)
+    if command == "cert":
+        return _cert_command(parsed, stdout, stderr)
     if command == "sync":
         return _call("sync", None, stdout, stderr, factory)
     if command == "traffic-update":
@@ -312,4 +324,33 @@ def _recover(stdout, stderr):
     except Exception:
         return _error(stderr, "runtime_recovery_failed", 1)
     stdout.write("运行时恢复已完成。\n")
+    return 0
+
+
+def _managed(stdout, stderr, action):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1)
+    try:
+        action(default_repo_root(), subprocess.run)
+    except Exception:
+        return _error(stderr, "management_command_failed", 1)
+    stdout.write("操作已完成。\n")
+    return 0
+
+
+def _cert_command(parsed, stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1)
+    try:
+        if parsed.domain:
+            return _error(stderr, "domain_change_unsupported", 2)
+        if parsed.renew:
+            manage.cert_renew(default_repo_root(), subprocess.run)
+            stdout.write("证书续期已触发。\n")
+        else:
+            status = manage.cert_status(default_repo_root(), subprocess.run)
+            stdout.write("证书存在：%s\n" % ("是" if status["present"] else "否"))
+            stdout.write("到期时间：%s\n" % status["not_after"])
+    except Exception:
+        return _error(stderr, "cert_command_failed", 1)
     return 0
