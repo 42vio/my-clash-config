@@ -627,5 +627,170 @@ class InstallOrchestrationTests(unittest.TestCase):
         self.assertIn("gate_instruction", report)
 
 
+class RollbackInstallTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.paths = InstallPaths(
+            nginx_conf=self.root / "nginx.conf",
+            stream_conf_dir=self.root / "stream-conf.d",
+            http_conf_dir=self.root / "conf.d",
+            systemd_dir=self.root / "systemd",
+        )
+        self.paths.nginx_conf.write_text(
+            "http {\n}\n# clash-sub stream include\nstream {\n    include %s/*.conf;\n}\n"
+            % self.paths.stream_conf_dir,
+            encoding="utf-8",
+        )
+        self.paths.stream_conf().parent.mkdir(parents=True)
+        self.paths.stream_conf().write_text("# stream\n", encoding="utf-8")
+        self.paths.http_conf().parent.mkdir(parents=True)
+        self.paths.http_conf().write_text("# http\n", encoding="utf-8")
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def test_rolls_back_install_artifacts(self):
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(
+                domain="example.com",
+                panel_port=2053,
+                panel_base_path="/p-x",
+                phases_done=["nginx_activation"],
+                files_written=[
+                    str(self.paths.stream_conf()),
+                    str(self.paths.http_conf()),
+                ],
+                backups={},
+            ),
+        )
+
+        installer.rollback_install()
+
+        self.assertFalse(self.paths.stream_conf().exists())
+        self.assertFalse(self.paths.http_conf().exists())
+        text = self.paths.nginx_conf.read_text(encoding="utf-8")
+        self.assertNotIn("clash-sub stream include", text)
+        self.assertIn("http {", text)
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("stop" in item and "nginx" in item for item in joined))
+        self.assertTrue(any("disable" in item and "nginx" in item for item in joined))
+        self.assertTrue(any("daemon-reload" in item for item in joined))
+
+    def test_rollback_without_journal_leaves_files(self):
+        installer = self._installer()
+
+        installer.rollback_install()
+
+        self.assertTrue(self.paths.stream_conf().exists())
+        text = self.paths.nginx_conf.read_text(encoding="utf-8")
+        self.assertIn("clash-sub stream include", text)
+
+    def test_rollback_tolerates_missing_files(self):
+        self.paths.stream_conf().unlink()
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(files_written=[str(self.paths.stream_conf())]),
+        )
+
+        installer.rollback_install()
+
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+    def test_rollback_survives_stop_failure(self):
+        def failing_stop_runner(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            if "stop" in arguments:
+                return subprocess.CompletedProcess(arguments, 1)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=failing_stop_runner)
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(files_written=[str(self.paths.http_conf())]),
+        )
+
+        installer.rollback_install()
+
+        self.assertFalse(self.paths.http_conf().exists())
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+
+class InstallResumeGuardTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _noop_runner(self, arguments, **_):
+        return subprocess.CompletedProcess(list(arguments), 0)
+
+    def test_rejects_conflicting_domain_resume(self):
+        installer = Installer(self.root, runner=self._noop_runner)
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="old.com", phases_done=["preflight"]),
+        )
+
+        with patch.object(Installer, "preflight"), patch.object(
+            Installer, "install_nginx_packages"
+        ):
+            with self.assertRaisesRegex(InstallerError, "domain_mismatch"):
+                installer.install(domain="new.com", cf_token="t")
+
+    def test_allows_same_domain_resume(self):
+        installer = Installer(self.root, runner=self._noop_runner)
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="same.com", phases_done=["preflight"]),
+        )
+
+        with patch.object(Installer, "preflight") as preflight, patch.object(
+            Installer, "install_nginx_packages"
+        ) as pkg, patch.object(
+            Installer, "optimize_low_memory"
+        ), patch.object(
+            Installer, "issue_certificate"
+        ), patch.object(
+            Installer, "activate_nginx"
+        ), patch.object(
+            Installer, "harden_systemd"
+        ), patch.object(
+            Installer, "initialize_subscription"
+        ), patch(
+            "clash_sub.installer.read_panel_port", lambda path: 2053
+        ):
+            installer.install(domain="same.com", cf_token="t")
+
+        preflight.assert_not_called()
+        pkg.assert_called_once()
+
+    def test_panel_port_maps_to_installer_error(self):
+        installer = Installer(self.root, runner=self._noop_runner)
+
+        def broken(path):
+            raise XuiCompatibilityError("boom")
+
+        with patch("clash_sub.installer.read_panel_port", broken):
+            with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
+                installer._panel_port()
+
+
 if __name__ == "__main__":
     unittest.main()

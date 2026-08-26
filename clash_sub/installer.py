@@ -440,6 +440,8 @@ class Installer:
     # -- orchestration ---------------------------------------------------
     def install(self, *, domain, cf_token, swap_mb=0, owner_email="owner-example"):
         state = self.state()
+        if state.domain and state.domain != domain and state.phases_done:
+            raise InstallerError("domain_mismatch")
         state.domain = domain
         self._save_state(state)
         done = set(state.phases_done)
@@ -469,7 +471,45 @@ class Installer:
         return self._report(self.state())
 
     def _panel_port(self):
-        return read_panel_port(self.paths.xui_database)
+        try:
+            return read_panel_port(self.paths.xui_database)
+        except XuiCompatibilityError:
+            raise InstallerError("xui_incompatible") from None
+
+    # -- rollback --------------------------------------------------------
+    def rollback_install(self):
+        if not self._state_path.exists():
+            return
+        state = self.state()
+        self._run_best_effort(["systemctl", "stop", "nginx"])
+        self._run_best_effort(["systemctl", "disable", "nginx"])
+        for recorded in state.files_written:
+            path = Path(recorded)
+            if path.is_file() or path.is_symlink():
+                path.unlink(missing_ok=True)
+        self._remove_stream_include()
+        self._run(["systemctl", "daemon-reload"])
+        try:
+            (self.repo_root / "private" / "install-state.json").unlink(missing_ok=True)
+        except OSError:
+            raise InstallerError("rollback_failed") from None
+
+    def _remove_stream_include(self):
+        marker = "# clash-sub stream include"
+        path = self.paths.nginx_conf
+        if not path.is_file():
+            return
+        text = path.read_text(encoding="utf-8")
+        if marker not in text:
+            return
+        head = text.split(marker, 1)[0].rstrip("\n") + "\n"
+        self._write_file(path, head, 0o644)
+
+    def _run_best_effort(self, arguments):
+        try:
+            self._run(arguments)
+        except InstallerError:
+            pass
 
     def _write_file(self, path, contents, mode):
         path = Path(path)
