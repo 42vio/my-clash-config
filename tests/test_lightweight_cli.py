@@ -528,6 +528,23 @@ class InstallCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         service.rollback.assert_called_once_with(1, "release-id")
 
+    def test_install_rejects_empty_domain(self):
+        with patch.dict("os.environ", {"CLASH_SUB_DOMAIN": ""}), patch(
+            "builtins.input", return_value=""
+        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 2)
+        self.assertIn("invalid_domain", self.stderr.getvalue())
+
+    def test_rollback_with_user_only_is_invalid(self):
+        status = main(["rollback", "1"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 2)
+        self.assertIn("invalid_command", self.stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -263,6 +263,8 @@ def _install(stdout, stderr):
             domain = input().strip()
         except (EOFError, KeyboardInterrupt):
             return _error(stderr, "invalid_domain", 2)
+    if not domain:
+        return _error(stderr, "invalid_domain", 2)
     try:
         token = getpass("请输入 Cloudflare API Token：")
     except (EOFError, KeyboardInterrupt):
