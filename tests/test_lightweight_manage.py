@@ -130,11 +130,14 @@ class UpdateTests(unittest.TestCase):
         state = InstallState(domain="example.com", panel_port=2053, panel_base_path="/p-x")
         with patch("clash_sub.manage._load_install_state", return_value=state), patch(
             "clash_sub.manage.auto_snapshot"
-        ) as snapshot, patch("clash_sub.manage._rerender_nginx") as rerender:
+        ) as snapshot, patch("clash_sub.manage._rerender_nginx") as rerender, patch(
+            "clash_sub.installer.Installer.harden_systemd"
+        ) as harden:
             run_update(self.root, self._runner)
 
         snapshot.assert_called_once()
         rerender.assert_called_once()
+        harden.assert_called_once()
         joined = [" ".join(c) for c in self.runner_calls]
         self.assertTrue(any("git" in item and "pull" in item for item in joined))
         self.assertTrue(any("pip" in item and "install" in item for item in joined))

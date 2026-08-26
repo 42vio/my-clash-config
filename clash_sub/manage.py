@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from clash_sub.config import ConfigError, load_config
-from clash_sub.installer import load_install_state
+from clash_sub.installer import Installer, load_install_state
 from clash_sub.runtime import config_path
 
 
@@ -262,6 +262,7 @@ def run_update(repo_root, runner):
     )
     if result.returncode != 0:
         raise RuntimeError("pip_sync_failed")
+    Installer(Path(repo_root), runner=runner).harden_systemd()
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state)
     return True

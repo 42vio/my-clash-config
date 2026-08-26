@@ -245,6 +245,7 @@ class LowMemoryPhaseTests(unittest.TestCase):
             sysctl_conf=self.root / "99-clash-sub.conf",
             journald_conf_dir=self.root / "journald",
             swap_file=self.root / "swap.img",
+            fstab=self.root / "fstab",
         )
         self.runner_calls = []
 
@@ -286,6 +287,20 @@ class LowMemoryPhaseTests(unittest.TestCase):
         self.assertTrue(
             any("swapon" in item and str(self.paths.swap_file) in item for item in joined)
         )
+        fstab = self.paths.fstab.read_text(encoding="utf-8")
+        self.assertIn("# clash-sub swap", fstab)
+        self.assertIn(str(self.paths.swap_file), fstab)
+        self.assertIn("%s none swap sw 0 0" % self.paths.swap_file, fstab)
+
+    def test_does_not_duplicate_fstab_entry(self):
+        entry = "# clash-sub swap\n%s none swap sw 0 0\n" % self.paths.swap_file
+        self.paths.fstab.write_text(entry, encoding="utf-8")
+
+        self._installer().optimize_low_memory(swap_mb=1024)
+
+        fstab = self.paths.fstab.read_text(encoding="utf-8")
+        self.assertEqual(fstab, entry)
+        self.assertEqual(fstab.count("# clash-sub swap"), 1)
 
     def test_skips_swap_when_file_exists(self):
         self.paths.swap_file.write_bytes(b"")
@@ -429,6 +444,92 @@ class DefaultSiteRemovalTests(unittest.TestCase):
             installer.install_nginx_packages()
 
         remover.assert_called_once()
+
+
+class StreamIncludeRemovalTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.stream_dir = self.root / "stream-conf.d"
+        self.nginx_conf = self.root / "nginx.conf"
+        self.paths = InstallPaths(nginx_conf=self.nginx_conf, stream_conf_dir=self.stream_dir)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _installer(self):
+        return Installer(
+            self.root,
+            paths=self.paths,
+            runner=lambda a, **_: subprocess.CompletedProcess(list(a), 0),
+        )
+
+    def _block(self):
+        return "\n# clash-sub stream include\nstream {\n    include %s/*.conf;\n}\n" % self.stream_dir
+
+    def test_removes_only_our_block_and_preserves_later_content(self):
+        base = "user www-data;\nhttp {\n}\n"
+        self.nginx_conf.write_text(base + self._block() + "# admin custom content\n", encoding="utf-8")
+        installer = self._installer()
+
+        self.assertTrue(installer._remove_stream_include())
+
+        text = self.nginx_conf.read_text(encoding="utf-8")
+        self.assertNotIn("clash-sub stream include", text)
+        self.assertIn("# admin custom content", text)
+        self.assertIn("user www-data;", text)
+
+    def test_leaves_modified_block_untouched(self):
+        base = "http {\n}\n"
+        modified = "\n# clash-sub stream include\nstream {\n    include %s/*.conf;\n    # extra\n}\n" % self.stream_dir
+        self.nginx_conf.write_text(base + modified, encoding="utf-8")
+        installer = self._installer()
+
+        self.assertFalse(installer._remove_stream_include())
+
+        text = self.nginx_conf.read_text(encoding="utf-8")
+        self.assertIn("# clash-sub stream include", text)
+        self.assertIn("# extra", text)
+
+
+class DefaultSiteRestoreTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        self.available = (Path(self.tempdir.name) / "sites-available" / "default")
+        self.available.parent.mkdir(parents=True)
+        self.available.write_text("server { listen 80; }\n", encoding="utf-8")
+        self.enabled_dir = (Path(self.tempdir.name) / "sites-enabled")
+        self.enabled_dir.mkdir()
+        self.paths = InstallPaths(nginx_conf=self.root / "nginx.conf")
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _installer(self):
+        return Installer(
+            self.root,
+            paths=self.paths,
+            runner=lambda a, **_: subprocess.CompletedProcess(list(a), 0),
+        )
+
+    def test_restores_removed_default_site(self):
+        installer = self._installer()
+
+        self.assertTrue(
+            installer._restore_default_site_at(self.enabled_dir / "default", self.available)
+        )
+        self.assertTrue((self.enabled_dir / "default").is_symlink())
+
+    def test_noop_when_link_exists_or_source_missing(self):
+        installer = self._installer()
+        self.assertFalse(
+            installer._restore_default_site_at(
+                self.enabled_dir / "default", Path("/nonexistent")
+            )
+        )
 
 
 class CertificatePhaseTests(unittest.TestCase):
@@ -940,8 +1041,12 @@ class RollbackInstallTests(unittest.TestCase):
             ),
         )
 
-        installer.rollback_install()
+        with patch.object(
+            Installer, "_restore_default_site", return_value=True
+        ) as restore:
+            installer.rollback_install()
 
+        restore.assert_called_once()
         self.assertFalse(self.paths.stream_conf().exists())
         self.assertFalse(self.paths.http_conf().exists())
         self.assertFalse(self.paths.cli_symlink.exists() or self.paths.cli_symlink.is_symlink())

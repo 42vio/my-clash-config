@@ -45,6 +45,7 @@ class InstallPaths:
     systemd_dir: Path = Path("/etc/systemd/system")
     cli_symlink: Path = Path("/usr/local/bin/clash-sub")
     swap_file: Path = Path("/swapfile-clash-sub.img")
+    fstab: Path = Path("/etc/fstab")
     xui_database: Path = Path("/etc/x-ui/x-ui.db")
     private_root: Path = Path("/var/lib/clash-sub/private")
     public_root: Path = Path("/var/lib/clash-sub/public")
@@ -214,6 +215,20 @@ class Installer:
             self._run(["chmod", "600", str(self.paths.swap_file)])
             self._run(["mkswap", str(self.paths.swap_file)])
             self._run(["swapon", str(self.paths.swap_file)])
+            marker = "# clash-sub swap"
+            fstab_text = (
+                self.paths.fstab.read_text(encoding="utf-8")
+                if self.paths.fstab.is_file()
+                else ""
+            )
+            if marker not in fstab_text:
+                self._write_file(
+                    self.paths.fstab,
+                    fstab_text.rstrip("\n")
+                    + ("\n" if fstab_text.strip() else "")
+                    + "%s\n%s none swap sw 0 0\n" % (marker, self.paths.swap_file),
+                    0o644,
+                )
         self._run(["sysctl", "-p", str(self.paths.sysctl_conf)])
         self._phase_done("low_memory")
 
@@ -250,6 +265,23 @@ class Installer:
             enabled.unlink()
         except OSError:
             raise InstallerError("default_site_removal_failed") from None
+        return True
+
+    def _restore_default_site(self):
+        return self._restore_default_site_at(
+            Path("/etc/nginx/sites-enabled/default"),
+            Path("/etc/nginx/sites-available/default"),
+        )
+
+    def _restore_default_site_at(self, enabled, available):
+        if enabled.exists() or enabled.is_symlink():
+            return False
+        if not available.is_file():
+            return False
+        try:
+            enabled.symlink_to(available)
+        except OSError:
+            raise InstallerError("default_site_restore_failed") from None
         return True
 
     def _ensure_stream_include(self):
@@ -549,6 +581,7 @@ class Installer:
             if path.is_file() or path.is_symlink():
                 path.unlink(missing_ok=True)
         self._remove_stream_include()
+        self._restore_default_site()
         self._run_best_effort(
             ["systemctl", "disable", "--now", "clash-sub-traffic.timer"]
         )
@@ -571,12 +604,19 @@ class Installer:
         marker = "# clash-sub stream include"
         path = self.paths.nginx_conf
         if not path.is_file():
-            return
+            return False
         text = path.read_text(encoding="utf-8")
         if marker not in text:
-            return
-        head = text.split(marker, 1)[0].rstrip("\n") + "\n"
-        self._write_file(path, head, 0o644)
+            return False
+        block = (
+            "\n%s\nstream {\n    include %s/*.conf;\n}\n"
+            % (marker, self.paths.stream_conf_dir)
+        )
+        if block not in text:
+            # The block was modified after installation; leave it for the operator.
+            return False
+        self._write_file(path, text.replace(block, ""), 0o644)
+        return True
 
     def _run_best_effort(self, arguments):
         try:
