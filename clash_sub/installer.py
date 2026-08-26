@@ -84,6 +84,12 @@ class InstallState:
     backups: dict = field(default_factory=dict)
     default_site_removed: bool = False
     replaced_files: dict = field(default_factory=dict)
+    # Write-ahead provenance, all additive with safe defaults:
+    artifact_mutation_started: bool = False
+    default_site_removal_intent: bool = False
+    nginx_active: bool | None = None  # original service state, captured pre-apt
+    nginx_enabled: bool | None = None
+    systemd_actions_started: bool = False
 
 
 def load_install_state(path):
@@ -287,6 +293,13 @@ class Installer:
 
     # -- phase 2 ---------------------------------------------------------
     def install_nginx_packages(self):
+        # Write-ahead provenance: this transaction is about to mutate nginx
+        # artifacts, and rollback may only stop/disable nginx against the
+        # original service state captured here, before apt runs.
+        state = self.state()
+        state.artifact_mutation_started = True
+        state.nginx_active, state.nginx_enabled = self._nginx_service_state()
+        self._save_state(state)
         self._run(
             [
                 "apt-get",
@@ -297,20 +310,41 @@ class Installer:
                 "libnginx-mod-stream",
             ]
         )
-        default_site_removed = self._remove_default_site()
-        if default_site_removed:
-            # Crash-safety metadata, not phase completion: persist ownership of
-            # the removal right away so a failure in any later step (e.g. the
-            # stream-include write) still lets rollback restore the site.
+        if self._remove_default_site_will_proceed():
+            # Journal the removal intent before the unlink: if the intent
+            # save fails the link must stay untouched.
+            state = self.state()
+            state.default_site_removal_intent = True
+            try:
+                self._save_state(state)
+            except OSError:
+                raise InstallerError("install_state_invalid") from None
+            self._remove_default_site()
             state = self.state()
             state.default_site_removed = True
             self._save_state(state)
         self._ensure_stream_include()
         state = self.state()
-        state.default_site_removed = state.default_site_removed or default_site_removed
         if "nginx_packages" not in state.phases_done:
             state.phases_done.append("nginx_packages")
         self._save_state(state)
+
+    def _nginx_service_state(self):
+        def query(flag):
+            try:
+                result = self.runner(
+                    ["systemctl", flag, "nginx"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
+                return result.returncode == 0
+            except Exception:
+                return False
+
+        return query("is-active"), query("is-enabled")
 
     def _remove_default_site(self):
         return self._remove_default_site_at(
@@ -318,12 +352,21 @@ class Installer:
             Path("/etc/nginx/sites-available/default"),
         )
 
-    def _remove_default_site_at(self, enabled, available):
+    def _remove_default_site_will_proceed(self):
+        return self._default_site_is_stock_link(
+            Path("/etc/nginx/sites-enabled/default"),
+            Path("/etc/nginx/sites-available/default"),
+        )
+
+    def _default_site_is_stock_link(self, enabled, available):
         try:
             resolved = enabled.resolve(strict=True)
         except OSError:
             return False
-        if resolved != available:
+        return resolved == available
+
+    def _remove_default_site_at(self, enabled, available):
+        if not self._default_site_is_stock_link(enabled, available):
             return False
         try:
             enabled.unlink()
@@ -501,11 +544,17 @@ class Installer:
                 "clash-sub-recover.service",
             )
         ]
-        # Crash-safety metadata: persist what we are about to replace before
-        # the writes run, so rollback can restore rather than delete it.
+        # Crash-safety metadata: journal every path this phase is about to
+        # touch BEFORE any write runs.  Replacements let rollback restore
+        # foreign content; files_written lets it remove our new units even
+        # when the crash precedes both the writes and the phase save
+        # (unlink of a never-written path is a no-op, replacements win).
         state = self.state()
-        for path in (restart_drop_in, *units, recover_drop_in):
+        for path in (self.paths.cli_symlink, restart_drop_in, *units, recover_drop_in):
             self._record_replacement(state, path)
+            if str(path) not in state.files_written:
+                state.files_written.append(str(path))
+        state.artifact_mutation_started = True
         self._save_state(state)
         self._install_cli_symlink()
         self._write_file(
@@ -525,15 +574,15 @@ class Installer:
             drop_in_source.read_text(encoding="utf-8"),
             0o644,
         )
+        # Persist the action intent before the first systemctl call: a crash
+        # after the timer is enabled but before the phase save must still
+        # disable it during rollback.
+        state = self.state()
+        state.systemd_actions_started = True
+        self._save_state(state)
         self._run(["systemctl", "daemon-reload"])
         self._run(["systemctl", "enable", "--now", "clash-sub-traffic.timer"])
-        state = self.state()
-        if "systemd_harden" not in state.phases_done:
-            state.phases_done.append("systemd_harden")
-        for path in (restart_drop_in, *units, recover_drop_in, self.paths.cli_symlink):
-            if str(path) not in state.files_written:
-                state.files_written.append(str(path))
-        self._save_state(state)
+        self._phase_done("systemd_harden")
 
     def _install_cli_symlink(self):
         target = self.repo_root / "bin" / "clash-sub"
@@ -681,24 +730,31 @@ class Installer:
         if not self._state_path.exists():
             return
         state = self.state()
-        # Every destructive action gates on the phase that owns it; a journal
-        # from an aborted early phase must not touch unrelated services.
-        if "nginx_packages" in state.phases_done:
-            self._run_best_effort(["systemctl", "stop", "nginx"])
-            self._run_best_effort(["systemctl", "disable", "nginx"])
-        # Crash-window coverage: a path can be journaled in replaced_files yet
-        # never reach files_written when the process died between the write
-        # and the phase save; restoring the recorded bytes is idempotent.
+        # Restore-to-original model: every destructive action gates on
+        # provenance journaled by THIS transaction.  nginx stop/disable runs
+        # only against the pre-apt capture, so a pre-existing nginx keeps
+        # running and a fresh install gets stopped and disabled.
+        if state.nginx_active is not None:
+            if not state.nginx_active:
+                self._run_best_effort(["systemctl", "stop", "nginx"])
+            if not state.nginx_enabled:
+                self._run_best_effort(["systemctl", "disable", "nginx"])
+        # Crash-window coverage: paths are journaled write-ahead, but a
+        # replacement recorded by an even earlier crash window still wins
+        # over deletion; restoring the recorded bytes is idempotent.
         for recorded in dict.fromkeys([*state.files_written, *state.replaced_files]):
             self._rollback_file(Path(recorded), state)
-        # Content-evidence actions stay unconditional: the sweep removes only
-        # marker/resolution-verified files and the include removal strips only
-        # our verbatim block, so neither can touch foreign content.
-        self._sweep_unjournaled_artifacts(state)
-        self._remove_stream_include()
-        if state.default_site_removed:
-            self._restore_default_site()
-        if "systemd_harden" in state.phases_done:
+        # Content-evidence actions gate on the transaction's mutation flag:
+        # an empty or preflight-only journal must not delete artifacts that
+        # merely look like ours.  The sweep itself removes only
+        # marker/resolution-verified files and the include removal strips
+        # only our verbatim block.
+        if state.artifact_mutation_started:
+            self._sweep_unjournaled_artifacts(state)
+            self._remove_stream_include()
+            if state.default_site_removed or state.default_site_removal_intent:
+                self._restore_default_site()
+        if "systemd_harden" in state.phases_done or state.systemd_actions_started:
             self._run_best_effort(
                 ["systemctl", "disable", "--now", "clash-sub-traffic.timer"]
             )
