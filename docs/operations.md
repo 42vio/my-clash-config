@@ -180,11 +180,10 @@ done < <(
 
 ## 更换域名 / 更换 VPS 或 IP
 
-- **更换域名**：为新 `panel.<域名>` / `sub.<域名>` 签发新的 SAN 证书并
-  `--install-cert`；更新 Nginx 模板与私有配置的
-  `subscription-authority`；`nginx -t` 通过后 reload；执行
-  `clash-sub sync`；把新链接发给每位用户一次。REALITY 节点使用 VPS 公网
-  IP 直连，不依赖 Nginx 证书，域名更换不影响已导入的节点连接。
+- **更换域名**：域名变更流程见 [recovery.md](recovery.md) 的「域名变更」一节
+  （service.yaml 的 `subscription-authority` 与 `install-state.json` 的 domain →
+  重签证书 → `clash-sub update` → `clash-sub sync`）；旧订阅 URL 随之失效，
+  完成后把新链接发给每位用户一次。
 - **更换 VPS / IP**：在新 VPS 上按 [DEPLOYMENT.md](../DEPLOYMENT.md) 重新
   部署；迁移 `<private-root>`（含 state.json 与家庭/机场快照）后重新签发
   证书、重建 3x-ui 客户端凭据；DNS A 记录指向新 IP；订阅地址不变（域名
@@ -206,7 +205,7 @@ done < <(
 
 ## 私有数据备份
 
-`/opt/clash-sub/private/config/service.yaml` 与配置的 `<private-root>` 是必须
+`/opt/my-clash-config/private/config/service.yaml` 与配置的 `<private-root>` 是必须
 一起备份的两项私有数据：后者包含 state.json、机场/家庭快照、releases 与参考
 原件，前者包含服务设置且不位于 private root 内。备份与恢复只在管理员控制的
 加密存储之间进行，两个副本均保持 root-only；恢复前保留当前副本，恢复后核对

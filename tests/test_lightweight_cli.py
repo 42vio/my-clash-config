@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from clash_sub import manage
 from clash_sub.domain import ServiceConfig
 from clash_sub.service import ServiceError, _OperationLock
 from clash_sub.cli import MENU, main
@@ -116,10 +117,12 @@ class FakeService:
         return {"owner_client_id": user}
 
 
-def run_cli(argv, service, *, stdin_text="", getpass_value=AIRPORT_URL):
+def run_cli(argv, service, *, stdin_text="", getpass_value=AIRPORT_URL, health_value=None):
     stdout = io.StringIO()
     stderr = io.StringIO()
-    with patch("clash_sub.cli.getpass", return_value=getpass_value):
+    with patch("clash_sub.cli.getpass", return_value=getpass_value), patch.object(
+        manage, "health_report", return_value=health_value
+    ):
         code = main(
             argv,
             stdin=io.StringIO(stdin_text),
@@ -279,6 +282,39 @@ class LightweightCliTests(unittest.TestCase):
         self.assertIn("最后成功时间：无", stdout)
         self.assertIn("最近错误：无", stdout)
         self.assertIn("待同步：无", stdout)
+
+    def test_status_appends_health_report_when_available(self):
+        health_value = {
+            "units": {"nginx": "active", "x-ui": "active"},
+            "certificate": {"not_after": "notAfter=Sep 25 12:00:00 2026 GMT", "days_left": 30},
+        }
+
+        code, stdout, stderr = run_cli(["status"], self.service, health_value=health_value)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("nginx：active；x-ui：active", stdout)
+        self.assertIn("证书：notAfter=Sep 25 12:00:00 2026 GMT（剩余 30 天）", stdout)
+        self.assertLess(stdout.index("用户："), stdout.index("nginx："))
+
+    def test_status_health_failure_never_breaks_status_output(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("clash_sub.cli.getpass", return_value=AIRPORT_URL), patch.object(
+            manage, "health_report", side_effect=RuntimeError("health subsystem broken")
+        ):
+            code = main(
+                ["status"],
+                stdin=io.StringIO(),
+                stdout=stdout,
+                stderr=stderr,
+                service_factory=lambda: self.service,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertIn("所有者客户端 ID：7", stdout.getvalue())
+        self.assertNotIn("nginx：", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_noninteractive_commands_call_only_the_documented_service_operations(self):
         cases = (

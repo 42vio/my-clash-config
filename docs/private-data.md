@@ -8,7 +8,7 @@
 
 | 路径 | 内容 | 权限 |
 | --- | --- | --- |
-| `/opt/clash-sub/private/config/service.yaml` | 全局私有设置（owner email、订阅主机名、数据库与二进制路径） | `0600` root:root |
+| `/opt/my-clash-config/private/config/service.yaml` | 全局私有设置（owner email、订阅主机名、数据库与二进制路径） | `0600` root:root |
 | `<private-root>/state.json` | 用户映射与**明文令牌**（静态 Nginx 架构的有意取舍，见下） | `0600` root:root |
 | `<private-root>/airport.yaml` | 最新机场节点快照（规范化 proxies，不含机场 URL） | `0600` root:root |
 | `<private-root>/home.yaml` | owner 自维护家庭节点 | `0600` root:root |
@@ -29,7 +29,7 @@ root-only 的 `state.json` 中即等价于「文件系统权限保护」， Git�
 
 ## 备份与恢复
 
-- 必须备份两个独立来源：`/opt/clash-sub/private/config/service.yaml` 与配置的
+- 必须备份两个独立来源：`/opt/my-clash-config/private/config/service.yaml` 与配置的
   `<private-root>` 全树（含 `state.json`、`airport.yaml`、`home.yaml`、
   releases 与 `reference-configs/` 原件）。前者不在 `<private-root>` 内，漏掉
   它将无法恢复服务设置。

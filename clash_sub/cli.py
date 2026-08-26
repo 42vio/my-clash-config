@@ -173,6 +173,14 @@ def _call(operation, value, stdout, stderr, factory, *, include_history=False):
         elif operation == "status":
             status = service.status()
             _write_status(stdout, status)
+            try:
+                report = manage.health_report(default_repo_root(), subprocess.run)
+            except Exception:
+                report = None
+            if report:
+                stdout.write("nginx：%s；x-ui：%s\n" % (report["units"]["nginx"], report["units"]["x-ui"]))
+                days = report["certificate"]["days_left"]
+                stdout.write("证书：%s（剩余 %s 天）\n" % (report["certificate"]["not_after"], days if days is not None else "未知"))
             if include_history:
                 _write_all_history(stdout, service, status)
         elif operation == "history":

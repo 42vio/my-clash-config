@@ -20,7 +20,8 @@
 3. 安装 Mihomo 校验二进制（`clash-sub sync` 的配置校验依赖它）：
 
    从 https://github.com/MetaCubeX/mihomo/releases 下载 linux-amd64（与 CI 无关，
-   固定一个 release 版本即可），解压后先 `mkdir -p /usr/local/lib/clash-sub`，再把
+   固定一个 release 版本即可，下载后建议核对 release 的 sha256），解压后先
+   `mkdir -p /usr/local/lib/clash-sub`，再把
    二进制放到 `/usr/local/lib/clash-sub/mihomo` 并 `chmod 755`。
 4. 面板设置：启用 Clash 订阅（subListen=127.0.0.1 默认即可）。
 5. 建入站：协议 VLESS、端口 10443、listen 0.0.0.0、传输 TCP、Security=Reality
@@ -34,13 +35,15 @@
     git clone <repo> /opt/my-clash-config && cd /opt/my-clash-config
     bash install.sh
 
-交互输入：主域名、Cloudflare API Token（swap 扩容可选）。
-非交互（CI/重装）：`CLASH_SUB_DOMAIN=example.com CLASH_SUB_OWNER_EMAIL=owner-1 CLASH_SUB_SWAP_MB=1024 bash install.sh`。
+交互输入：主域名、Cloudflare API Token（swap 扩容由 CLASH_SUB_SWAP_MB 环境变量决定，交互模式下也不询问）。
+非交互（CI/重装）：`CLASH_SUB_DOMAIN=example.com CLASH_SUB_OWNER_EMAIL=owner-1 CLASH_SUB_SWAP_MB=1024 bash install.sh`
+（CF Token 无环境变量，非交互场景下通过 stdin 提供）。
 
 installer 阶段：preflight（只读检查，含 DNS 前置与 443 空闲）→ 低配优化（swap/swappiness/journald）
 → 安装 nginx+stream 模块 → acme.sh 签发 wildcard → 激活 443 分流与订阅/面板 TLS → systemd 自愈补齐
 → 生成 service.yaml → 报告。任一阶段失败即停止；重跑自动跳过已完成阶段（幂等）。
-模块自检说明：无需单独验证 stream 模块——Phase 4 的 `nginx -t` 会在模块缺失时立即失败。
+模块自检说明：无需单独验证 stream 模块——安装阶段的 nginx 配置激活步骤会先跑
+`nginx -t`，模块缺失时立即失败。
 
 ## Phase 3：收口（手动一步）
 

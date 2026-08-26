@@ -79,7 +79,7 @@
    的只读检测脚本：
 
    ```bash
-   /opt/clash-sub/.venv/bin/python /opt/clash-sub/scripts/check_reality_target.py \
+   /opt/my-clash-config/.venv/bin/python /opt/my-clash-config/scripts/check_reality_target.py \
      --host "$XUI_REALITY_TARGET_HOST"
    ```
 

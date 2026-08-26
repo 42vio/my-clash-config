@@ -188,7 +188,7 @@ class DocumentationCoverageTests(unittest.TestCase):
 
     def test_operations_documents_replacement_checklists(self):
         operations = self.texts["operations"]
-        for phrase in ("更换域名", "更换 VPS", "不依赖 Nginx 证书"):
+        for phrase in ("更换域名", "更换 VPS", "recovery.md", "install-state.json"):
             self.assertIn(phrase, operations)
 
     def test_recovery_documents_backup_scope_and_reserved_trojan_caveat(self):
