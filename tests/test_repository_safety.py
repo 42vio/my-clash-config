@@ -226,7 +226,11 @@ class RepositorySafetyTests(unittest.TestCase):
             "docs/operations.md",
             "docs/private-data.md",
         )
+        # The bare word "trojan" is no longer legacy-only: the unified-443
+        # topology reserves `trojan.<域名>` → 127.0.0.1:20443 (README ADR and
+        # docs/recovery.md). Only the legacy trojan-web/Jrohy stack stays
+        # quarantined in the historical document.
         for relative in active_docs:
             text = (ROOT / relative).read_text(encoding="utf-8").lower()
-            for term in ("trojan", "jrohy", "trojan-web", "8080"):
+            for term in ("jrohy", "trojan-web", "8080"):
                 self.assertNotIn(term, text, f"{relative} mentions {term!r}")

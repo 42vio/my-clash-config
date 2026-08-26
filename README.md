@@ -21,17 +21,30 @@
 每位用户持有独立令牌与独立 3x-ui 客户端（独立 UUID、配额、到期时间），
 泄漏时可单独轮换、单独撤销。
 
+## 架构决策记录（2026-08 更新）
+
+本版推翻早前「不引入 Nginx stream、Reality 直占 443」的决策，改为 Nginx stream 统一 443 入口：
+
+- 公网仅开放 443：`ssl_preread` 按 SNI 分流——`sub.<域名>` → 127.0.0.1:30443（订阅+面板，终止 TLS），
+  其余任意 SNI → 127.0.0.1:10443（Xray Reality，不终止 TLS）；
+  `trojan.<域名>` → 127.0.0.1:20443 为预留规则（后期扩展见 docs/recovery.md 预留说明）。
+- Reality inbound 监听 127.0.0.1:10443；客户端统一连 443（订阅层把节点端口改写为 443）。
+- 证书：acme.sh DNS-01（Cloudflare）wildcard，统一 /etc/ssl/domain/；公网不再开放 80。
+- 部署：`bash install.sh` 一键完成 443 整合（详见 DEPLOYMENT.md）；3x-ui 仍手动安装。
+- clash-sub 定位：本 VPS clash 订阅栈的全生命周期管理 CLI（install/backup/update/cert/rollback）。
+- 注意：stream 层未启用 PROXY protocol（会破坏 Reality 默认路由），30443 上的限流 bucket 实际为全局。
+
 ## 端口与监听
 
 | 端口 | 归属 | 状态 |
 | --- | --- | --- |
-| TCP 443 | 原生 Xray（VLESS + RAW/TCP + REALITY） | 公网开放，REALITY 独占，不经 Nginx |
-| TCP 80 | 宿主机 Nginx | 仅 ACME HTTP-01 验证与通用 404 |
-| TCP 8443 | 宿主机 Nginx HTTPS | 面板（`panel.<域名>`）与订阅（`sub.<域名>`）唯一公网入口 |
+| TCP 443 | Nginx stream（唯一公网端口） | 公网开放，按 SNI 分流：`sub.<域名>` → 30443、`trojan.<域名>` → 20443、其余 → Reality 10443 |
+| TCP 10443 | Xray（VLESS + RAW/TCP + REALITY） | 仅 127.0.0.1（部署收口后） |
+| TCP 30443 | Nginx：订阅 + 面板 TLS | 仅 127.0.0.1 |
 | SSH | sshd | 由管理员指定，本项目不更改 |
 | 3x-ui 面板与原始订阅服务 | 回环 `127.0.0.1` | 永不直接暴露公网 |
 
-不开放 UDP 443，不使用公网 1443，不引入 Nginx stream。
+不开放 UDP 443，不使用公网 1443。
 
 ## 数据流
 
@@ -48,7 +61,7 @@
                                   ▼
               原子发布（每用户仅保留最近 5 个成功版本）
                                   ▼
-              宿主机 Nginx :8443 静态发布 ──> 各自的 Clash 客户端
+              宿主机 Nginx 443（stream 分流 → 30443）静态发布 ──> 各自的 Clash 客户端
 ```
 
 空闲时常驻进程只有 3x-ui 管理的 Xray 和宿主机 Nginx；同步与每日流量任务
@@ -68,8 +81,8 @@ GEOIP 解析策略），公共结构在 `templates/clash.yaml.j2`：
 订阅地址形状（Token 是唯一授权凭据，识别码不能单独下载）：
 
 ```text
-普通用户：https://sub.<域名>:8443/s/<token>/clash-standard.yaml
-owner：  https://sub.<域名>:8443/s/<token>/clash-<balanced|standard|privacy>.yaml
+普通用户：https://sub.<域名>/s/<token>/clash-standard.yaml
+owner：  https://sub.<域名>/s/<token>/clash-<balanced|standard|privacy>.yaml
 ```
 
 ## 日常管理：只记一个命令
@@ -107,9 +120,10 @@ clash-sub
 
 | 文档 | 内容 |
 | --- | --- |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | 干净 Debian 12 服务器逐步人工部署 |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | 干净 Debian 12 服务器部署：3x-ui 手动 + `install.sh` 一键整合 443 |
 | [docs/3x-ui-setup.md](docs/3x-ui-setup.md) | 固定版本 3x-ui / Xray 人工初始化清单 |
 | [docs/operations.md](docs/operations.md) | 日常运维：机场更新、流量、历史、回滚、轮换、故障恢复 |
+| [docs/recovery.md](docs/recovery.md) | 重装恢复、域名变更与预留扩展（Trojan / 第二台 VPS） |
 | [docs/private-data.md](docs/private-data.md) | 私有数据布局、权限、备份与恢复边界 |
 
 `docs/` 目录中另有一份旧服务器拓扑的历史记录文档，仅作历史说明，不是
