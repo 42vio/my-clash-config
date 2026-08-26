@@ -33,7 +33,7 @@ class BackupTests(unittest.TestCase):
         with patch("clash_sub.manage._xui_database_path", return_value=None), patch(
             "clash_sub.manage._nginx_config_paths",
             return_value=(nginx_conf,),
-        ):
+        ), patch("clash_sub.manage._runtime_private_root", return_value=None):
             nginx_conf.write_text("# nginx\n", encoding="utf-8")
             path = create_backup(self.root, self._runner)
 
@@ -52,6 +52,37 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(
             any("git" in " ".join(c) for c in self.runner_calls)
         )
+
+    def test_creates_tarball_with_runtime_private_root(self):
+        from clash_sub.manage import create_backup
+
+        runtime_root = Path(self.tempdir.name) / "var-lib-private"
+        (runtime_root / "releases").mkdir(parents=True)
+        (runtime_root / "state.json").write_text("{}", encoding="utf-8")
+        (runtime_root / "releases" / "r1.yaml").write_text("p\n", encoding="utf-8")
+
+        with patch("clash_sub.manage._xui_database_path", return_value=None), patch(
+            "clash_sub.manage._nginx_config_paths", return_value=()
+        ), patch(
+            "clash_sub.manage._runtime_private_root", return_value=runtime_root
+        ):
+            path = create_backup(self.root, self._runner)
+
+        with tarfile.open(path, "r:gz") as archive:
+            names = archive.getnames()
+        self.assertTrue(any(name.endswith("state.json") for name in names))
+        self.assertTrue(any(name.endswith("releases/r1.yaml") for name in names))
+        self.assertTrue(any(name.endswith("private/config/service.yaml") for name in names))
+
+    def test_backups_directory_is_private(self):
+        from clash_sub.manage import create_backup
+
+        with patch("clash_sub.manage._xui_database_path", return_value=None), patch(
+            "clash_sub.manage._nginx_config_paths", return_value=()
+        ), patch("clash_sub.manage._runtime_private_root", return_value=None):
+            create_backup(self.root, self._runner)
+
+        self.assertEqual((self.root / "backups").stat().st_mode & 0o777, 0o700)
 
     def test_snapshot_copies_live_configs(self):
         from clash_sub.manage import auto_snapshot

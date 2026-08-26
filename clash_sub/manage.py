@@ -1,6 +1,5 @@
 """Backup and lifecycle management commands."""
 
-import hashlib
 import io
 import json
 import os
@@ -11,10 +10,14 @@ import tempfile
 import time
 from pathlib import Path
 
+from clash_sub.config import ConfigError, load_config
+from clash_sub.runtime import config_path
+
 
 def _backups_root(repo_root):
     root = Path(repo_root) / "backups"
     root.mkdir(parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
     return root
 
 
@@ -29,6 +32,17 @@ def _nginx_config_paths():
         Path("/etc/nginx/conf.d/clash-sub.conf"),
         Path("/etc/nginx/clash-sub/routes.conf"),
     )
+
+
+def _runtime_private_root(repo_root):
+    """Resolve the configured private-root, or None when not yet configured."""
+    service_yaml = config_path(repo_root)
+    if not service_yaml.is_file():
+        return None
+    try:
+        return load_config(service_yaml, repo_root).private_root
+    except ConfigError:
+        return None
 
 
 def _versions_manifest(repo_root, runner):
@@ -68,6 +82,11 @@ def create_backup(repo_root, runner):
             for path in sorted(private_root.rglob("*"))
             if path.is_file() and "install-state" not in path.name
         )
+    runtime_root = _runtime_private_root(repo_root)
+    if runtime_root is not None and runtime_root.is_dir() and runtime_root != private_root:
+        source_files.extend(
+            path for path in sorted(runtime_root.rglob("*")) if path.is_file()
+        )
     descriptor, temporary = tempfile.mkstemp(dir=str(_backups_root(repo_root)))
     os.close(descriptor)
     try:
@@ -85,7 +104,6 @@ def create_backup(repo_root, runner):
     finally:
         if Path(temporary).exists():
             Path(temporary).unlink(missing_ok=True)
-    hashlib.sha256(destination.read_bytes()).hexdigest()
     return destination
 
 
