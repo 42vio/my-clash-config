@@ -1,10 +1,13 @@
+import contextlib
 import json
 import shutil
 import socket
 import subprocess
 import tempfile
 import unittest
+from collections import namedtuple
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import ANY, patch
 
 from clash_sub.installer import (
@@ -16,6 +19,13 @@ from clash_sub.installer import (
     save_install_state,
 )
 from clash_sub.xui import XuiCompatibilityError
+
+
+FakeSnapshotClient = namedtuple("FakeSnapshotClient", "email enabled")
+
+
+def fake_snapshot(*clients):
+    return SimpleNamespace(clients=tuple(clients))
 
 
 class InstallStateTests(unittest.TestCase):
@@ -955,6 +965,88 @@ class NodeHostTests(unittest.TestCase):
         return path
 
 
+class OwnerValidationTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _noop_runner(self, arguments, **_):
+        return subprocess.CompletedProcess(list(arguments), 0)
+
+    def _install(self, owner_email, snapshot):
+        installer = Installer(self.root, runner=self._noop_runner)
+        with contextlib.ExitStack() as stack:
+            for phase in (
+                "preflight",
+                "optimize_low_memory",
+                "install_nginx_packages",
+                "issue_certificate",
+                "activate_nginx",
+                "harden_systemd",
+                "initialize_subscription",
+            ):
+                stack.enter_context(patch.object(Installer, phase))
+            stack.enter_context(
+                patch("clash_sub.installer.read_xui_snapshot", lambda path: snapshot)
+            )
+            stack.enter_context(
+                patch(
+                    "clash_sub.installer.read_panel_settings",
+                    lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
+                )
+            )
+            return installer.install(
+                domain="example.com", cf_token="t", owner_email=owner_email
+            )
+
+    def test_install_rejects_owner_not_matching_enabled_client(self):
+        snapshot = fake_snapshot(FakeSnapshotClient("member@x", True))
+
+        with self.assertRaisesRegex(InstallerError, "owner_email_invalid"):
+            self._install("owner@x", snapshot)
+
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+    def test_install_rejects_owner_when_disabled(self):
+        snapshot = fake_snapshot(
+            FakeSnapshotClient("owner@x", False), FakeSnapshotClient("member@x", True)
+        )
+
+        with self.assertRaisesRegex(InstallerError, "owner_email_invalid"):
+            self._install("owner@x", snapshot)
+
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+    def test_install_accepts_owner_among_multiple_enabled_clients(self):
+        snapshot = fake_snapshot(
+            FakeSnapshotClient("member-1@x", True),
+            FakeSnapshotClient("owner@x", True),
+            FakeSnapshotClient("member-2@x", True),
+        )
+
+        self._install("owner@x", snapshot)
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn("report", state.phases_done)
+
+    def test_install_maps_snapshot_failure_to_stable_error(self):
+        def broken(path):
+            raise XuiCompatibilityError("boom")
+
+        installer = Installer(self.root, runner=self._noop_runner)
+        with patch("clash_sub.installer.read_xui_snapshot", broken):
+            with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
+                installer.install(
+                    domain="example.com", cf_token="t", owner_email="owner@x"
+                )
+
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+
 class InstallOrchestrationTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -994,6 +1086,9 @@ class InstallOrchestrationTests(unittest.TestCase):
         ) as low_memory, patch(
             "clash_sub.installer.read_panel_settings",
             lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot",
+            lambda path: fake_snapshot(FakeSnapshotClient("owner-example", True)),
         ):
             installer.install(
                 domain="example.com", cf_token="tok", swap_mb=0, owner_email="owner-example"
@@ -1174,6 +1269,9 @@ class InstallResumeGuardTests(unittest.TestCase):
 
         with patch.object(Installer, "preflight"), patch.object(
             Installer, "install_nginx_packages"
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot",
+            lambda path: fake_snapshot(FakeSnapshotClient("owner-example", True)),
         ):
             with self.assertRaisesRegex(InstallerError, "domain_mismatch"):
                 installer.install(domain="new.com", cf_token="t")
@@ -1200,6 +1298,9 @@ class InstallResumeGuardTests(unittest.TestCase):
         ), patch(
             "clash_sub.installer.read_panel_settings",
             lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot",
+            lambda path: fake_snapshot(FakeSnapshotClient("owner-example", True)),
         ):
             installer.install(domain="same.com", cf_token="t")
 

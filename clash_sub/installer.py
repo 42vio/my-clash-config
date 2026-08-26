@@ -526,6 +526,17 @@ class Installer:
     def install(
         self, *, domain, cf_token, swap_mb=0, owner_email="owner-example", node_host=None
     ):
+        try:
+            snapshot = read_xui_snapshot(self.paths.xui_database)
+        except XuiCompatibilityError:
+            raise InstallerError("xui_incompatible") from None
+        matches = [
+            client
+            for client in snapshot.clients
+            if client.enabled and client.email == owner_email
+        ]
+        if len(matches) != 1:
+            raise InstallerError("owner_email_invalid")
         node_host = node_host or ("node." + domain)
         state = self.state()
         if state.domain and state.domain != domain and state.phases_done:

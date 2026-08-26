@@ -297,12 +297,15 @@ def _install(stdout, stderr):
     if not owner:
         suggested = _suggest_owner_email()
         try:
-            stdout.write("owner 的 3x-ui client email（回车使用 %s）：\n" % (suggested or "无建议"))
+            stdout.write(
+                "owner 的 3x-ui client email（回车使用 %s）：\n"
+                % (suggested or "无建议（存在多个启用的 client，请明确输入）")
+            )
             owner = input().strip() or suggested
         except (EOFError, KeyboardInterrupt):
-            owner = suggested
+            return _error(stderr, "owner_email_required", 2)
         if not owner:
-            return _error(stderr, "invalid_owner", 2)
+            return _error(stderr, "owner_email_required", 2)
     node_host = os.environ.get("CLASH_SUB_NODE_HOST", "") or None
     try:
         installer = Installer(
@@ -329,7 +332,7 @@ def _suggest_owner_email():
 
         snapshot = read_xui_snapshot(InstallPaths().xui_database)
         enabled = [client.email for client in snapshot.clients if client.enabled]
-        return enabled[0] if enabled else ""
+        return enabled[0] if len(enabled) == 1 else ""
     except Exception:
         return ""
 

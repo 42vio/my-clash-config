@@ -44,11 +44,12 @@
     git clone <repo> /opt/my-clash-config && cd /opt/my-clash-config
     bash install.sh
 
-交互输入：主域名、Cloudflare API Token、owner 的 client email（自动建议 3x-ui 中第一个
-启用的 client，回车即用；swap 扩容由 CLASH_SUB_SWAP_MB 环境变量决定，交互模式下也不询问）。
+交互输入：主域名、Cloudflare API Token、owner 的 client email（仅当 3x-ui 中恰好只有一个
+启用的 client 时自动建议，回车即用；多个或零个启用 client 时必须明确输入；swap 扩容由
+CLASH_SUB_SWAP_MB 环境变量决定，交互模式下也不询问）。
 非交互（CI/重装）：`CLASH_SUB_DOMAIN=example.com CLASH_SUB_OWNER_EMAIL=owner-1 CLASH_SUB_SWAP_MB=1024 bash install.sh`
-（CF Token 无环境变量，非交互场景下通过 stdin 提供；未设 CLASH_SUB_OWNER_EMAIL 时自动取
-3x-ui 第一个启用 client 的 email）。
+（CF Token 无环境变量，非交互场景下通过 stdin 提供；非交互必须设置 CLASH_SUB_OWNER_EMAIL，
+否则安装以 owner_email_required 终止）。
 
 installer 阶段：preflight（只读检查，含 DNS 前置与 443 空闲）→ 低配优化（swap/swappiness/journald）
 → 安装 nginx+stream 模块 → acme.sh 签发 wildcard → 激活 443 分流与订阅/面板 TLS → systemd 自愈补齐

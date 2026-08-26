@@ -2,6 +2,7 @@ import inspect
 import io
 import subprocess
 import unittest
+from collections import namedtuple
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from unittest.mock import patch
 from clash_sub import manage
 from clash_sub.domain import ServiceConfig
 from clash_sub.service import ServiceError, _OperationLock
-from clash_sub.cli import MENU, main
+from clash_sub.cli import MENU, _suggest_owner_email, main
 from clash_sub.runtime import build_service
 
 
@@ -650,7 +651,61 @@ class InstallCommandTests(unittest.TestCase):
             status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
 
         self.assertEqual(status, 2)
-        self.assertIn("invalid_owner", self.stderr.getvalue())
+        self.assertIn("owner_email_required", self.stderr.getvalue())
+
+    def test_install_eof_without_owner_env_returns_error(self):
+        with patch.dict(
+            "os.environ",
+            {"CLASH_SUB_DOMAIN": "example.com", "CLASH_SUB_OWNER_EMAIL": ""},
+            clear=False,
+        ), patch(
+            "clash_sub.cli.getpass", return_value="tok"
+        ), patch(
+            "builtins.input", side_effect=EOFError
+        ), patch(
+            "clash_sub.cli._suggest_owner_email", return_value="someone@x"
+        ) as suggest, patch(
+            "clash_sub.cli.Installer"
+        ) as installer, patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 2)
+        self.assertIn("owner_email_required", self.stderr.getvalue())
+        suggest.assert_called_once()
+        installer.return_value.install.assert_not_called()
+
+    def test_install_passes_typed_owner_when_multiple_clients(self):
+        captured = {}
+
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None):
+                pass
+
+            def install(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return {"panel_url": "https://sub.example.com/xui7k2m/", "gate_instruction": ""}
+
+        with patch.dict(
+            "os.environ",
+            {"CLASH_SUB_DOMAIN": "example.com", "CLASH_SUB_OWNER_EMAIL": ""},
+            clear=False,
+        ), patch(
+            "clash_sub.cli.getpass", return_value="tok"
+        ), patch(
+            "builtins.input", return_value="owner@x"
+        ), patch(
+            "clash_sub.cli._suggest_owner_email", return_value=""
+        ), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["kwargs"]["owner_email"], "owner@x")
 
     def test_install_uses_owner_email_from_environment(self):
         captured = {}
@@ -687,6 +742,45 @@ class InstallCommandTests(unittest.TestCase):
 
         self.assertEqual(status, 2)
         self.assertIn("invalid_command", self.stderr.getvalue())
+
+
+FakeSnapshotClient = namedtuple("FakeSnapshotClient", "email enabled")
+
+
+class OwnerSuggestionTests(unittest.TestCase):
+    def _suggest_with_clients(self, clients):
+        snapshot = SimpleNamespace(clients=tuple(clients))
+        with patch("clash_sub.xui.read_xui_snapshot", lambda path: snapshot):
+            return _suggest_owner_email()
+
+    def test_suggests_the_client_when_exactly_one_is_enabled(self):
+        clients = (
+            FakeSnapshotClient("owner@x", True),
+            FakeSnapshotClient("member@x", False),
+        )
+
+        self.assertEqual(self._suggest_with_clients(clients), "owner@x")
+
+    def test_no_suggestion_when_multiple_clients_are_enabled(self):
+        clients = (
+            FakeSnapshotClient("first@x", True),
+            FakeSnapshotClient("second@x", True),
+            FakeSnapshotClient("member@x", False),
+        )
+
+        self.assertEqual(self._suggest_with_clients(clients), "")
+
+    def test_no_suggestion_when_no_client_is_enabled(self):
+        clients = (FakeSnapshotClient("member@x", False),)
+
+        self.assertEqual(self._suggest_with_clients(clients), "")
+
+    def test_no_suggestion_when_there_are_no_clients(self):
+        self.assertEqual(self._suggest_with_clients(()), "")
+
+    def test_no_suggestion_when_snapshot_cannot_be_read(self):
+        with patch("clash_sub.xui.read_xui_snapshot", side_effect=RuntimeError("boom")):
+            self.assertEqual(_suggest_owner_email(), "")
 
 
 class ManageCommandTests(unittest.TestCase):
