@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from clash_sub.config import ConfigError, load_config
-from clash_sub.installer import InstallState, load_install_state
+from clash_sub.installer import load_install_state
 from clash_sub.runtime import config_path
 
 
@@ -247,7 +247,7 @@ def run_update(repo_root, runner):
     )
     if result.returncode != 0:
         raise RuntimeError("git_pull_failed")
-    runner(
+    result = runner(
         [
             str(Path(repo_root) / ".venv" / "bin" / "pip"),
             "install",
@@ -260,6 +260,8 @@ def run_update(repo_root, runner):
         timeout=600,
         check=False,
     )
+    if result.returncode != 0:
+        raise RuntimeError("pip_sync_failed")
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state)
     return True
@@ -285,9 +287,11 @@ def health_report(repo_root, runner):
     if not_after:
         try:
             expiry = datetime.datetime.strptime(
-                not_after.split("=", 1)[-1], "%b %d %H:%M:%S %Y GMT"
-            )
-            days_left = (expiry - datetime.datetime.utcnow()).days
+                not_after.split("=", 1)[-1], "%b %d %H:%M:%S %Y"
+            ).replace(tzinfo=datetime.timezone.utc)
+            days_left = (
+                expiry - datetime.datetime.now(datetime.timezone.utc)
+            ).days
         except ValueError:
             days_left = None
     return {

@@ -332,6 +332,8 @@ def _managed(stdout, stderr, action):
         return _error(stderr, "not_root", 1)
     try:
         action(default_repo_root(), subprocess.run)
+    except RuntimeError as error:
+        return _error(stderr, str(error), 1)
     except Exception:
         return _error(stderr, "management_command_failed", 1)
     stdout.write("操作已完成。\n")
@@ -350,7 +352,9 @@ def _cert_command(parsed, stdout, stderr):
         else:
             status = manage.cert_status(default_repo_root(), subprocess.run)
             stdout.write("证书存在：%s\n" % ("是" if status["present"] else "否"))
-            stdout.write("到期时间：%s\n" % status["not_after"])
+            stdout.write("到期时间：%s\n" % status["not_after"].split("=", 1)[-1])
+    except RuntimeError as error:
+        return _error(stderr, str(error), 1)
     except Exception:
         return _error(stderr, "cert_command_failed", 1)
     return 0

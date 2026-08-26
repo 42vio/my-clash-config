@@ -240,6 +240,7 @@ class HealthReportTests(unittest.TestCase):
         self.assertEqual(report["units"]["nginx"], "active")
         self.assertEqual(report["units"]["x-ui"], "active")
         self.assertIn("days_left", report["certificate"])
+        self.assertIsNotNone(report["certificate"]["days_left"])
 
 
 if __name__ == "__main__":
