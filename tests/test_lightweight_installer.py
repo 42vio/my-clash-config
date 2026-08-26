@@ -1,5 +1,7 @@
+import base64
 import contextlib
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -64,6 +66,27 @@ class InstallStateTests(unittest.TestCase):
 
     def test_load_returns_default_when_absent(self):
         self.assertEqual(load_install_state(self.root / "missing.json"), InstallState())
+
+    def test_old_journal_without_new_fields_loads(self):
+        path = self.root / "install-state.json"
+        legacy = {
+            "schema_version": 1,
+            "domain": "example.com",
+            "node_host": "node.example.com",
+            "panel_port": 2053,
+            "panel_base_path": "/p-1a",
+            "phases_done": ["preflight"],
+            "files_written": [],
+            "backups": {},
+        }
+        path.write_text(json.dumps(legacy), encoding="utf-8")
+
+        loaded = load_install_state(path)
+
+        self.assertEqual(loaded.domain, "example.com")
+        self.assertEqual(loaded.phases_done, ["preflight"])
+        self.assertFalse(loaded.default_site_removed)
+        self.assertEqual(loaded.replaced_files, {})
 
     def test_save_rejects_foreign_object(self):
         with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
@@ -503,6 +526,15 @@ class DefaultSiteRemovalTests(unittest.TestCase):
 
         remover.assert_called_once()
 
+    def test_install_records_default_site_removal_in_state(self):
+        installer = self._installer()
+        with patch.object(Installer, "_remove_default_site", return_value=True):
+            installer.install_nginx_packages()
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertTrue(state.default_site_removed)
+        self.assertIn("nginx_packages", state.phases_done)
+
 
 class StreamIncludeRemovalTests(unittest.TestCase):
     def setUp(self):
@@ -831,6 +863,33 @@ class CliSymlinkTests(unittest.TestCase):
 
         with self.assertRaisesRegex(InstallerError, "cli_entry_missing"):
             self._installer().harden_systemd()
+
+    def test_install_cli_symlink_refuses_foreign_file(self):
+        installer = self._installer()
+        foreign = self.symlink_dir / "clash-sub"
+        original = "#!/bin/sh\necho foreign\n"
+
+        for kind in ("file", "symlink"):
+            with self.subTest(kind=kind):
+                if foreign.exists() or foreign.is_symlink():
+                    foreign.unlink()
+                if kind == "file":
+                    foreign.write_text(original, encoding="utf-8")
+                else:
+                    other = self.symlink_dir / "other-target"
+                    other.write_text("# other\n", encoding="utf-8")
+                    foreign.symlink_to(other)
+
+                with self.assertRaisesRegex(InstallerError, "cli_symlink_conflict"):
+                    installer._install_cli_symlink()
+
+                if kind == "file":
+                    self.assertEqual(foreign.read_text(encoding="utf-8"), original)
+                else:
+                    self.assertTrue(foreign.is_symlink())
+
+        with self.assertRaisesRegex(InstallerError, "cli_symlink_conflict"):
+            installer.harden_systemd()
 
 
 class SubscriptionInitPhaseTests(unittest.TestCase):
@@ -1182,8 +1241,10 @@ class RollbackInstallTests(unittest.TestCase):
                     str(self.paths.stream_conf()),
                     str(self.paths.http_conf()),
                     str(self.paths.cli_symlink),
-                ],
+                ]
+                + [str(unit) for unit in systemd_units],
                 backups={},
+                default_site_removed=True,
             ),
         )
 
@@ -1213,9 +1274,175 @@ class RollbackInstallTests(unittest.TestCase):
 
         installer.rollback_install()
 
+        self.assertEqual(self.runner_calls, [])
         self.assertTrue(self.paths.stream_conf().exists())
         text = self.paths.nginx_conf.read_text(encoding="utf-8")
         self.assertIn("clash-sub stream include", text)
+
+    def test_rollback_with_empty_journal_touches_nothing(self):
+        decoy_conf = "user www-data;\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n"
+        self.paths.nginx_conf.write_text(decoy_conf, encoding="utf-8")
+        decoy_unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        decoy_unit.parent.mkdir(parents=True, exist_ok=True)
+        decoy_unit.write_text("# operator managed unit\n", encoding="utf-8")
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(),
+        )
+
+        installer.rollback_install()
+
+        self.assertEqual(self.runner_calls, [])
+        self.assertEqual(self.paths.nginx_conf.read_text(encoding="utf-8"), decoy_conf)
+        self.assertEqual(
+            decoy_unit.read_text(encoding="utf-8"), "# operator managed unit\n"
+        )
+        self.assertEqual(self.paths.stream_conf().read_text(encoding="utf-8"), "# stream\n")
+        self.assertEqual(self.paths.http_conf().read_text(encoding="utf-8"), "# http\n")
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+    def test_rollback_with_preflight_only_journal_touches_nothing(self):
+        decoy_conf = "user www-data;\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n"
+        self.paths.nginx_conf.write_text(decoy_conf, encoding="utf-8")
+        decoy_unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        decoy_unit.parent.mkdir(parents=True, exist_ok=True)
+        decoy_unit.write_text("# operator managed unit\n", encoding="utf-8")
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(
+                domain="example.com",
+                phases_done=["preflight"],
+                files_written=[],
+            ),
+        )
+
+        installer.rollback_install()
+
+        self.assertEqual(self.runner_calls, [])
+        self.assertEqual(self.paths.nginx_conf.read_text(encoding="utf-8"), decoy_conf)
+        self.assertEqual(
+            decoy_unit.read_text(encoding="utf-8"), "# operator managed unit\n"
+        )
+        self.assertTrue(self.paths.stream_conf().exists())
+        self.assertTrue(self.paths.http_conf().exists())
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+    def test_rollback_restores_replaced_unit_content(self):
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        self.paths.cli_symlink.parent.mkdir(parents=True, exist_ok=True)
+        unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_text("# original unit\n", encoding="utf-8")
+        os.chmod(unit, 0o600)
+        installer = self._installer()
+
+        installer.harden_systemd()
+
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn(str(unit), state.replaced_files)
+        self.assertIn("systemd_harden", state.phases_done)
+        self.assertIn(str(unit), state.files_written)
+        self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
+
+        installer.rollback_install()
+
+        self.assertEqual(unit.read_text(encoding="utf-8"), "# original unit\n")
+        self.assertEqual(unit.stat().st_mode & 0o777, 0o600)
+        joined = [" ".join(c) for c in self.runner_calls]
+        self.assertTrue(any("stop" in item and "nginx" in item for item in joined))
+        self.assertTrue(any("disable" in item and "nginx" in item for item in joined))
+
+    def test_rollback_without_default_site_removal_does_not_restore(self):
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(
+                domain="example.com",
+                phases_done=["nginx_packages", "nginx_activation"],
+                files_written=[],
+            ),
+        )
+
+        with patch.object(Installer, "_restore_default_site") as restore:
+            installer.rollback_install()
+
+        restore.assert_not_called()
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+    def test_sweep_removes_unjournaled_marker_confs(self):
+        marker = "# Managed by clash-sub install. SNI routing.\n"
+        self.paths.stream_conf().write_text(marker + "stream {\n}\n", encoding="utf-8")
+        self.paths.http_conf().write_text(marker + "server {\n}\n", encoding="utf-8")
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        self.paths.cli_symlink.parent.mkdir(parents=True, exist_ok=True)
+        self.paths.cli_symlink.symlink_to(self.root / "bin" / "clash-sub")
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(
+                domain="example.com",
+                phases_done=["nginx_activation"],
+                files_written=[],
+            ),
+        )
+
+        installer.rollback_install()
+
+        self.assertFalse(self.paths.stream_conf().exists())
+        self.assertFalse(self.paths.http_conf().exists())
+        self.assertFalse(self.paths.cli_symlink.exists() or self.paths.cli_symlink.is_symlink())
+
+        foreign_target = Path(self.tempdir.name) / "outside-repo-target"
+        foreign_target.write_text("# foreign\n", encoding="utf-8")
+        self.paths.cli_symlink.symlink_to(foreign_target)
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(
+                domain="example.com",
+                phases_done=["nginx_activation"],
+                files_written=[],
+            ),
+        )
+
+        installer.rollback_install()
+
+        self.assertTrue(self.paths.cli_symlink.is_symlink())
+
+    def test_sweep_restores_replaced_conf_content_when_unjournaled(self):
+        foreign = "# operator stream config\n"
+        self.paths.stream_conf().write_text(foreign, encoding="utf-8")
+        os.chmod(self.paths.stream_conf(), 0o644)
+        installer = self._installer()
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(
+                domain="example.com",
+                phases_done=["nginx_activation"],
+                files_written=[],
+                replaced_files={
+                    str(self.paths.stream_conf()): {
+                        "content": base64.b64encode(foreign.encode("utf-8")).decode(
+                            "ascii"
+                        ),
+                        "mode": 0o644,
+                    }
+                },
+            ),
+        )
+        # Crash window: the installer overwrote the conf after recording the
+        # replacement but before journaling the file in files_written.
+        self.paths.stream_conf().write_text(
+            "# Managed by clash-sub install. SNI routing.\nstream {\n}\n",
+            encoding="utf-8",
+        )
+
+        installer.rollback_install()
+
+        self.assertEqual(self.paths.stream_conf().read_text(encoding="utf-8"), foreign)
 
     def test_rollback_tolerates_missing_files(self):
         self.paths.stream_conf().unlink()
@@ -1239,7 +1466,10 @@ class RollbackInstallTests(unittest.TestCase):
         installer = Installer(self.root, paths=self.paths, runner=failing_stop_runner)
         save_install_state(
             self.root / "private" / "install-state.json",
-            InstallState(files_written=[str(self.paths.http_conf())]),
+            InstallState(
+                phases_done=["nginx_activation"],
+                files_written=[str(self.paths.http_conf())],
+            ),
         )
 
         installer.rollback_install()

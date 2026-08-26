@@ -1,5 +1,6 @@
 """One-shot integration installer for the unified 443 topology."""
 
+import base64
 import grp
 import json
 import os
@@ -65,7 +66,13 @@ class InstallPaths:
 
 @dataclass
 class InstallState:
-    """Durable install journal: phase progress plus render parameters."""
+    """Durable install journal: phase progress plus render parameters.
+
+    Schema stays at version 1 across additive changes: new fields always ship
+    with defaults so journals written by older installers keep loading, and
+    rollback proves file ownership via ``replaced_files``/``files_written``
+    instead of touching whatever it finds on disk.
+    """
 
     schema_version: int = 1
     domain: str = ""
@@ -75,6 +82,8 @@ class InstallState:
     phases_done: list = field(default_factory=list)
     files_written: list = field(default_factory=list)
     backups: dict = field(default_factory=dict)
+    default_site_removed: bool = False
+    replaced_files: dict = field(default_factory=dict)
 
 
 def load_install_state(path):
@@ -135,6 +144,22 @@ class Installer:
         for key, value in updates.items():
             setattr(state, key, value)
         self._save_state(state)
+
+    def _record_replacement(self, state, path):
+        """Remember pre-existing file content so rollback can restore it."""
+        path = Path(path)
+        key = str(path)
+        if key in state.replaced_files or not path.exists() or path.is_symlink():
+            return
+        try:
+            content = path.read_bytes()
+            mode = path.stat().st_mode & 0o777
+        except OSError:
+            return
+        state.replaced_files[key] = {
+            "content": base64.b64encode(content).decode("ascii"),
+            "mode": mode,
+        }
 
     # -- phase 0 ---------------------------------------------------------
     def preflight(self, domain, node_host=None):
@@ -246,9 +271,13 @@ class Installer:
                 "libnginx-mod-stream",
             ]
         )
-        self._remove_default_site()
+        default_site_removed = self._remove_default_site()
         self._ensure_stream_include()
-        self._phase_done("nginx_packages")
+        state = self.state()
+        state.default_site_removed = state.default_site_removed or default_site_removed
+        if "nginx_packages" not in state.phases_done:
+            state.phases_done.append("nginx_packages")
+        self._save_state(state)
 
     def _remove_default_site(self):
         return self._remove_default_site_at(
@@ -384,6 +413,16 @@ class Installer:
         self.paths.stream_conf_dir.mkdir(parents=True, exist_ok=True)
         self.paths.http_conf_dir.mkdir(parents=True, exist_ok=True)
         self.paths.routes_conf.parent.mkdir(parents=True, exist_ok=True)
+        # Crash-safety metadata: persist what we are about to replace before
+        # the writes run, so rollback can restore rather than delete it.
+        state = self.state()
+        for path in (
+            self.paths.stream_conf(),
+            self.paths.http_conf(),
+            self.paths.routes_conf,
+        ):
+            self._record_replacement(state, path)
+        self._save_state(state)
         try:
             activate_nginx_files(
                 (
@@ -414,36 +453,54 @@ class Installer:
 
     # -- phase 5 ---------------------------------------------------------
     def harden_systemd(self):
+        assets = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+        restart_drop_in = (
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf"
+        )
+        recover_drop_in = (
+            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf"
+        )
+        units = [
+            self.paths.systemd_dir / unit
+            for unit in (
+                "clash-sub-traffic.service",
+                "clash-sub-traffic.timer",
+                "clash-sub-recover.service",
+            )
+        ]
+        # Crash-safety metadata: persist what we are about to replace before
+        # the writes run, so rollback can restore rather than delete it.
+        state = self.state()
+        for path in (restart_drop_in, *units, recover_drop_in):
+            self._record_replacement(state, path)
+        self._save_state(state)
         self._install_cli_symlink()
         self._write_file(
-            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
+            restart_drop_in,
             "[Service]\nRestart=on-failure\nRestartSec=2s\n",
             0o644,
         )
-        assets = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
-        for unit in (
-            "clash-sub-traffic.service",
-            "clash-sub-traffic.timer",
-            "clash-sub-recover.service",
-        ):
+        for unit in units:
             self._write_file(
-                self.paths.systemd_dir / unit,
-                (assets / unit).read_text(encoding="utf-8"),
+                unit,
+                (assets / unit.name).read_text(encoding="utf-8"),
                 0o644,
             )
         drop_in_source = assets / "nginx.service.d" / "clash-sub-recover.conf"
         self._write_file(
-            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
+            recover_drop_in,
             drop_in_source.read_text(encoding="utf-8"),
             0o644,
         )
         self._run(["systemctl", "daemon-reload"])
         self._run(["systemctl", "enable", "--now", "clash-sub-traffic.timer"])
-        self._phase_done("systemd_harden")
         state = self.state()
-        if str(self.paths.cli_symlink) not in state.files_written:
-            state.files_written.append(str(self.paths.cli_symlink))
-            self._save_state(state)
+        if "systemd_harden" not in state.phases_done:
+            state.phases_done.append("systemd_harden")
+        for path in (restart_drop_in, *units, recover_drop_in, self.paths.cli_symlink):
+            if str(path) not in state.files_written:
+                state.files_written.append(str(path))
+        self._save_state(state)
 
     def _install_cli_symlink(self):
         target = self.repo_root / "bin" / "clash-sub"
@@ -452,6 +509,10 @@ class Installer:
         link = self.paths.cli_symlink
         if link.is_symlink() and link.resolve() == target.resolve():
             return False
+        if link.exists() or link.is_symlink():
+            # Never overwrite a foreign file or symlink; that is data loss
+            # the rollback path cannot undo.
+            raise InstallerError("cli_symlink_conflict")
         temporary = link.parent / (".%s.tmp" % link.name)
         temporary.unlink(missing_ok=True)
         try:
@@ -587,31 +648,58 @@ class Installer:
         if not self._state_path.exists():
             return
         state = self.state()
-        self._run_best_effort(["systemctl", "stop", "nginx"])
-        self._run_best_effort(["systemctl", "disable", "nginx"])
+        touched = [phase for phase in state.phases_done if phase != "preflight"]
+        if touched:
+            self._run_best_effort(["systemctl", "stop", "nginx"])
+            self._run_best_effort(["systemctl", "disable", "nginx"])
         for recorded in state.files_written:
-            path = Path(recorded)
-            if path.is_file() or path.is_symlink():
-                path.unlink(missing_ok=True)
-        self._remove_stream_include()
-        self._restore_default_site()
-        self._run_best_effort(
-            ["systemctl", "disable", "--now", "clash-sub-traffic.timer"]
-        )
-        for unit in (
-            self.paths.systemd_dir / "clash-sub-traffic.service",
-            self.paths.systemd_dir / "clash-sub-traffic.timer",
-            self.paths.systemd_dir / "clash-sub-recover.service",
-            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
-            self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
-        ):
-            if unit.is_file() or unit.is_symlink():
-                unit.unlink(missing_ok=True)
-        self._run(["systemctl", "daemon-reload"])
+            self._rollback_file(Path(recorded), state)
+        if touched:
+            self._sweep_unjournaled_artifacts(state)
+            self._remove_stream_include()
+            if state.default_site_removed:
+                self._restore_default_site()
+            self._run_best_effort(
+                ["systemctl", "disable", "--now", "clash-sub-traffic.timer"]
+            )
+            self._run(["systemctl", "daemon-reload"])
         try:
             (self.repo_root / "private" / "install-state.json").unlink(missing_ok=True)
         except OSError:
             raise InstallerError("rollback_failed") from None
+
+    def _rollback_file(self, path, state):
+        recorded = state.replaced_files.get(str(path))
+        if recorded is not None:
+            self._write_file(
+                path,
+                None,
+                recorded["mode"],
+                data=base64.b64decode(recorded["content"]),
+            )
+        elif path.is_file() or path.is_symlink():
+            path.unlink(missing_ok=True)
+
+    def _sweep_unjournaled_artifacts(self, state):
+        """Clean crash-window artifacts that carry our content fingerprint.
+
+        Bounded to well-known paths only; the filesystem is never globbed.
+        """
+        for conf in (self.paths.stream_conf(), self.paths.http_conf()):
+            try:
+                with conf.open("rb") as handle:
+                    first = handle.readline()
+            except OSError:
+                continue
+            if first.strip().startswith(b"# Managed by clash-sub install"):
+                self._rollback_file(conf, state)
+        link = self.paths.cli_symlink
+        if link.is_symlink():
+            try:
+                link.resolve().relative_to(self.repo_root.resolve())
+                link.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
 
     def _remove_stream_include(self):
         marker = "# clash-sub stream include"
@@ -637,7 +725,7 @@ class Installer:
         except InstallerError:
             pass
 
-    def _write_file(self, path, contents, mode):
+    def _write_file(self, path, contents, mode, data=None):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(
@@ -645,10 +733,16 @@ class Installer:
         )
         try:
             os.fchmod(descriptor, mode)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                output.write(contents)
-                output.flush()
-                os.fsync(output.fileno())
+            if data is None:
+                with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                    output.write(contents)
+                    output.flush()
+                    os.fsync(output.fileno())
+            else:
+                with os.fdopen(descriptor, "wb") as output:
+                    output.write(data)
+                    output.flush()
+                    os.fsync(output.fileno())
             os.replace(temporary, path)
         finally:
             if Path(temporary).exists():
