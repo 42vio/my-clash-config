@@ -154,6 +154,17 @@ class DocumentationCoverageTests(unittest.TestCase):
         ):
             self.assertIn(phrase, operations)
 
+    def test_operations_documents_pinned_acme_maintenance(self):
+        operations = self.texts["operations"]
+        for phrase in (
+            "acme.sh 3.1.4",
+            "每季度",
+            "SHA-256",
+            "--auto-upgrade",
+            "证书自动续期",
+        ):
+            self.assertIn(phrase, operations)
+
     def test_activation_candidate_inventory_is_strict_and_read_only(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

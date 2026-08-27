@@ -1,5 +1,6 @@
 import base64
 import grp
+import json
 import os
 import shutil
 import stat
@@ -873,13 +874,14 @@ class ActivateNginxFilesTests(unittest.TestCase):
         returncode = 1 if (self.fail_validation and arguments[0] == "/usr/sbin/nginx") else 0
         return subprocess.CompletedProcess(arguments, returncode)
 
-    def _activate(self, files, *, reload=False):
+    def _activate(self, files, *, reload=False, journal_path=None):
         return activate_nginx_files(
             files,
             self._runner,
             nginx_binary="/usr/sbin/nginx",
             systemctl_binary="/usr/bin/systemctl",
             reload=reload,
+            journal_path=journal_path,
         )
 
     def test_installs_new_file_and_runs_nginx_t(self):
@@ -964,6 +966,109 @@ class ActivateNginxFilesTests(unittest.TestCase):
             )
 
         self.assertEqual(self.target.read_text(encoding="utf-8"), "# old\n")
+
+    def test_recovers_prepared_rerender_journal_before_next_activation(self):
+        self.target.write_text("# old\n", encoding="utf-8"); os.chmod(self.target, 0o640)
+        journal = self.root / ".nginx-rerender-journal.json"
+        nginx_module._write_nginx_file_journal(
+            journal, [(self.target.resolve(), (True, b"# old\n", 0o640))]
+        )
+        self.target.write_text("# half-written\n", encoding="utf-8")
+
+        activate_nginx_files(
+            ((self.target, b"# converged\n", 0o640),), self._runner,
+            nginx_binary="/usr/sbin/nginx", journal_path=journal,
+        )
+
+        self.assertEqual(self.target.read_text(encoding="utf-8"), "# converged\n")
+        self.assertFalse(journal.exists())
+
+    def test_prepared_rerender_recovery_validates_and_reloads_before_new_write(self):
+        self.target.write_text("# old\n", encoding="utf-8"); os.chmod(self.target, 0o640)
+        journal = self.root / ".nginx-rerender-journal.json"
+        nginx_module._write_nginx_file_journal(journal, [(self.target.resolve(), (True, b"# old\n", 0o640))])
+        self.target.write_text("# interrupted\n", encoding="utf-8")
+
+        self._activate(((self.target, b"# converged\n", 0o640),), reload=True, journal_path=journal)
+
+        self.assertEqual(
+            [call[:3] for call in self.runner_calls],
+            [["/usr/sbin/nginx", "-t"], ["/usr/bin/systemctl", "reload", "nginx"], ["/usr/sbin/nginx", "-t"], ["/usr/bin/systemctl", "reload", "nginx"]],
+        )
+        self.assertEqual(self.target.read_bytes(), b"# converged\n")
+
+    def test_prepared_rerender_recovery_reload_failure_preserves_journal_and_old_file(self):
+        self.target.write_text("# old\n", encoding="utf-8"); os.chmod(self.target, 0o640)
+        journal = self.root / ".nginx-rerender-journal.json"
+        nginx_module._write_nginx_file_journal(journal, [(self.target.resolve(), (True, b"# old\n", 0o640))])
+        self.target.write_text("# interrupted\n", encoding="utf-8")
+
+        def runner(arguments, **_):
+            return subprocess.CompletedProcess(arguments, 1 if arguments[0] == "/usr/bin/systemctl" else 0)
+
+        with self.assertRaisesRegex(NginxError, "activation journal failed"):
+            activate_nginx_files(((self.target, b"# new\n", 0o640),), runner, nginx_binary="/usr/sbin/nginx", systemctl_binary="/usr/bin/systemctl", reload=True, journal_path=journal)
+        self.assertEqual(self.target.read_bytes(), b"# old\n")
+        self.assertTrue(journal.exists())
+
+    def test_committed_rerender_journal_keeps_successful_live_file_and_only_cleans_up(self):
+        self.target.write_text("# old\n", encoding="utf-8"); os.chmod(self.target, 0o640)
+        journal = self.root / ".nginx-rerender-journal.json"
+        nginx_module._write_nginx_file_journal(journal, [(self.target.resolve(), (True, b"# old\n", 0o640))], phase="committed")
+        self.target.write_text("# success\n", encoding="utf-8")
+
+        activate_nginx_files(((self.target, b"# success\n", 0o640),), self._runner, nginx_binary="/usr/sbin/nginx", journal_path=journal)
+
+        self.assertEqual(self.target.read_bytes(), b"# success\n")
+        self.assertFalse(journal.exists())
+
+    def test_rerender_rejects_symlink_journal_without_touching_target(self):
+        outside = self.root / "outside.json"; outside.write_text("outside", encoding="utf-8")
+        journal = self.root / ".nginx-rerender-journal.json"; journal.symlink_to(outside)
+
+        with self.assertRaisesRegex(NginxError, "activation journal failed"):
+            activate_nginx_files(((self.target, b"# new\n", 0o640),), self._runner, nginx_binary="/usr/sbin/nginx", journal_path=journal)
+        self.assertFalse(self.target.exists())
+        self.assertEqual(outside.read_text(encoding="utf-8"), "outside")
+
+    def test_committed_cleanup_failure_keeps_new_configuration_for_next_cleanup(self):
+        self.target.write_text("# old\n", encoding="utf-8"); os.chmod(self.target, 0o640)
+        journal = self.root / ".nginx-rerender-journal.json"
+        original_remove = nginx_module._remove_nginx_file_journal
+        calls = []
+
+        def fail_once(path):
+            calls.append(path)
+            if len(calls) == 1:
+                raise NginxError("Nginx activation journal failed")
+            return original_remove(path)
+
+        with patch("clash_sub.nginx._remove_nginx_file_journal", side_effect=fail_once):
+            self._activate(((self.target, b"# new\n", 0o640),), reload=True, journal_path=journal)
+
+        self.assertEqual(self.target.read_bytes(), b"# new\n")
+        self.assertTrue(journal.exists())
+        self.assertEqual(json.loads(journal.read_text(encoding="ascii"))["phase"], "committed")
+        self.assertEqual([call[:3] for call in self.runner_calls], [["/usr/sbin/nginx", "-t"], ["/usr/bin/systemctl", "reload", "nginx"]])
+
+        self._activate(((self.target, b"# newer\n", 0o640),), reload=True, journal_path=journal)
+        self.assertEqual(self.target.read_bytes(), b"# newer\n")
+        self.assertFalse(journal.exists())
+
+    def test_rerender_journal_rejects_boolean_schema_version(self):
+        journal = self.root / ".nginx-rerender-journal.json"
+        payload = {"schema_version": True, "phase": "prepared", "targets": []}
+        journal.write_text(json.dumps(payload), encoding="ascii"); os.chmod(journal, 0o600)
+
+        with self.assertRaisesRegex(NginxError, "activation journal failed"):
+            activate_nginx_files(((self.target, b"# new\n", 0o640),), self._runner, nginx_binary="/usr/sbin/nginx", journal_path=journal)
+
+    def test_rerender_journal_replace_failure_removes_candidate(self):
+        journal = self.root / ".nginx-rerender-journal.json"
+        with patch("clash_sub.nginx.os.replace", side_effect=OSError):
+            with self.assertRaisesRegex(NginxError, "activation journal failed"):
+                nginx_module._write_nginx_file_journal(journal, [(self.target.resolve(), (False, b"", 0))])
+        self.assertFalse(any("nginx-rerender-journal" in path.name for path in self.root.iterdir()))
 
 
 if __name__ == "__main__":

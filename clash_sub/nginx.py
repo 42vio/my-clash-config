@@ -181,13 +181,13 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
             _remove_candidate(candidate)
 
 
-def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, reload=False):
-    """Install nginx configuration files atomically per file, with rollback on validation or reload failure (an interrupted process can leave a mixed on-disk state; re-run the installer to converge).
+def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, reload=False, journal_path=None):
+    """Install nginx files with rollback and optional durable recovery.
 
     ``files`` is an iterable of ``(path, contents, mode)`` tuples.  Existing
-    targets are snapshotted in memory; if ``nginx -t`` (or the optional
-    reload) fails, every target is restored and newly created targets are
-    removed again.
+    targets are snapshotted before a prepared journal is durable.  A later
+    invocation restores prepared work and validates/reloads that restoration;
+    committed journals only prove successful new files and are removed.
     """
     if isinstance(files, (str, bytes)) or not callable(runner):
         raise NginxError("invalid nginx file activation")
@@ -232,11 +232,31 @@ def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, 
         seen.add(path)
         artifacts.append((path, contents, mode))
 
+    journal = None
+    if journal_path is not None:
+        try:
+            journal = Path(journal_path)
+            if not journal.is_absolute() or journal.name != ".nginx-rerender-journal.json":
+                raise OSError
+            _directory(journal.parent, private=True)
+            _recover_nginx_file_journal(
+                journal, tuple(path for path, _, _ in artifacts), runner,
+                nginx_binary, systemctl_binary, reload,
+            )
+        except NginxError:
+            raise
+        except OSError:
+            raise NginxError("invalid nginx file activation") from None
+
     snapshots = [(path, _snapshot(path)) for path, _, _ in artifacts]
     candidates = []
+    prepared = False
     try:
         for path, contents, mode in artifacts:
             candidates.append((path, _write_candidate(path, contents, mode)))
+        if journal is not None:
+            _write_nginx_file_journal(journal, snapshots)
+            prepared = True
         for path, candidate in candidates:
             os.replace(candidate, path)
             _fsync_directory(path.parent)
@@ -246,22 +266,121 @@ def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, 
             runner, (str(systemctl_binary), "reload", "nginx")
         ):
             raise _ReloadFailed()
+        if journal is not None:
+            _write_nginx_file_journal(journal, snapshots, phase="committed")
+            try:
+                _remove_nginx_file_journal(journal)
+            except NginxError:
+                # The new files were already validated, reloaded, and made
+                # durable by the committed journal.  Leave it for the next
+                # invocation to clean; never roll back a committed runtime.
+                pass
     except _ValidationFailed:
-        if not _restore_files(snapshots):
+        restored = _restore_files(snapshots) if journal is None else _restore_nginx_file_snapshots(
+            snapshots, runner, nginx_binary, systemctl_binary, reload
+        )
+        if not restored:
             raise NginxError("Nginx activation rollback failed") from None
+        if prepared:
+            _remove_nginx_file_journal(journal)
         raise NginxError("Nginx validation failed") from None
     except _ReloadFailed:
-        if not _restore_files(snapshots):
+        restored = _restore_files(snapshots) if journal is None else _restore_nginx_file_snapshots(
+            snapshots, runner, nginx_binary, systemctl_binary, reload
+        )
+        if not restored:
             raise NginxError("Nginx activation rollback failed") from None
+        if prepared:
+            _remove_nginx_file_journal(journal)
         raise NginxError("Nginx reload failed") from None
     except Exception:
-        if not _restore_files(snapshots):
+        restored = _restore_files(snapshots) if journal is None else _restore_nginx_file_snapshots(
+            snapshots, runner, nginx_binary, systemctl_binary, reload
+        )
+        if not restored:
             raise NginxError("Nginx activation rollback failed") from None
+        if prepared:
+            _remove_nginx_file_journal(journal)
         raise NginxError("Nginx activation failed") from None
     finally:
         for _, candidate in candidates:
             _remove_candidate(candidate)
     return True
+
+
+def _restore_nginx_file_snapshots(snapshots, runner, nginx_binary, systemctl_binary, reload):
+    if not _restore_files(snapshots):
+        return False
+    if not _command_ok(runner, (str(nginx_binary), "-t")):
+        return False
+    return not reload or _command_ok(runner, (str(systemctl_binary), "reload", "nginx"))
+
+
+def _write_nginx_file_journal(path, snapshots, *, phase="prepared"):
+    if phase not in {"prepared", "committed"}:
+        raise NginxError("Nginx activation journal failed")
+    targets = []
+    for target, (exists, contents, mode) in snapshots:
+        targets.append({"path": str(target), "exists": exists, "contents": base64.b64encode(contents).decode("ascii"), "mode": mode})
+    payload = json.dumps({"schema_version": 1, "phase": phase, "targets": targets}, sort_keys=True).encode("ascii")
+    candidate = None
+    try:
+        candidate = _write_candidate(path, payload, _PRIVATE_MODE)
+        os.replace(candidate, path)
+        candidate = None
+        _require_private_regular_file(path, _PRIVATE_MODE)
+        _fsync_directory(path.parent)
+    except Exception:
+        raise NginxError("Nginx activation journal failed") from None
+    finally:
+        if candidate is not None:
+            _remove_candidate(candidate)
+
+
+def _recover_nginx_file_journal(path, expected, runner, nginx_binary, systemctl_binary, reload):
+    if not path.exists() and not path.is_symlink():
+        return False
+    try:
+        _require_private_regular_file(path, _PRIVATE_MODE)
+        payload = json.loads(path.read_text(encoding="ascii"))
+        if not isinstance(payload, dict) or set(payload) != {"schema_version", "phase", "targets"} or isinstance(payload["schema_version"], bool) or payload["schema_version"] != 1 or payload["phase"] not in {"prepared", "committed"} or not isinstance(payload["targets"], list):
+            raise ValueError
+        snapshots = []
+        seen = set()
+        for entry in payload["targets"]:
+            if not isinstance(entry, dict) or set(entry) != {"path", "exists", "contents", "mode"}:
+                raise ValueError
+            target = _target(entry["path"])
+            if target not in expected or target in seen or not isinstance(entry["exists"], bool) or isinstance(entry["mode"], bool) or not isinstance(entry["mode"], int):
+                raise ValueError
+            contents = base64.b64decode(entry["contents"], validate=True)
+            if not entry["exists"] and (contents or entry["mode"]):
+                raise ValueError
+            seen.add(target); snapshots.append((target, (entry["exists"], contents, entry["mode"])))
+        if seen != set(expected):
+            raise ValueError
+        if payload["phase"] == "committed":
+            _remove_nginx_file_journal(path)
+            return True
+        if not _restore_files(snapshots):
+            raise ValueError
+        if not _command_ok(runner, (str(nginx_binary), "-t")):
+            raise ValueError
+        if reload and not _command_ok(runner, (str(systemctl_binary), "reload", "nginx")):
+            raise ValueError
+        _remove_nginx_file_journal(path)
+        return True
+    except Exception:
+        raise NginxError("Nginx activation journal failed") from None
+
+
+def _remove_nginx_file_journal(path):
+    try:
+        _require_private_regular_file(path, _PRIVATE_MODE)
+        path.unlink()
+        _fsync_directory(path.parent)
+    except OSError:
+        raise NginxError("Nginx activation journal failed") from None
 
 
 def recover_runtime(config, runner, *, reload=False):

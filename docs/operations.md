@@ -113,6 +113,27 @@ FINAL,DIRECT
 历史版本保留用于审计与人工恢复；重新启用同一客户端恢复原令牌，删除后
 重建则获得新令牌。
 
+## acme.sh 版本维护
+
+安装器当前固定使用经过校验的 **acme.sh 3.1.4** release，并在执行前核对
+固定的 SHA-256。不要启用 `acme.sh --upgrade --auto-upgrade`：程序自动升级与
+证书自动续期是两件事，证书仍由 acme.sh 自带 cron 自动续期，固定程序版本
+不会阻止续期。
+
+把 acme.sh 版本检查纳入**每季度**运维清单；出现 acme.sh 安全公告、Cloudflare
+DNS API 变化、Let's Encrypt 兼容问题或续期失败时，不等季度检查，立即评估升级。
+没有上述触发条件且续期正常时，不需要为了追随最新版而升级。
+
+升级必须人工完成以下闭环：
+
+1. 从 acme.sh 官方 release 选择明确版本，不使用 `master`、`latest` 或管道执行的
+   在线安装脚本。
+2. 在受信任环境下载 release 压缩包，计算 SHA-256；同时更新
+   `clash_sub/installer.py` 中的版本 URL、解压目录和 SHA-256，三者必须对应同一版本。
+3. 运行 `CertificatePhaseTests`、全量测试和 secret scan；随后在 Debian 测试机完成
+   一次签发/续期与 Nginx reload 验证。
+4. 验证通过后再部署，并在私有运维记录中写下版本、校验值、升级日期和下次季度检查日期。
+
 ## 3x-ui 升级流程
 
 1. **备份**：`cp -a /etc/x-ui/x-ui.db /root/x-ui.db.pre-upgrade`（示例

@@ -58,7 +58,7 @@ def _authorized_sources(is_owner, xui, airport, home):
     if not is_owner:
         return ((MEMBER_VARIANTS[0], (xui_source,)),)
     owner_sources = (xui_source, ("airport", airport))
-    owner_sources_with_home = owner_sources + (("home", home),)
+    owner_sources_with_home = owner_sources + (("home", home),) if home else owner_sources
     return (
         ("balanced", owner_sources_with_home),
         ("standard", owner_sources),
@@ -111,6 +111,7 @@ def _source_proxy_names(sources, proxies):
         count = len(source)
         names[label] = [proxy["name"] for proxy in proxies[index : index + count]]
         index += count
+    names.setdefault("home", [])
     return names
 
 

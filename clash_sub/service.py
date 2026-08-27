@@ -86,7 +86,7 @@ class ClashSubService:
             self._recover()
             snapshot,state=self._reconciled(); candidates=[]
             try:
-                owner=_client(snapshot.clients,state.owner_client_id); home=self._load_proxy(_home_path(self.config)); airport=self._download(url,self.config.max_source_bytes); release=self._prepare(owner,True,snapshot.source_url(owner),airport,home,tuple(u.token for u in state.users.values()),url,candidates); next_state=state if not release else _with_release(state,owner.client_id,release.release_id)
+                owner=_client(snapshot.clients,state.owner_client_id); home=self._optional_home(); airport=self._download(url,self.config.max_source_bytes); release=self._prepare(owner,True,snapshot.source_url(owner),airport,home,tuple(u.token for u in state.users.values()),url,candidates); next_state=state if not release else _with_release(state,owner.client_id,release.release_id)
                 self._activate(snapshot.clients,next_state,candidates,[( _airport_path(self.config),self._encode(airport),0o600)])
             except Exception: self._journal(errors=("airport_activation_failed",)); self._discard(candidates); raise ServiceError("airport_activation_failed") from None
             return self._finish(next_state,candidates,[_result(owner,release)] if release else [],[])
@@ -178,8 +178,15 @@ class ClashSubService:
         try:self._recover_runtime(self.config,self._runner,reload=True)
         except Exception:raise ServiceError("runtime_recovery_failed") from None
     def _owner_sources(self):
-        try:return self._load_proxy(_airport_path(self.config)),self._load_proxy(_home_path(self.config)),False
+        try:return self._load_proxy(_airport_path(self.config)),self._optional_home(),False
         except Exception:return (),(),True
+    def _optional_home(self):
+        path=_home_path(self.config)
+        # A first airport import has no local snapshot yet.  Only genuine
+        # absence is optional; a dangling symlink, insecure file, or parser
+        # failure remains an owner-source failure.
+        if not path.exists() and not path.is_symlink(): return ()
+        return self._load_proxy(path)
     def _observe(self,state):
         try:self._sink(state)
         except Exception:pass

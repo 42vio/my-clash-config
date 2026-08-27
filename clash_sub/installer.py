@@ -2,14 +2,18 @@
 
 import base64
 import grp
+import hashlib
 import json
 import os
 import re
 import socket
+import stat
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+import yaml
 
 from clash_sub.domain import ServiceConfig
 from clash_sub.nginx import (
@@ -23,6 +27,13 @@ from clash_sub.xui import XuiCompatibilityError, read_panel_settings, read_xui_s
 _MINIMUM_FREE_BYTES = 1024 ** 3
 _DEBIAN_MAJOR = "12"
 _OS_RELEASE_PATH = Path("/etc/os-release")
+_ACME_RELEASE_URL = "https://github.com/acmesh-official/acme.sh/archive/refs/tags/3.1.4.tar.gz"
+_ACME_RELEASE_SHA256 = "e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
+_INSTALL_PHASES = frozenset({
+    "preflight", "low_memory", "nginx_packages", "certificate",
+    "nginx_activation", "systemd_harden", "subscription_init", "report",
+})
+_SYSTEMD_PATH_RE = re.compile(r"^/[A-Za-z0-9._+@=,:~/-]+$")
 
 
 class InstallerError(RuntimeError):
@@ -84,25 +95,114 @@ class InstallState:
     backups: dict = field(default_factory=dict)
     default_site_removed: bool = False
     replaced_files: dict = field(default_factory=dict)
-    # Write-ahead provenance, all additive with safe defaults:
+    # Additive write-ahead provenance.  ``artifact_mutation_started`` remains
+    # readable for journals written by 3e38b33, but is deliberately not
+    # sufficient authority to remove a fingerprinted file during rollback.
     artifact_mutation_started: bool = False
     default_site_removal_intent: bool = False
     nginx_active: bool | None = None  # original service state, captured pre-apt
     nginx_enabled: bool | None = None
+    nginx_state_captured: bool = False
     systemd_actions_started: bool = False
+    timer_enable_attempted: bool = False
+    timer_active: bool | None = None
+    timer_enabled: bool | None = None
+    timer_state_captured: bool = False
+    stream_include_removal_intent: bool = False
 
 
-def load_install_state(path):
+def _state_payload(payload):
+    if not isinstance(payload, dict) or set(payload) - set(InstallState.__dataclass_fields__):
+        raise InstallerError("install_state_invalid")
+    try:
+        state = InstallState(**payload)
+    except (TypeError, ValueError):
+        raise InstallerError("install_state_invalid") from None
+    if isinstance(state.schema_version, bool) or state.schema_version != 1:
+        raise InstallerError("install_state_invalid")
+    # The journal contains paths later used by rollback; reject malformed
+    # values before any caller can treat them as filesystem authority.
+    flags = (
+        "default_site_removed", "artifact_mutation_started",
+        "default_site_removal_intent", "nginx_state_captured",
+        "systemd_actions_started", "timer_enable_attempted",
+        "timer_state_captured", "stream_include_removal_intent",
+    )
+    if (
+        not isinstance(state.domain, str)
+        or not isinstance(state.node_host, str)
+        or isinstance(state.panel_port, bool)
+        or not isinstance(state.panel_port, int)
+        or not isinstance(state.panel_base_path, str)
+        or not isinstance(state.phases_done, list)
+        or not all(isinstance(item, str) for item in state.phases_done)
+        or len(state.phases_done) != len(set(state.phases_done))
+        or not set(state.phases_done).issubset(_INSTALL_PHASES)
+        or not isinstance(state.files_written, list)
+        or not all(isinstance(item, str) and Path(item).is_absolute() for item in state.files_written)
+        or not isinstance(state.replaced_files, dict)
+        or not all(isinstance(key, str) and Path(key).is_absolute() and isinstance(value, dict) for key, value in state.replaced_files.items())
+        or not isinstance(state.backups, dict)
+        or any(not isinstance(getattr(state, flag), bool) for flag in flags)
+        or any(value is not None and not isinstance(value, bool) for value in (state.nginx_active, state.nginx_enabled, state.timer_active, state.timer_enabled))
+    ):
+        raise InstallerError("install_state_invalid")
+    for record in state.replaced_files.values():
+        kind = record.get("kind", "file")
+        if kind == "file":
+            if set(record) - {"kind", "content", "mode"} or not isinstance(record.get("content"), str) or isinstance(record.get("mode"), bool) or not isinstance(record.get("mode"), int) or not 0 <= record["mode"] <= 0o777:
+                raise InstallerError("install_state_invalid")
+            try:
+                base64.b64decode(record["content"], validate=True)
+            except (ValueError, TypeError):
+                raise InstallerError("install_state_invalid") from None
+        elif kind == "symlink":
+            if set(record) != {"kind", "target"} or not isinstance(record.get("target"), str) or "\x00" in record["target"]:
+                raise InstallerError("install_state_invalid")
+        else:
+            raise InstallerError("install_state_invalid")
+    return state
+
+
+def _read_install_state_file(path):
+    """Read a state file through one non-following descriptor."""
+    try:
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        )
+    except OSError:
+        raise InstallerError("install_state_invalid") from None
+    try:
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or (details.st_mode & 0o777) != 0o600
+            or details.st_nlink != 1
+            or details.st_uid != os.geteuid()
+        ):
+            raise InstallerError("install_state_invalid")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            descriptor = None
+            return handle.read()
+    except (OSError, UnicodeError):
+        raise InstallerError("install_state_invalid") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def load_install_state(path, *, require_secure=True):
     path = Path(path)
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return InstallState()
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        state = InstallState(**payload)
-    except (OSError, ValueError, TypeError):
+        if require_secure:
+            payload = json.loads(_read_install_state_file(path))
+        else:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        state = _state_payload(payload)
+    except (OSError, ValueError, TypeError, InstallerError):
         raise InstallerError("install_state_invalid") from None
-    if state.schema_version != 1:
-        raise InstallerError("install_state_invalid")
     return state
 
 
@@ -120,6 +220,11 @@ def save_install_state(path, state):
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if Path(temporary).exists():
             Path(temporary).unlink(missing_ok=True)
@@ -137,7 +242,22 @@ class Installer:
 
     # -- journal ---------------------------------------------------------
     def state(self):
-        return load_install_state(self._state_path)
+        state = load_install_state(self._state_path)
+        allowed = self._rollback_paths()
+        if any(Path(path) not in allowed for path in [*state.files_written, *state.replaced_files]):
+            raise InstallerError("install_state_invalid")
+        return state
+
+    def _rollback_paths(self):
+        restart = self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf"
+        recover = self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf"
+        return {
+            self.paths.stream_conf(), self.paths.http_conf(), self.paths.routes_conf,
+            self.paths.cli_symlink, restart, recover,
+            self.paths.systemd_dir / "clash-sub-traffic.service",
+            self.paths.systemd_dir / "clash-sub-traffic.timer",
+            self.paths.systemd_dir / "clash-sub-recover.service",
+        }
 
     def _save_state(self, state):
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -293,13 +413,19 @@ class Installer:
 
     # -- phase 2 ---------------------------------------------------------
     def install_nginx_packages(self):
-        # Write-ahead provenance: this transaction is about to mutate nginx
-        # artifacts, and rollback may only stop/disable nginx against the
-        # original service state captured here, before apt runs.
+        # Capture exactly once, before apt can change nginx's state.  An
+        # incomplete phase is resumed by this method, so overwriting an
+        # existing capture here would turn post-apt state into the "original".
         state = self.state()
-        state.artifact_mutation_started = True
-        state.nginx_active, state.nginx_enabled = self._nginx_service_state()
-        self._save_state(state)
+        if not state.nginx_state_captured:
+            if state.nginx_active is None or state.nginx_enabled is None:
+                active, enabled = self._nginx_service_state()
+                if active is None or enabled is None:
+                    raise InstallerError("nginx_service_state_unknown")
+                state.nginx_active = active
+                state.nginx_enabled = enabled
+            state.nginx_state_captured = True
+            self._save_state(state)
         self._run(
             [
                 "apt-get",
@@ -323,28 +449,41 @@ class Installer:
             state = self.state()
             state.default_site_removed = True
             self._save_state(state)
-        self._ensure_stream_include()
+        self._ensure_stream_include(before_write=self._record_stream_include_intent)
         state = self.state()
         if "nginx_packages" not in state.phases_done:
             state.phases_done.append("nginx_packages")
         self._save_state(state)
 
-    def _nginx_service_state(self):
+    def _service_state(self, unit):
         def query(flag):
             try:
                 result = self.runner(
-                    ["systemctl", flag, "nginx"],
+                    ["systemctl", flag, unit],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     timeout=30,
                     check=False,
                 )
-                return result.returncode == 0
+                if result.returncode == 0:
+                    return True
+                # systemctl documents different non-success status spaces
+                # for these queries.  Treat only their explicit normal
+                # negative outcomes as false; transport/usage errors stay
+                # unknown and block destructive work.
+                if flag == "is-active" and result.returncode in (3, 4):
+                    return False
+                if flag == "is-enabled" and result.returncode in (1, 4):
+                    return False
             except Exception:
-                return False
+                pass
+            return None
 
         return query("is-active"), query("is-enabled")
+
+    def _nginx_service_state(self):
+        return self._service_state("nginx")
 
     def _remove_default_site(self):
         return self._remove_default_site_at(
@@ -391,7 +530,12 @@ class Installer:
             raise InstallerError("default_site_restore_failed") from None
         return True
 
-    def _ensure_stream_include(self):
+    def _record_stream_include_intent(self):
+        state = self.state()
+        state.stream_include_removal_intent = True
+        self._save_state(state)
+
+    def _ensure_stream_include(self, *, before_write=None):
         marker = "# clash-sub stream include"
         text = self.paths.nginx_conf.read_text(encoding="utf-8")
         if marker in text:
@@ -400,6 +544,8 @@ class Installer:
             "\n%s\nstream {\n    include %s/*.conf;\n}\n"
             % (marker, self.paths.stream_conf_dir)
         )
+        if before_write is not None:
+            before_write()
         self._write_file(
             self.paths.nginx_conf, text.rstrip("\n") + "\n" + block, 0o644
         )
@@ -413,10 +559,18 @@ class Installer:
             raise InstallerError("missing_cf_token")
         acme = self.paths.acme_home / "acme.sh"
         if not acme.is_file():
-            bootstrap = self.repo_root / "private" / "acme-install.sh"
+            bootstrap = self.repo_root / "private" / "acme-3.1.4.tar.gz"
             bootstrap.parent.mkdir(parents=True, exist_ok=True)
-            self._run(["curl", "-fsSL", "https://get.acme.sh", "-o", str(bootstrap)])
-            self._run(["sh", str(bootstrap), "--home", str(self.paths.acme_home)])
+            self._run(["curl", "-fsSL", _ACME_RELEASE_URL, "-o", str(bootstrap)])
+            try:
+                digest = hashlib.sha256(bootstrap.read_bytes()).hexdigest()
+            except OSError:
+                raise InstallerError("acme_download_invalid") from None
+            if digest != _ACME_RELEASE_SHA256:
+                raise InstallerError("acme_download_invalid")
+            self._run(["tar", "-xzf", str(bootstrap), "-C", str(bootstrap.parent)])
+            source = bootstrap.parent / "acme.sh-3.1.4" / "acme.sh"
+            self._run(["sh", str(source), "--install", "--home", str(self.paths.acme_home)])
         environment = {"CF_Token": cf_token}
         self._run(
             [
@@ -489,8 +643,8 @@ class Installer:
         self.paths.stream_conf_dir.mkdir(parents=True, exist_ok=True)
         self.paths.http_conf_dir.mkdir(parents=True, exist_ok=True)
         self.paths.routes_conf.parent.mkdir(parents=True, exist_ok=True)
-        # Crash-safety metadata: persist what we are about to replace before
-        # the writes run, so rollback can restore rather than delete it.
+        # Journal every target before any write.  This mirrors the systemd
+        # phase and covers the tail-save window after nginx activation.
         state = self.state()
         for path in (
             self.paths.stream_conf(),
@@ -498,6 +652,8 @@ class Installer:
             self.paths.routes_conf,
         ):
             self._record_replacement(state, path)
+            if str(path) not in state.files_written:
+                state.files_written.append(str(path))
         self._save_state(state)
         try:
             activate_nginx_files(
@@ -518,13 +674,6 @@ class Installer:
         state.domain = domain
         state.panel_port = panel_port
         state.panel_base_path = base_path
-        for path in (
-            self.paths.stream_conf(),
-            self.paths.http_conf(),
-            self.paths.routes_conf,
-        ):
-            if str(path) not in state.files_written:
-                state.files_written.append(str(path))
         self._save_state(state)
 
     # -- phase 5 ---------------------------------------------------------
@@ -544,17 +693,31 @@ class Installer:
                 "clash-sub-recover.service",
             )
         ]
+        # Validate every rendered unit before even reading service state: a
+        # malformed custom path must not leave a symlink, unit, or journal.
+        rendered_units = {
+            unit: self._render_systemd_unit(
+                (assets / unit.name).read_text(encoding="utf-8")
+            )
+            for unit in units
+        }
         # Crash-safety metadata: journal every path this phase is about to
         # touch BEFORE any write runs.  Replacements let rollback restore
         # foreign content; files_written lets it remove our new units even
         # when the crash precedes both the writes and the phase save
         # (unlink of a never-written path is a no-op, replacements win).
         state = self.state()
+        if not state.timer_state_captured:
+            active, enabled = self._service_state("clash-sub-traffic.timer")
+            if active is None or enabled is None:
+                raise InstallerError("timer_service_state_unknown")
+            state.timer_active = active
+            state.timer_enabled = enabled
+            state.timer_state_captured = True
         for path in (self.paths.cli_symlink, restart_drop_in, *units, recover_drop_in):
             self._record_replacement(state, path)
             if str(path) not in state.files_written:
                 state.files_written.append(str(path))
-        state.artifact_mutation_started = True
         self._save_state(state)
         self._install_cli_symlink()
         self._write_file(
@@ -565,7 +728,7 @@ class Installer:
         for unit in units:
             self._write_file(
                 unit,
-                (assets / unit.name).read_text(encoding="utf-8"),
+                rendered_units[unit],
                 0o644,
             )
         drop_in_source = assets / "nginx.service.d" / "clash-sub-recover.conf"
@@ -581,8 +744,28 @@ class Installer:
         state.systemd_actions_started = True
         self._save_state(state)
         self._run(["systemctl", "daemon-reload"])
+        state = self.state()
+        state.timer_enable_attempted = True
+        self._save_state(state)
         self._run(["systemctl", "enable", "--now", "clash-sub-traffic.timer"])
         self._phase_done("systemd_harden")
+
+    def _render_systemd_unit(self, contents):
+        paths = (self.paths.private_root, self.paths.public_root, self.paths.routes_conf.parent, Path("/var/log/nginx"), Path("/var/lib/nginx"))
+        if any(
+            not path.is_absolute()
+            or path == Path("/")
+            or any(part in {".", ".."} for part in path.parts[1:])
+            or not _SYSTEMD_PATH_RE.fullmatch(str(path))
+            for path in paths
+        ):
+            raise InstallerError("systemd_path_invalid")
+        sentinel = "/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub /var/log/nginx /var/lib/nginx"
+        if "ReadWritePaths=" not in contents:
+            return contents
+        if sentinel not in contents:
+            raise InstallerError("systemd_path_invalid")
+        return contents.replace(sentinel, " ".join(str(path) for path in paths))
 
     def _install_cli_symlink(self):
         target = self.repo_root / "bin" / "clash-sub"
@@ -609,29 +792,20 @@ class Installer:
     def initialize_subscription(self, *, domain, owner_email, node_host=None):
         config_dir = self.repo_root / "private" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
-        contents = (
-            "schema-version: 2\n"
-            "owner-email: %s\n"
-            "subscription-authority: sub.%s:443\n"
-            "xui-public-endpoint: %s:443\n"
-            "xui-database: %s\n"
-            "private-root: %s\n"
-            "public-root: %s\n"
-            "nginx-routes: %s\n"
-            "mihomo-binary: /usr/local/lib/clash-sub/mihomo\n"
-            "nginx-binary: /usr/sbin/nginx\n"
-            "systemctl-binary: /usr/bin/systemctl\n"
-            "max-source-bytes: 5242880\n"
-            % (
-                owner_email,
-                domain,
-                node_host or ("node." + domain),
-                self.paths.xui_database,
-                self.paths.private_root,
-                self.paths.public_root,
-                self.paths.routes_conf,
-            )
-        )
+        contents = yaml.safe_dump({
+            "schema-version": 2,
+            "owner-email": owner_email,
+            "subscription-authority": "sub.%s:443" % domain,
+            "xui-public-endpoint": "%s:443" % (node_host or ("node." + domain)),
+            "xui-database": str(self.paths.xui_database),
+            "private-root": str(self.paths.private_root),
+            "public-root": str(self.paths.public_root),
+            "nginx-routes": str(self.paths.routes_conf),
+            "mihomo-binary": "/usr/local/lib/clash-sub/mihomo",
+            "nginx-binary": "/usr/sbin/nginx",
+            "systemctl-binary": "/usr/bin/systemctl",
+            "max-source-bytes": 5242880,
+        }, sort_keys=False, allow_unicode=True)
         self._write_file(config_dir / "service.yaml", contents, 0o600)
         self._prepare_runtime_directories()
         self._phase_done("subscription_init")
@@ -727,38 +901,51 @@ class Installer:
 
     # -- rollback --------------------------------------------------------
     def rollback_install(self):
-        if not self._state_path.exists():
+        if not self._state_path.exists() and not self._state_path.is_symlink():
             return
         state = self.state()
-        # Restore-to-original model: every destructive action gates on
-        # provenance journaled by THIS transaction.  nginx stop/disable runs
-        # only against the pre-apt capture, so a pre-existing nginx keeps
-        # running and a fresh install gets stopped and disabled.
+        failures = []
+
+        def rollback_action(arguments):
+            try:
+                self._run(arguments)
+            except InstallerError:
+                failures.append(arguments)
+
+        # Restore-to-original model: only an explicit, valid pre-apt capture
+        # authorizes nginx service actions.
         if state.nginx_active is not None:
             if not state.nginx_active:
-                self._run_best_effort(["systemctl", "stop", "nginx"])
+                rollback_action(["systemctl", "stop", "nginx"])
             if not state.nginx_enabled:
-                self._run_best_effort(["systemctl", "disable", "nginx"])
+                rollback_action(["systemctl", "disable", "nginx"])
+
+        systemd_actions = (
+            "systemd_harden" in state.phases_done or state.systemd_actions_started
+        )
+        if systemd_actions:
+            rollback_action(["systemctl", "disable", "--now", "clash-sub-traffic.timer"])
         # Crash-window coverage: paths are journaled write-ahead, but a
         # replacement recorded by an even earlier crash window still wins
         # over deletion; restoring the recorded bytes is idempotent.
         for recorded in dict.fromkeys([*state.files_written, *state.replaced_files]):
             self._rollback_file(Path(recorded), state)
-        # Content-evidence actions gate on the transaction's mutation flag:
-        # an empty or preflight-only journal must not delete artifacts that
-        # merely look like ours.  The sweep itself removes only
-        # marker/resolution-verified files and the include removal strips
-        # only our verbatim block.
-        if state.artifact_mutation_started:
-            self._sweep_unjournaled_artifacts(state)
+        # Exact removal intents are written before their corresponding nginx
+        # mutation.  A broad marker scan cannot establish ownership and is
+        # intentionally not used for current or legacy journals.
+        if state.stream_include_removal_intent:
             self._remove_stream_include()
-            if state.default_site_removed or state.default_site_removal_intent:
-                self._restore_default_site()
-        if "systemd_harden" in state.phases_done or state.systemd_actions_started:
-            self._run_best_effort(
-                ["systemctl", "disable", "--now", "clash-sub-traffic.timer"]
-            )
-            self._run(["systemctl", "daemon-reload"])
+        if state.default_site_removed or state.default_site_removal_intent:
+            self._restore_default_site()
+        if systemd_actions:
+            rollback_action(["systemctl", "daemon-reload"])
+            if state.timer_state_captured:
+                if state.timer_enabled:
+                    rollback_action(["systemctl", "enable", "clash-sub-traffic.timer"])
+                if state.timer_active:
+                    rollback_action(["systemctl", "start", "clash-sub-traffic.timer"])
+        if failures:
+            raise InstallerError("rollback_failed")
         try:
             (self.repo_root / "private" / "install-state.json").unlink(missing_ok=True)
         except OSError:
@@ -781,27 +968,6 @@ class Installer:
             )
         elif path.is_file() or path.is_symlink():
             path.unlink(missing_ok=True)
-
-    def _sweep_unjournaled_artifacts(self, state):
-        """Clean crash-window artifacts that carry our content fingerprint.
-
-        Bounded to well-known paths only; the filesystem is never globbed.
-        """
-        for conf in (self.paths.stream_conf(), self.paths.http_conf()):
-            try:
-                with conf.open("rb") as handle:
-                    first = handle.readline()
-            except OSError:
-                continue
-            if first.strip().startswith(b"# Managed by clash-sub install"):
-                self._rollback_file(conf, state)
-        link = self.paths.cli_symlink
-        if link.is_symlink():
-            try:
-                link.resolve().relative_to(self.repo_root.resolve())
-                link.unlink(missing_ok=True)
-            except (OSError, ValueError):
-                pass
 
     def _remove_stream_include(self):
         marker = "# clash-sub stream include"

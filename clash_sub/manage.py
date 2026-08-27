@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from clash_sub.config import ConfigError, load_config
-from clash_sub.installer import Installer, load_install_state
+from clash_sub.installer import InstallPaths, Installer, load_install_state
 from clash_sub.runtime import config_path
 
 
@@ -49,23 +49,24 @@ def _runtime_private_root(repo_root):
 
 
 def _versions_manifest(repo_root, runner):
-    def output(arguments):
+    def output(arguments, *, stderr=False):
         try:
             result = runner(
                 arguments,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE if stderr else subprocess.DEVNULL,
                 timeout=30,
                 check=False,
             )
-            return result.stdout.decode("utf-8", "replace").strip()
+            stream = result.stderr if stderr else result.stdout
+            return stream.decode("utf-8", "replace").strip()
         except Exception:
             return ""
 
     return {
         "repository": output(["git", "-C", str(repo_root), "rev-parse", "HEAD"]),
-        "nginx": output(["nginx", "-v"]),
+        "nginx": output(["nginx", "-v"], stderr=True),
     }
 
 
@@ -117,9 +118,17 @@ def auto_snapshot(repo_root, runner, *, label):
     directory.mkdir(parents=True, exist_ok=False)
     targets = [Path(repo_root) / "private" / "config" / "service.yaml"]
     targets.extend(path for path in _nginx_config_paths() if path.is_file())
+    names = {path.name: sum(item.name == path.name for item in targets) for path in targets}
     for path in targets:
         if path.is_file():
-            shutil.copy2(str(path), str(directory / path.name))
+            # Basenames collide for stream/http config files.  The stable
+            # parent directory retains every input while keeping existing
+            # single-file snapshot names compatible.
+            target = directory / path.name
+            if names[path.name] > 1:
+                target = directory / path.parent.name / path.name
+                target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(path), str(target))
     return directory
 
 
@@ -185,9 +194,7 @@ def cert_renew(repo_root, runner):
     return True
 
 
-def _rerender_nginx(repo_root, runner, state):
-    from clash_sub.domain import ServiceConfig
-    from clash_sub.installer import InstallPaths
+def _rerender_nginx(repo_root, runner, state, *, paths, config):
     from clash_sub.nginx import (
         NginxError,
         activate_nginx_files,
@@ -195,20 +202,6 @@ def _rerender_nginx(repo_root, runner, state):
         render_sub_server,
     )
 
-    paths = InstallPaths()
-    config = ServiceConfig(
-        owner_email="pending",
-        subscription_authority="sub.%s:443" % state.domain,
-        xui_public_endpoint="%s:443" % state.domain,
-        xui_database=paths.xui_database,
-        private_root=paths.private_root,
-        public_root=paths.public_root,
-        nginx_routes=paths.routes_conf,
-        mihomo_binary=Path("/usr/local/lib/clash-sub/mihomo"),
-        nginx_binary=Path("/usr/sbin/nginx"),
-        systemctl_binary=Path("/usr/bin/systemctl"),
-        template_root=Path(repo_root) / "templates",
-    )
     stream = render_stream_config(config, state.domain)
     sub_server = render_sub_server(
         config,
@@ -226,9 +219,10 @@ def _rerender_nginx(repo_root, runner, state):
                 (paths.http_conf(), sub_server.encode("utf-8"), 0o640),
             ),
             runner,
-            nginx_binary="/usr/sbin/nginx",
-            systemctl_binary="/usr/bin/systemctl",
+            nginx_binary=str(config.nginx_binary),
+            systemctl_binary=str(config.systemctl_binary),
             reload=True,
+            journal_path=paths.private_root / ".nginx-rerender-journal.json",
         )
     except NginxError:
         raise RuntimeError("nginx_rerender_failed") from None
@@ -293,9 +287,20 @@ def run_post_update(repo_root, runner):
 
     Runs only in the child spawned by run_update; never spawns another child.
     """
-    Installer(Path(repo_root), runner=runner).harden_systemd()
+    repo_root = Path(repo_root)
+    try:
+        config = load_config(config_path(repo_root), repo_root)
+    except Exception:
+        raise RuntimeError("post_update_config_invalid") from None
+    paths = InstallPaths(
+        xui_database=config.xui_database,
+        private_root=config.private_root,
+        public_root=config.public_root,
+        routes_conf=config.nginx_routes,
+    )
+    Installer(repo_root, paths=paths, runner=runner).harden_systemd()
     state = _load_install_state(repo_root)
-    _rerender_nginx(repo_root, runner, state)
+    _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
     return True
 
 

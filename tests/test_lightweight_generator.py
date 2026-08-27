@@ -1,4 +1,5 @@
 import shutil
+import re
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -75,6 +76,21 @@ class LightweightGeneratorTests(unittest.TestCase):
         self.assertEqual(set(proxy_names(bundle["balanced"])), {"Owner 3x-ui", "Airport", "Home"})
         self.assertEqual(set(proxy_names(bundle["standard"])), {"Owner 3x-ui", "Airport"})
         self.assertEqual(set(proxy_names(bundle["privacy"])), {"Owner 3x-ui", "Airport", "Home"})
+
+    def test_rendered_rule_providers_use_immutable_revisions(self):
+        bundle = render_user_bundle(True, [reality_proxy("Owner")], [reality_proxy("Airport")], [reality_proxy("Home")], TEMPLATE_ROOT)
+
+        urls = [item["url"] for item in yaml.safe_load(bundle["standard"])["rule-providers"].values()]
+        self.assertTrue(urls)
+        jsdelivr = [url for url in urls if "jsdelivr.net/gh/" in url]
+        gist = next(url for url in urls if "gist.githubusercontent.com" in url)
+        self.assertTrue(all(re.search(r"@[0-9a-f]{40}/", url) for url in jsdelivr))
+        self.assertRegex(gist, r"/raw/[0-9a-f]{40}/Ai\.yaml$")
+
+    def test_owner_bundle_allows_missing_optional_home_source(self):
+        bundle = render_user_bundle(True, [reality_proxy("Owner")], [reality_proxy("Airport")], (), TEMPLATE_ROOT)
+
+        self.assertEqual(tuple(bundle), ("balanced", "standard", "privacy"))
 
     def test_source_collisions_are_renamed_without_changing_authorization(self):
         self.assertIsNotNone(render_user_bundle)

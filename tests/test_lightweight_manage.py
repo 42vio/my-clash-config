@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from clash_sub.installer import InstallState
+from clash_sub.installer import InstallPaths, InstallState
+from clash_sub.domain import ServiceConfig
 
 
 class BackupTests(unittest.TestCase):
@@ -106,6 +107,29 @@ class BackupTests(unittest.TestCase):
             "# nginx\n",
         )
 
+    def test_snapshot_preserves_same_named_nginx_files(self):
+        from clash_sub.manage import auto_snapshot
+
+        stream = self.root / "stream-conf.d" / "clash-sub.conf"; stream.parent.mkdir()
+        http = self.root / "conf.d" / "clash-sub.conf"; http.parent.mkdir()
+        stream.write_text("stream", encoding="utf-8"); http.write_text("http", encoding="utf-8")
+        with patch("clash_sub.manage._nginx_config_paths", return_value=(stream, http)):
+            snapshot = auto_snapshot(self.root, self._runner, label="pre-update")
+
+        copied = [path.read_text(encoding="utf-8") for path in snapshot.rglob("clash-sub.conf")]
+        self.assertCountEqual(copied, ["stream", "http"])
+
+    def test_versions_manifest_reads_nginx_stderr(self):
+        from clash_sub.manage import _versions_manifest
+
+        def runner(arguments, **_):
+            result = subprocess.CompletedProcess(arguments, 0)
+            result.stdout = b"commit\n" if arguments[0] == "git" else b""
+            result.stderr = b"nginx version: nginx/1.26.3\n" if arguments[0] == "nginx" else b""
+            return result
+
+        self.assertEqual(_versions_manifest(self.root, runner)["nginx"], "nginx version: nginx/1.26.3")
+
 
 class UpdateTests(unittest.TestCase):
     def setUp(self):
@@ -183,19 +207,48 @@ class UpdateTests(unittest.TestCase):
         from clash_sub.manage import run_post_update
 
         state = InstallState(domain="example.com", panel_port=2053, panel_base_path="/p-x")
+        config = ServiceConfig("owner@example.com", "sub.example.com:443", "node.example.com:443", self.root / "xui.db", self.root / "runtime" / "private", self.root / "runtime" / "public", self.root / "nginx" / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), self.root / "templates")
         with patch("clash_sub.manage.Installer") as installer, patch(
             "clash_sub.manage._rerender_nginx"
         ) as rerender, patch(
             "clash_sub.manage._load_install_state", return_value=state
-        ), patch("clash_sub.manage.auto_snapshot") as snapshot:
+        ), patch("clash_sub.manage.load_config", return_value=config), patch("clash_sub.manage.auto_snapshot") as snapshot:
             run_post_update(self.root, self._runner)
 
         installer.return_value.harden_systemd.assert_called_once()
-        rerender.assert_called_once()
+        paths = installer.call_args.kwargs["paths"]
+        self.assertEqual((paths.private_root, paths.public_root, paths.routes_conf), (config.private_root, config.public_root, config.nginx_routes))
+        self.assertEqual(rerender.call_args.kwargs["paths"], paths)
+        self.assertEqual(rerender.call_args.kwargs["config"], config)
         snapshot.assert_not_called()
         joined = [" ".join(c) for c in self.runner_calls]
         self.assertFalse(any("git" in item or "pull" in item for item in joined))
         self.assertFalse(any("--post-update" in item for item in joined))
+
+    def test_post_update_invalid_config_has_no_system_side_effect(self):
+        from clash_sub.manage import run_post_update
+
+        with patch("clash_sub.manage.Installer") as installer, patch(
+            "clash_sub.manage.load_config", side_effect=Exception("bad config")
+        ), self.assertRaisesRegex(RuntimeError, "post_update_config_invalid"):
+            run_post_update(self.root, self._runner)
+        installer.assert_not_called()
+        self.assertEqual(self.runner_calls, [])
+
+    def test_rerender_uses_configured_runtime_paths_and_journal(self):
+        from clash_sub.manage import _rerender_nginx
+
+        state = InstallState(domain="example.com", panel_port=2053, panel_base_path="/p-x")
+        config = ServiceConfig("owner@example.com", "sub.example.com:443", "node.example.com:443", self.root / "xui.db", self.root / "custom" / "private", self.root / "custom" / "public", self.root / "custom-nginx" / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), self.root / "templates")
+        paths = InstallPaths(xui_database=config.xui_database, private_root=config.private_root, public_root=config.public_root, routes_conf=config.nginx_routes)
+        with patch("clash_sub.nginx.render_stream_config", return_value="stream") as stream, patch(
+            "clash_sub.nginx.render_sub_server", return_value="server"
+        ) as server, patch("clash_sub.nginx.activate_nginx_files") as activate:
+            _rerender_nginx(self.root, self._runner, state, paths=paths, config=config)
+
+        self.assertIs(stream.call_args.args[0], config)
+        self.assertIs(server.call_args.args[0], config)
+        self.assertEqual(activate.call_args.kwargs["journal_path"], config.private_root / ".nginx-rerender-journal.json")
 
     def test_update_pull_failure_does_not_spawn(self):
         from clash_sub.manage import run_update

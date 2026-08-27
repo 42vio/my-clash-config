@@ -7,6 +7,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
+import yaml
 from collections import namedtuple
 from io import StringIO
 from pathlib import Path
@@ -55,6 +56,7 @@ class InstallStateTests(unittest.TestCase):
     def test_load_rejects_unknown_schema(self):
         path = self.root / "install-state.json"
         path.write_text(json.dumps({"schema_version": 99}), encoding="utf-8")
+        os.chmod(path, 0o600)
 
         with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
             load_install_state(path)
@@ -62,6 +64,7 @@ class InstallStateTests(unittest.TestCase):
     def test_load_rejects_corrupted_payload(self):
         path = self.root / "install-state.json"
         path.write_text("{not json", encoding="utf-8")
+        os.chmod(path, 0o600)
 
         with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
             load_install_state(path)
@@ -89,6 +92,7 @@ class InstallStateTests(unittest.TestCase):
             "replaced_files": {"/etc/systemd/system/clash-sub-traffic.service": legacy_replacement},
         }
         path.write_text(json.dumps(legacy), encoding="utf-8")
+        os.chmod(path, 0o600)
 
         loaded = load_install_state(path)
 
@@ -109,6 +113,61 @@ class InstallStateTests(unittest.TestCase):
     def test_save_rejects_foreign_object(self):
         with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
             save_install_state(self.root / "state.json", {"domain": "example.com"})
+
+    def test_save_fsyncs_parent_directory_after_replace(self):
+        path = self.root / "install-state.json"
+        real_open = os.open
+        calls = []
+
+        def tracked_open(name, flags, *args, **kwargs):
+            descriptor = real_open(name, flags, *args, **kwargs)
+            if Path(name) == self.root:
+                calls.append(descriptor)
+            return descriptor
+
+        with patch("clash_sub.installer.os.open", side_effect=tracked_open), patch(
+            "clash_sub.installer.os.fsync", wraps=os.fsync
+        ) as fsync:
+            save_install_state(path, InstallState(domain="example.com"))
+
+        self.assertTrue(any(call.args[0] in calls for call in fsync.call_args_list))
+
+    def test_installer_rejects_tampered_state_path_before_rollback(self):
+        repo = self.root / "repo"; (repo / "private").mkdir(parents=True)
+        paths = InstallPaths(systemd_dir=repo / "systemd")
+        victim = self.root / "victim"; victim.write_text("keep", encoding="utf-8")
+        journal = repo / "private" / "install-state.json"
+        journal.write_text(json.dumps({"schema_version": 1, "files_written": [str(victim)]}), encoding="utf-8")
+        os.chmod(journal, 0o600)
+        installer = Installer(repo, paths=paths, runner=lambda *_, **__: None)
+
+        with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
+            installer.rollback_install()
+        self.assertEqual(victim.read_text(encoding="utf-8"), "keep")
+
+    def test_dangling_state_symlink_is_not_treated_as_missing_journal(self):
+        repo = self.root / "repo"; (repo / "private").mkdir(parents=True)
+        journal = repo / "private" / "install-state.json"
+        journal.symlink_to(repo / "private" / "vanished.json")
+        installer = Installer(repo, paths=InstallPaths(systemd_dir=repo / "systemd"), runner=lambda *_, **__: None)
+
+        with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
+            installer.state()
+        with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
+            installer.rollback_install()
+
+    def test_state_rejects_boolean_schema_and_unknown_or_duplicate_phases(self):
+        path = self.root / "install-state.json"
+        for payload in (
+            {"schema_version": True},
+            {"schema_version": 1, "phases_done": ["not-a-phase"]},
+            {"schema_version": 1, "phases_done": ["preflight", "preflight"]},
+        ):
+            with self.subTest(payload=payload):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                os.chmod(path, 0o600)
+                with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
+                    load_install_state(path)
 
     def test_default_paths_target_etc_layout(self):
         paths = InstallPaths()
@@ -819,6 +878,8 @@ class CertificatePhaseTests(unittest.TestCase):
 
         def env_runner(arguments, **kwargs):
             captured.append({"argv": list(arguments), "env": kwargs.get("env")})
+            if arguments[:1] == ["curl"]:
+                Path(arguments[-1]).write_bytes(b"pinned archive fixture")
             if (
                 arguments
                 and arguments[0] == str(installer.paths.acme_home / "acme.sh")
@@ -830,7 +891,11 @@ class CertificatePhaseTests(unittest.TestCase):
             return subprocess.CompletedProcess(list(arguments), 0)
 
         installer.runner = env_runner
-        installer.issue_certificate("example.com", "cf-token-value")
+        with patch("clash_sub.installer.hashlib.sha256") as digest:
+            digest.return_value.hexdigest.return_value = (
+                "e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
+            )
+            installer.issue_certificate("example.com", "cf-token-value")
 
         issue = next(call for call in captured if "--issue" in call["argv"])
         self.assertIn("-d", issue["argv"])
@@ -842,8 +907,8 @@ class CertificatePhaseTests(unittest.TestCase):
         self.assertIn(str(self.paths.fullchain()), install["argv"])
         self.assertIn(str(self.paths.privkey()), install["argv"])
         self.assertTrue(
-            any("get.acme.sh" in " ".join(call["argv"]) for call in captured),
-            "acme.sh bootstrap must be downloaded",
+            any("acme.sh/archive/refs/tags/3.1.4.tar.gz" in " ".join(call["argv"]) for call in captured),
+            "pinned acme.sh release must be downloaded",
         )
         self.assertEqual(self.paths.privkey().stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.paths.ssl_dir.stat().st_mode & 0o777, 0o700)
@@ -858,6 +923,20 @@ class CertificatePhaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(InstallerError, "invalid_domain|missing_cf_token"):
                     installer.issue_certificate(domain, token)
 
+    def test_rejects_acme_archive_with_wrong_hash_before_extracting(self):
+        installer = self._installer()
+
+        def runner(arguments, **_):
+            self.runner_calls.append({"argv": list(arguments), "env": None})
+            if arguments[:1] == ["curl"]:
+                Path(arguments[-1]).write_bytes(b"wrong")
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer.runner = runner
+        with self.assertRaisesRegex(InstallerError, "acme_download_invalid"):
+            installer.issue_certificate("example.com", "token")
+        self.assertFalse(any(call["argv"][:1] == ["tar"] for call in self.runner_calls))
+
 
 class NginxActivationPhaseTests(unittest.TestCase):
     def setUp(self):
@@ -867,7 +946,7 @@ class NginxActivationPhaseTests(unittest.TestCase):
         (self.root / "templates" / "nginx").mkdir(parents=True)
         (self.root / "bin").mkdir()
         (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
-        (self.root / "usr-local-bin").mkdir()
+        (self.root / "usr-local-bin").mkdir(exist_ok=True)
         source = Path(__file__).resolve().parents[1] / "templates" / "nginx"
         for template in source.iterdir():
             shutil.copy(template, self.root / "templates" / "nginx" / template.name)
@@ -975,6 +1054,53 @@ class NginxActivationPhaseTests(unittest.TestCase):
         self.assertTrue(any("enable" in item and "clash-sub-traffic.timer" in item for item in joined))
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("systemd_harden", state.phases_done)
+
+    def test_hardened_units_use_custom_runtime_paths(self):
+        custom = InstallPaths(
+            systemd_dir=self.root / "systemd-custom",
+            private_root=self.root / "runtime" / "private",
+            public_root=self.root / "runtime" / "public",
+            routes_conf=self.root / "nginx-custom" / "routes.conf",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
+        )
+        (self.root / "usr-local-bin").mkdir(exist_ok=True)
+        installer = Installer(self.root, paths=custom, runner=self._runner)
+
+        installer.harden_systemd()
+
+        traffic = (custom.systemd_dir / "clash-sub-traffic.service").read_text(encoding="utf-8")
+        recover = (custom.systemd_dir / "clash-sub-recover.service").read_text(encoding="utf-8")
+        self.assertIn("ReadWritePaths=%s %s %s" % (custom.private_root, custom.public_root, custom.routes_conf.parent), traffic)
+        self.assertIn("ReadWritePaths=%s %s %s" % (custom.private_root, custom.public_root, custom.routes_conf.parent), recover)
+
+    def test_systemd_renderer_rejects_asset_without_path_sentinel(self):
+        installer = self._installer()
+
+        with self.assertRaisesRegex(InstallerError, "systemd_path_invalid"):
+            installer._render_systemd_unit("[Service]\nReadWritePaths=/wrong\n")
+
+    def test_invalid_systemd_runtime_paths_fail_before_any_side_effect(self):
+        cases = (
+            {"private_root": self.root / "%n"},
+            {"public_root": self.root / "runtime" / ".." / "public"},
+            {"routes_conf": Path("/routes.conf")},
+        )
+        for index, update in enumerate(cases):
+            with self.subTest(update=update):
+                self.runner_calls.clear()
+                (self.root / "private" / "install-state.json").unlink(missing_ok=True)
+                custom = InstallPaths(
+                    systemd_dir=self.root / ("systemd-invalid-%d" % index),
+                    cli_symlink=self.root / ("usr-local-bin-%d" % index) / "clash-sub",
+                    **update,
+                )
+                custom.cli_symlink.parent.mkdir()
+                installer = Installer(self.root, paths=custom, runner=self._runner)
+                with self.assertRaisesRegex(InstallerError, "systemd_path_invalid"):
+                    installer.harden_systemd()
+                self.assertFalse(custom.cli_symlink.exists() or custom.cli_symlink.is_symlink())
+                self.assertFalse(custom.systemd_dir.exists())
+                self.assertEqual(self.runner_calls, [])
 
 
 class CliSymlinkTests(unittest.TestCase):
@@ -1097,6 +1223,15 @@ class SubscriptionInitPhaseTests(unittest.TestCase):
         self.assertTrue(self.paths.public_root.is_dir())
         self.assertEqual(self.paths.public_root.stat().st_mode & 0o7777, 0o2750)
         self.assertTrue(self.paths.routes_conf.parent.is_dir())
+
+    def test_service_yaml_preserves_special_owner_email_as_string(self):
+        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
+        owner = "yes: owner\nnext"
+
+        installer.initialize_subscription(domain="example.com", owner_email=owner)
+
+        data = yaml.safe_load((self.root / "private" / "config" / "service.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(data["owner-email"], owner)
 
 
 class NodeHostTests(unittest.TestCase):
@@ -1398,11 +1533,9 @@ class RollbackInstallTests(unittest.TestCase):
                 panel_port=2053,
                 panel_base_path="/p-x",
                 phases_done=["nginx_packages", "nginx_activation", "systemd_harden"],
-                # Fresh-install provenance: nginx was absent before apt ran
-                # and the transaction had begun mutating artifacts.
-                artifact_mutation_started=True,
                 nginx_active=False,
                 nginx_enabled=False,
+                stream_include_removal_intent=True,
                 files_written=[
                     str(self.paths.stream_conf()),
                     str(self.paths.http_conf()),
@@ -1549,7 +1682,7 @@ class RollbackInstallTests(unittest.TestCase):
         restore.assert_not_called()
         self.assertFalse((self.root / "private" / "install-state.json").exists())
 
-    def test_sweep_removes_unjournaled_marker_confs(self):
+    def test_legacy_unjournaled_markers_are_left_untouched(self):
         marker = "# Managed by clash-sub install. SNI routing.\n"
         self.paths.stream_conf().write_text(marker + "stream {\n}\n", encoding="utf-8")
         self.paths.http_conf().write_text(marker + "server {\n}\n", encoding="utf-8")
@@ -1571,12 +1704,13 @@ class RollbackInstallTests(unittest.TestCase):
 
         installer.rollback_install()
 
-        self.assertFalse(self.paths.stream_conf().exists())
-        self.assertFalse(self.paths.http_conf().exists())
-        self.assertFalse(self.paths.cli_symlink.exists() or self.paths.cli_symlink.is_symlink())
+        self.assertTrue(self.paths.stream_conf().exists())
+        self.assertTrue(self.paths.http_conf().exists())
+        self.assertTrue(self.paths.cli_symlink.is_symlink())
 
         foreign_target = Path(self.tempdir.name) / "outside-repo-target"
         foreign_target.write_text("# foreign\n", encoding="utf-8")
+        self.paths.cli_symlink.unlink()
         self.paths.cli_symlink.symlink_to(foreign_target)
         save_install_state(
             self.root / "private" / "install-state.json",
@@ -1637,7 +1771,7 @@ class RollbackInstallTests(unittest.TestCase):
 
         self.assertFalse((self.root / "private" / "install-state.json").exists())
 
-    def test_rollback_survives_stop_failure(self):
+    def test_rollback_stop_failure_keeps_journal_for_retry(self):
         def failing_stop_runner(arguments, **_):
             self.runner_calls.append(list(arguments))
             if "stop" in arguments:
@@ -1657,10 +1791,11 @@ class RollbackInstallTests(unittest.TestCase):
             ),
         )
 
-        installer.rollback_install()
+        with self.assertRaisesRegex(InstallerError, "rollback_failed"):
+            installer.rollback_install()
 
         self.assertFalse(self.paths.http_conf().exists())
-        self.assertFalse((self.root / "private" / "install-state.json").exists())
+        self.assertTrue((self.root / "private" / "install-state.json").exists())
 
 
 class RollbackPhaseGatingTests(unittest.TestCase):
@@ -2332,7 +2467,6 @@ class NginxStateRestoreTests(unittest.TestCase):
         state = load_install_state(self.journal)
         self.assertTrue(state.nginx_active)
         self.assertTrue(state.nginx_enabled)
-        self.assertTrue(state.artifact_mutation_started)
         self.assertIn("nginx_packages", state.phases_done)
 
         before = len(self.runner_calls)
@@ -2343,7 +2477,7 @@ class NginxStateRestoreTests(unittest.TestCase):
         self.assertFalse(self.journal.exists())
 
     def test_rollback_stops_disables_when_original_was_inactive_disabled(self):
-        installer = self._installer(self._query_runner(1, 1))
+        installer = self._installer(self._query_runner(3, 1))
         self._run_package_phase(installer)
 
         state = load_install_state(self.journal)
@@ -2377,6 +2511,25 @@ class NginxStateRestoreTests(unittest.TestCase):
         self.assertNotIn(["systemctl", "stop", "nginx"], self.runner_calls)
         self.assertIn(["systemctl", "disable", "nginx"], self.runner_calls)
         self.assertFalse(self.journal.exists())
+
+    def test_fresh_nginx_not_found_is_captured_inactive_and_allows_apt(self):
+        installer = self._installer(self._query_runner(3, 4))
+
+        self._run_package_phase(installer)
+
+        state = load_install_state(self.journal)
+        self.assertFalse(state.nginx_active)
+        self.assertFalse(state.nginx_enabled)
+        self.assertTrue(any(call[0] == "apt-get" for call in self.runner_calls))
+
+    def test_unrecognized_nginx_state_fails_before_apt(self):
+        for active_rc, enabled_rc in ((1, 1), (3, 2)):
+            with self.subTest(active_rc=active_rc, enabled_rc=enabled_rc):
+                self.runner_calls.clear()
+                installer = self._installer(self._query_runner(active_rc, enabled_rc))
+                with self.assertRaisesRegex(InstallerError, "nginx_service_state_unknown"):
+                    self._run_package_phase(installer)
+                self.assertFalse(any(call[0] == "apt-get" for call in self.runner_calls))
 
     def test_old_journal_without_nginx_state_touches_no_nginx(self):
         save_install_state(
@@ -2633,7 +2786,7 @@ class SweepGatingTests(unittest.TestCase):
         )
         self.assertFalse(self.journal.exists())
 
-    def test_mutation_started_partial_writes_are_cleaned(self):
+    def test_legacy_mutation_flag_without_file_provenance_touches_nothing(self):
         save_install_state(
             self.journal,
             InstallState(
@@ -2645,12 +2798,10 @@ class SweepGatingTests(unittest.TestCase):
 
         installer.rollback_install()
 
-        self.assertFalse(self.paths.stream_conf().exists())
-        self.assertFalse(self.paths.http_conf().exists())
-        self.assertFalse(
-            self.paths.cli_symlink.exists() or self.paths.cli_symlink.is_symlink()
-        )
-        self.assertNotIn(
+        self.assertTrue(self.paths.stream_conf().exists())
+        self.assertTrue(self.paths.http_conf().exists())
+        self.assertTrue(self.paths.cli_symlink.is_symlink())
+        self.assertIn(
             "# clash-sub stream include",
             self.paths.nginx_conf.read_text(encoding="utf-8"),
         )
@@ -2680,6 +2831,240 @@ class SweepGatingTests(unittest.TestCase):
         installer.rollback_install()
 
         self.assertTrue(lookalike.exists())
+
+class RollbackWriteAheadRegressionTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.root / "usr-local-bin").mkdir()
+        self.paths = InstallPaths(
+            nginx_conf=self.root / "nginx.conf",
+            stream_conf_dir=self.root / "stream-conf.d",
+            http_conf_dir=self.root / "conf.d",
+            routes_conf=self.root / "routes.conf",
+            systemd_dir=self.root / "systemd",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
+        )
+        self.paths.nginx_conf.write_text("http {\n}\n", encoding="utf-8")
+        self.journal = self.root / "private" / "install-state.json"
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_package_resume_preserves_first_nginx_snapshot(self):
+        service = {"active": False, "enabled": False}
+        calls = []
+
+        def runner(arguments, **_):
+            calls.append(list(arguments))
+            if arguments[:2] == ["systemctl", "is-active"]:
+                return subprocess.CompletedProcess(arguments, 0 if service["active"] else 3)
+            if arguments[:2] == ["systemctl", "is-enabled"]:
+                return subprocess.CompletedProcess(arguments, 0 if service["enabled"] else 1)
+            if arguments[0] == "apt-get":
+                service.update(active=True, enabled=True)
+            if arguments[:2] == ["systemctl", "stop"]:
+                service["active"] = False
+            if arguments[:2] == ["systemctl", "disable"]:
+                service["enabled"] = False
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=runner)
+        with patch.object(
+            Installer, "_remove_default_site_will_proceed", return_value=False
+        ), patch.object(
+            Installer, "_ensure_stream_include", side_effect=InstallerError("after_apt")
+        ):
+            for _ in range(2):
+                with self.assertRaisesRegex(InstallerError, "after_apt"):
+                    installer.install_nginx_packages()
+
+        state = load_install_state(self.journal)
+        self.assertFalse(state.nginx_active)
+        self.assertFalse(state.nginx_enabled)
+        before = len(calls)
+        installer.rollback_install()
+        self.assertIn(["systemctl", "stop", "nginx"], calls[before:])
+        self.assertIn(["systemctl", "disable", "nginx"], calls[before:])
+
+    def test_unknown_nginx_state_blocks_before_apt(self):
+        calls = []
+
+        def runner(arguments, **_):
+            calls.append(list(arguments))
+            if arguments[:2] == ["systemctl", "is-active"]:
+                raise OSError("dbus unavailable")
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=runner)
+
+        with self.assertRaisesRegex(InstallerError, "nginx_service_state_unknown"):
+            installer.install_nginx_packages()
+
+        self.assertFalse(any(call[0] == "apt-get" for call in calls))
+        self.assertFalse(self.journal.exists())
+
+    def test_apt_failure_leaves_preexisting_fingerprinted_artifacts(self):
+        marker = "# Managed by clash-sub install. SNI routing.\n"
+        self.paths.stream_conf().parent.mkdir(parents=True)
+        self.paths.http_conf().parent.mkdir(parents=True)
+        self.paths.stream_conf().write_text(marker, encoding="utf-8")
+        self.paths.http_conf().write_text(marker, encoding="utf-8")
+        self.paths.cli_symlink.symlink_to(self.root / "bin" / "clash-sub")
+        self.paths.nginx_conf.write_text(
+            "http {\n}\n\n# clash-sub stream include\nstream {\n    include %s/*.conf;\n}\n"
+            % self.paths.stream_conf_dir,
+            encoding="utf-8",
+        )
+
+        def runner(arguments, **_):
+            if arguments[:2] in (
+                ["systemctl", "is-active"],
+                ["systemctl", "is-enabled"],
+            ):
+                return subprocess.CompletedProcess(arguments, 0)
+            if arguments[0] == "apt-get":
+                return subprocess.CompletedProcess(arguments, 1)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=runner)
+        with self.assertRaisesRegex(InstallerError, "command_failed"):
+            installer.install_nginx_packages()
+        installer.rollback_install()
+
+        self.assertTrue(self.paths.stream_conf().exists())
+        self.assertTrue(self.paths.http_conf().exists())
+        self.assertTrue(self.paths.cli_symlink.is_symlink())
+        self.assertIn(
+            "# clash-sub stream include",
+            self.paths.nginx_conf.read_text(encoding="utf-8"),
+        )
+
+    def test_foreign_timer_state_is_restored_after_rollback(self):
+        timer = self.paths.systemd_dir / "clash-sub-traffic.timer"
+        timer.parent.mkdir(parents=True)
+        timer.write_text("# operator timer\n", encoding="utf-8")
+        service = {"active": True, "enabled": True}
+
+        def runner(arguments, **_):
+            if arguments[:2] == ["systemctl", "is-active"]:
+                return subprocess.CompletedProcess(arguments, 0 if service["active"] else 3)
+            if arguments[:2] == ["systemctl", "is-enabled"]:
+                return subprocess.CompletedProcess(arguments, 0 if service["enabled"] else 1)
+            if arguments[:3] == ["systemctl", "disable", "--now"]:
+                service.update(active=False, enabled=False)
+            if arguments[:2] == ["systemctl", "enable"]:
+                service["enabled"] = True
+            if arguments[:2] == ["systemctl", "start"]:
+                service["active"] = True
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=runner)
+        installer.harden_systemd()
+        installer.rollback_install()
+
+        self.assertEqual(timer.read_text(encoding="utf-8"), "# operator timer\n")
+        self.assertEqual(service, {"active": True, "enabled": True})
+
+    def test_fresh_timer_not_found_allows_systemd_hardening(self):
+        calls = []
+
+        def runner(arguments, **_):
+            calls.append(list(arguments))
+            if arguments[:2] == ["systemctl", "is-active"]:
+                return subprocess.CompletedProcess(arguments, 3)
+            if arguments[:2] == ["systemctl", "is-enabled"]:
+                return subprocess.CompletedProcess(arguments, 4)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=runner)
+        installer.harden_systemd()
+        state = load_install_state(self.journal)
+        self.assertFalse(state.timer_active)
+        self.assertFalse(state.timer_enabled)
+        self.assertTrue(any(call[:2] == ["systemctl", "daemon-reload"] for call in calls))
+
+    def test_unrecognized_timer_state_fails_before_systemd_writes(self):
+        for active_rc, enabled_rc in ((1, 1), (3, 2)):
+            with self.subTest(active_rc=active_rc, enabled_rc=enabled_rc):
+                calls = []
+                def runner(arguments, **_):
+                    calls.append(list(arguments))
+                    if arguments[:2] == ["systemctl", "is-active"]:
+                        return subprocess.CompletedProcess(arguments, active_rc)
+                    if arguments[:2] == ["systemctl", "is-enabled"]:
+                        return subprocess.CompletedProcess(arguments, enabled_rc)
+                    return subprocess.CompletedProcess(arguments, 0)
+                installer = Installer(self.root, paths=self.paths, runner=runner)
+                with self.assertRaisesRegex(InstallerError, "timer_service_state_unknown"):
+                    installer.harden_systemd()
+                self.assertFalse(any(call[:2] == ["systemctl", "daemon-reload"] for call in calls))
+
+    def test_failed_timer_cleanup_keeps_journal_for_retry(self):
+        save_install_state(self.journal, InstallState(systemd_actions_started=True))
+
+        def runner(arguments, **_):
+            if arguments[:3] == ["systemctl", "disable", "--now"]:
+                return subprocess.CompletedProcess(arguments, 1)
+            return subprocess.CompletedProcess(arguments, 0)
+
+        installer = Installer(self.root, paths=self.paths, runner=runner)
+
+        with self.assertRaisesRegex(InstallerError, "rollback_failed"):
+            installer.rollback_install()
+
+        self.assertTrue(self.journal.exists())
+
+    def test_activate_tail_save_crash_removes_new_routes_file(self):
+        save_install_state(
+            self.journal,
+            InstallState(nginx_active=False, nginx_enabled=False),
+        )
+        installer = Installer(
+            self.root,
+            paths=self.paths,
+            runner=lambda arguments, **_: subprocess.CompletedProcess(arguments, 0),
+        )
+        real_save = installer._save_state
+        saves = {"count": 0}
+
+        def flaky_save(state):
+            saves["count"] += 1
+            if saves["count"] == 2:
+                raise OSError("tail save failed")
+            return real_save(state)
+
+        def fake_activate(files, runner, nginx_binary):
+            for path, data, _ in files:
+                path = Path(path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+
+        installer._save_state = flaky_save
+        with patch(
+            "clash_sub.installer.render_stream_config",
+            return_value="# Managed by clash-sub install. SNI routing.\n",
+        ), patch(
+            "clash_sub.installer.render_sub_server",
+            return_value="# Managed by clash-sub install. Subscription server.\n",
+        ), patch("clash_sub.installer.activate_nginx_files", side_effect=fake_activate):
+            with self.assertRaisesRegex(OSError, "tail save failed"):
+                installer.activate_nginx(
+                    domain="example.com", panel_port=2053, panel_base_path="/p/"
+                )
+
+        Installer(
+            self.root,
+            paths=self.paths,
+            runner=lambda arguments, **_: subprocess.CompletedProcess(arguments, 0),
+        ).rollback_install()
+
+        self.assertFalse(self.paths.stream_conf().exists())
+        self.assertFalse(self.paths.http_conf().exists())
+        self.assertFalse(self.paths.routes_conf.exists())
 
 
 class InstallResumeGuardTests(unittest.TestCase):

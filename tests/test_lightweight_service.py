@@ -418,6 +418,24 @@ class ServiceTests(unittest.TestCase):
         self.assertIn("sub-7", seen)
         self.assertIn("https://airport.example/transient", seen)
 
+    def test_first_airport_update_allows_missing_home_snapshot(self):
+        home = Path(self.config.private_root) / "home.yaml"
+        self.assertFalse(home.exists())
+        loaded = []
+        self.service._load_proxy = lambda path: loaded.append(path) or self.airport
+
+        result = self.service.update_airport("https://airport.example/transient")
+
+        self.assertEqual(result["errors"], ())
+        self.assertNotIn(home, loaded)
+
+    def test_existing_invalid_home_snapshot_still_blocks_airport_update(self):
+        home = Path(self.config.private_root) / "home.yaml"; home.write_text("broken", encoding="utf-8")
+        self.service._load_proxy = lambda path: (_ for _ in ()).throw(ValueError()) if path == home else self.airport
+
+        with self.assertRaisesRegex(ServiceError, "airport_activation_failed"):
+            self.service.update_airport("https://airport.example/transient")
+
     def test_busy_lock_blocks_mutation_without_state_change(self):
         before = self.state
         self.service._lock_factory = lambda _: (_ for _ in ()).throw(ServiceError("operation_busy"))
