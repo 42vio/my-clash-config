@@ -91,6 +91,27 @@ class LightweightChecksTests(unittest.TestCase):
         with self.assertRaisesRegex(CheckError, "unknown target"):
             validate_clash(dump(document), ())
 
+    def test_rule_set_referencing_an_unknown_provider_is_rejected_without_naming_it(self):
+        self.assertIsNotNone(validate_clash)
+        document = valid_document()
+        document["rules"] = ["RULE-SET,Missing,DIRECT", "MATCH,Selector"]
+
+        with self.assertRaises(CheckError) as caught:
+            validate_clash(dump(document), ())
+
+        self.assertRegex(str(caught.exception), "unknown provider")
+        self.assertNotIn("Missing", str(caught.exception))
+
+    def test_known_rule_set_providers_keep_passing_structural_checks(self):
+        self.assertIsNotNone(validate_clash)
+        document = valid_document()
+        document["rules"] = [
+            "RULE-SET,Direct,DIRECT,no-resolve",
+            "MATCH,Selector",
+        ]
+
+        self.assertIsNotNone(validate_clash(dump(document), ()))
+
     def test_proxy_providers_and_incomplete_reality_are_rejected(self):
         self.assertIsNotNone(validate_clash)
         document = valid_document()

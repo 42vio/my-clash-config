@@ -14,8 +14,9 @@ private data?  It checks three things:
    repeated-digit UUIDs/hex, and hex embedded in rule-provider URLs
    stay allowed.
 3. With ``--private-root``: credential-like scalar values extracted in
-   memory from the ignored ``private/config`` and ``private/sources``
-   trees must not occur, byte for byte, in any tracked file.
+   memory from the ignored ``private/config``, ``private/sources``, and
+   ``private/workbench`` trees must not occur, byte for byte, in any
+   tracked file.
 
 Output is always a category and a tracked path.  A matched value is
 never printed, logged, or embedded in an error message; malformed
@@ -50,6 +51,7 @@ MIN_PRIVATE_VALUE_CHARS = 16
 PRIVATE_RUNTIME_DIRECTORIES = (
     "private/config",
     "private/sources",
+    "private/workbench",
     "private/releases",
     "private/current",
     "private/staging",
@@ -138,7 +140,7 @@ _CREDENTIAL_KEY_FRAGMENTS = (
     "psk",
     "credential",
 )
-_PRIVATE_SCAN_DIRECTORIES = ("config", "sources")
+_PRIVATE_SCAN_DIRECTORIES = ("config", "sources", "workbench")
 
 
 class Finding:
@@ -379,10 +381,11 @@ def _iter_private_yaml_files(private_root: Path) -> Iterable[Path]:
 def extract_private_values(private_root: Path) -> Set[bytes]:
     """Extract credential-like scalar bytes from ignored private YAML.
 
-    Only ``private/config`` and ``private/sources`` are read, entirely in
-    memory; nothing is written and no value is ever printed.  Malformed
-    YAML is skipped silently: a parser error message would embed the
-    offending source line, which may itself carry a private value.
+    Only ``private/config``, ``private/sources``, and ``private/workbench``
+    are read, entirely in memory; nothing is written and no value is ever
+    printed.  Malformed YAML is skipped silently: a parser error message
+    would embed the offending source line, which may itself carry a
+    private value.
     """
     values: Set[bytes] = set()
     for path in _iter_private_yaml_files(private_root):
@@ -456,7 +459,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--private-root",
         type=Path,
         default=None,
-        help="ignored private root whose config/sources values must not appear tracked",
+        help="ignored private root whose config/sources/workbench values must not appear tracked",
     )
     return parser.parse_args(argv)
 

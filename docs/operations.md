@@ -6,15 +6,60 @@
 clash-sub
 ```
 
-无参数命令显示交互菜单（`1`–`4` 选择，`0` 退出）：
+无参数命令显示**循环式**交互菜单（操作结束回到菜单，`0`、EOF 或 Ctrl-C
+退出；轮换链接、强制续期、用户回退、owner 重新初始化与安装回滚都会二次
+确认，安装回滚要求输入确认文本）：
 
 ```text
-1. 更新机场订阅
-2. 同步所有配置
-3. 查看订阅链接
-4. 查看状态和历史版本
-0. 退出
+================================
+      clash-sub 管理菜单
+================================
+配置管理
+  1. 更新机场订阅
+  2. 重新生成所有配置（不更新代码）
+  3. 查看订阅链接
+  4. 查看状态和历史版本
+
+程序维护
+  5. 更新仓库代码
+  6. 更新仓库代码并同步配置（推荐）
+
+证书与备份
+  7. 查看证书状态
+  8. 强制续期证书
+  9. 创建完整备份
+
+故障与用户管理
+ 10. 恢复中断的配置发布
+ 11. 用户历史/回退
+ 12. 轮换用户订阅链接
+ 13. 重新初始化 owner
+ 14. 回滚整合安装
+
+  0. 退出
+================================
 ```
+
+需要 user ID、release ID 的操作由菜单逐项提示。内部命令 `update
+--post-update` 与 systemd 专用的 `traffic-update` 不出现在菜单；本地开发
+命令 `template-sync` 也不出现在服务器菜单。
+
+`clash-sub update`（菜单 5 等价）保持原语义：快照 → git pull → pip →
+新进程 post-update，**不自动同步**。成功输出明确提醒：
+
+```text
+代码更新完成。
+如果本次修改涉及模板或生成逻辑，请继续执行：
+clash-sub sync
+
+也可以以后直接使用：
+clash-sub update && clash-sub sync
+```
+
+菜单选项 6 等价于 shell 的 `clash-sub update && clash-sub sync`，但 sync
+由 pull 后磁盘入口启动的**新进程**执行，禁止在已加载旧模块的菜单进程中
+调用旧 service 对象；update 失败时绝不 sync。update 成功后菜单退出
+（不继续使用旧代码处理后续选项），失败保留错误码退出。
 
 所有输出默认脱敏：不显示令牌、UUID、subId、节点凭据或源 URL。唯一例外是
 「查看订阅链接」与 `rotate-link`——它们的目的就是展示完整地址。
@@ -31,10 +76,62 @@ clash-sub rollback <user-id> <release-id>
 clash-sub rotate-link <user-id>   # 轮换令牌；随后用 root-only links 重新查看
 clash-sub reinitialize-owner <numeric-client-id>  # 仅持久化 owner ID 消失后的人工迁移
 clash-sub recover                 # root-only；启动恢复 unit 调用，不要求 Nginx 已运行
+clash-sub update                  # 代码更新（见上，成功后按提示执行 sync）
+clash-sub cert [--renew]          # 证书状态 / 强制续期
+clash-sub backup                  # 全量备份
+clash-sub install                 # root-only 整合安装（见 DEPLOYMENT.md）
+clash-sub rollback --install      # 回滚整合安装（二次确认）
+clash-sub template-sync           # 开发机本地命令：工作稿 → templates/（见下节）
 ```
 
 失败时输出只有稳定错误代码（如 `操作失败（错误代码：xui_snapshot_failed）`），
 不含敏感值。没有 `refresh` 命令，也没有兼容别名。
+
+## 本地模板工作流（开发机，不碰服务器）
+
+公共策略只有一个事实来源 `templates/clash.yaml`；家庭差异在
+`templates/features/home.yaml`，privacy 的 DNS 覆盖在
+`templates/variants/privacy-dns.yaml`，组合关系在
+`templates/variants/manifest.yaml`。在 Mac 上修改公共规则/策略组/DNS 的
+日常流程：
+
+```text
+1. 编辑 private/workbench/balanced.yaml（完整、私密的工作稿，0600）
+2. 在本机 Clash 导入并实际测试
+3. 运行 clash-sub template-sync
+4. 查看 git diff
+5. 运行测试（.venv/bin/python -m unittest discover -s tests）
+6. 提交 templates/ 与相应代码并 push
+7. 服务器执行 clash-sub update && clash-sub sync
+```
+
+`template-sync` 的安全语义：
+
+- 只读固定路径 `private/workbench/balanced.yaml`（不接收私密路径参数）；
+  拒绝 symlink、硬链接、非 `0600`、非当前用户、超限（5 MiB）、坏
+  UTF-8/YAML、Jinja 标记与 `_` 前缀控制字段。
+- 剥离全部动态节点（proxy 对象与组内**完全相等**的成员名）；home feature
+  已拥有的组继续由 feature 管理，新出现且含动态节点的公共组默认进入
+  manifest 全局注入，不猜测新的家庭归属。
+- 候选先写临时目录，用合成节点重渲染 owner 三 variant 与 member
+  standard，通过结构校验、Mihomo 校验（`MIHOMO_BIN` 必须指向固定版本
+  二进制，缺失返回 `mihomo_binary_missing`，不降级为成功）与泄漏比对
+  （工作稿私密标量、节点名成员匹配、tracked secret scan）后才原子替换
+  `templates/` 三个目标文件；任一步失败保持 `templates/` 原字节。
+- 成功只打印变更文件路径与下一步提示，不打印 diff；错误只有稳定代码
+  （`template_source_invalid` / `template_feature_invalid` /
+  `template_rule_order_invalid` / `template_candidate_invalid` /
+  `mihomo_binary_missing` / `mihomo_validation_failed` /
+  `template_secret_leak` / `template_write_failed`）。家庭规则在工作稿中
+  必须构成**连续的前缀块**：与公共规则交错时返回
+  `template_rule_order_invalid`（本期 feature 只有 prepend 语义，不静默
+  重排公共规则）。
+- 无网络、无服务器副作用、无 git 写操作；工作稿永远不进入 Git（`private/`
+  被全量忽略），服务器上永远不需要这个文件。
+
+一次性准备：从本机 Clash 导出当前可用的完整 balanced 配置，保存为
+`private/workbench/balanced.yaml` 并 `chmod 600`。工作稿中的注释、锚点与
+排版不属于同步数据（解析再输出会规范化）；策略组与规则的语义顺序保持。
 
 ## 机场更新（手机 SSH 完整流程）
 

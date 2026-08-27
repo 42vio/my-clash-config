@@ -78,9 +78,10 @@ ss -tlnp | grep -E '443|10443|30443'
 ## 日常管理
 
 - `clash-sub backup`：全量备份到 backups/（含 x-ui.db、运行时 private/、nginx 配置）
-- `clash-sub update`：git pull + 依赖同步，随后以新代码进程执行 systemd/nginx 刷新（--post-update 自动接力；变更前自动快照）
+- `clash-sub update`：git pull + 依赖同步，随后以新代码进程执行 systemd/nginx 刷新（--post-update 自动接力；变更前自动快照）。update 不自动同步配置；涉及模板或生成逻辑的变更按成功提示继续执行 `clash-sub sync`（日常直接记 `clash-sub update && clash-sub sync`，等价于菜单选项 6）
 - `clash-sub cert` / `clash-sub cert --renew`：证书状态 / 强制续期
 - `clash-sub rollback --install`：回滚整合安装——移除 nginx 配置与 stream include（仅精确移除 installer 写入的块）、停用 systemd 资产、恢复 Debian 默认站点（注：收口后 Reality 监听 127.0.0.1，回滚需同时在 3x-ui 面板把入站 listen 改回 0.0.0.0 才能恢复公网直连）
+- 模板维护（`clash-sub template-sync`）是**开发机本地命令**，在维护者的 Mac 上把私密工作稿提升为公共模板；服务器不运行它，也永远不上传 `private/workbench/` 工作稿——服务器只通过 Git 与 `clash-sub update && clash-sub sync` 获得模板变更。
 
 一次性升级说明：已在运行的旧版本（≤ 2026-08-26 之前部署）的 update 不会自动拉起新进程；首次升级请手动 `git pull` 后再运行 `clash-sub update`（或连续运行两次 update）。此后升级均为单命令。
 

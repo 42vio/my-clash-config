@@ -10,6 +10,7 @@ from getpass import getpass
 from pathlib import Path
 
 from clash_sub import manage
+from clash_sub import template_sync
 from clash_sub.config import load_config
 from clash_sub.installer import Installer, InstallerError
 from clash_sub.nginx import recover_runtime
@@ -18,13 +19,44 @@ from clash_sub.service import ServiceError, _OperationLock
 
 
 MENU = (
-    "1. 更新机场订阅\n"
-    "2. 同步所有配置\n"
-    "3. 查看订阅链接\n"
-    "4. 查看状态和历史版本\n"
-    "0. 退出\n"
+    "================================\n"
+    "      clash-sub 管理菜单\n"
+    "================================\n"
+    "配置管理\n"
+    "  1. 更新机场订阅\n"
+    "  2. 重新生成所有配置（不更新代码）\n"
+    "  3. 查看订阅链接\n"
+    "  4. 查看状态和历史版本\n"
+    "\n"
+    "程序维护\n"
+    "  5. 更新仓库代码\n"
+    "  6. 更新仓库代码并同步配置（推荐）\n"
+    "\n"
+    "证书与备份\n"
+    "  7. 查看证书状态\n"
+    "  8. 强制续期证书\n"
+    "  9. 创建完整备份\n"
+    "\n"
+    "故障与用户管理\n"
+    " 10. 恢复中断的配置发布\n"
+    " 11. 用户历史/回退\n"
+    " 12. 轮换用户订阅链接\n"
+    " 13. 重新初始化 owner\n"
+    " 14. 回滚整合安装\n"
+    "\n"
+    "  0. 退出\n"
+    "================================\n"
 )
 _ERROR_TEMPLATE = "操作失败（错误代码：%s）\n"
+_UPDATE_REMINDER = (
+    "代码更新完成。\n"
+    "如果本次修改涉及模板或生成逻辑，请继续执行：\n"
+    "clash-sub sync\n"
+    "\n"
+    "也可以以后直接使用：\n"
+    "clash-sub update && clash-sub sync\n"
+)
+_SYNC_SPAWN_TIMEOUT = 900
 
 
 class _CommandParser(argparse.ArgumentParser):
@@ -52,31 +84,220 @@ def main(argv=None, stdin=None, stdout=None, stderr=None, service_factory=None) 
 
 
 def _menu(stdin, stdout, stderr, factory):
-    stdout.write(MENU)
-    try:
-        choice = stdin.readline()
-    except (EOFError, KeyboardInterrupt):
-        return 0
-    if not choice:
-        return 0
-    choice = choice.strip()
-    if choice == "0":
-        return 0
-    if choice == "1":
+    """Loop the full menu: invalid input stays, failures exit, 0/EOF leaves."""
+    while True:
+        stdout.write(MENU)
         try:
-            airport_url = getpass("请输入机场订阅地址：")
+            choice = stdin.readline()
         except (EOFError, KeyboardInterrupt):
             return 0
-        if not isinstance(airport_url, str) or not airport_url.strip():
-            return _error(stderr, "invalid_airport_url", 2)
-        return _call("airport", airport_url, stdout, stderr, factory)
+        choice = choice.strip()
+        if not choice or choice == "0":
+            return 0
+        code, exit_menu = _menu_dispatch(choice, stdin, stdout, stderr, factory)
+        if exit_menu or code != 0:
+            return code
+
+
+def _menu_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == "1":
+        return _menu_airport(stdout, stderr, factory)
     if choice == "2":
-        return _call("sync", None, stdout, stderr, factory)
+        return _call("sync", None, stdout, stderr, factory), False
     if choice == "3":
-        return _call("links", None, stdout, stderr, factory)
+        return _call("links", None, stdout, stderr, factory), False
     if choice == "4":
-        return _call("status", None, stdout, stderr, factory, include_history=True)
-    return _error(stderr, "invalid_menu_selection", 2)
+        return _call("status", None, stdout, stderr, factory, include_history=True), False
+    if choice == "5":
+        return _menu_update(stdout, stderr)
+    if choice == "6":
+        return _menu_update_and_sync(stdout, stderr)
+    if choice == "7":
+        return _menu_cert(stdin, stdout, stderr, renew=False)
+    if choice == "8":
+        return _menu_cert(stdin, stdout, stderr, renew=True)
+    if choice == "9":
+        return _managed(stdout, stderr, manage.create_backup), False
+    if choice == "10":
+        return _recover(stdout, stderr), False
+    if choice == "11":
+        return _menu_history_rollback(stdin, stdout, stderr, factory)
+    if choice == "12":
+        return _menu_single_user(stdin, stdout, stderr, factory, "rotate")
+    if choice == "13":
+        return _menu_single_user(stdin, stdout, stderr, factory, "reinitialize")
+    if choice == "14":
+        return _menu_install_rollback(stdin, stdout, stderr)
+    _error(stderr, "invalid_menu_selection", 2)
+    return 0, False
+
+
+def _menu_airport(stdout, stderr, factory):
+    try:
+        airport_url = getpass("请输入机场订阅地址：")
+    except (EOFError, KeyboardInterrupt):
+        return 0, False
+    if not isinstance(airport_url, str) or not airport_url.strip():
+        return _error(stderr, "invalid_airport_url", 2), False
+    return _call("airport", airport_url, stdout, stderr, factory), False
+
+
+def _menu_update(stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1), False
+    try:
+        manage.run_update(default_repo_root(), subprocess.run)
+    except RuntimeError as error:
+        return _error(stderr, str(error), 1), False
+    stdout.write(_UPDATE_REMINDER)
+    return 0, True
+
+
+def _menu_update_and_sync(stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1), False
+    try:
+        manage.run_update(default_repo_root(), subprocess.run)
+    except RuntimeError as error:
+        return _error(stderr, str(error), 1), False
+    stdout.write(_UPDATE_REMINDER)
+    root = default_repo_root()
+    try:
+        result = subprocess.run(
+            [str(root / ".venv" / "bin" / "python"), str(root / "bin" / "clash-sub"), "sync"],
+            stdin=subprocess.DEVNULL,
+            timeout=_SYNC_SPAWN_TIMEOUT,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return _error(stderr, "menu_sync_failed", 1), True
+    if result.returncode != 0:
+        return _error(stderr, "menu_sync_failed", 1), True
+    # The spawned process already printed its own completion output; the
+    # parent must not duplicate it.
+    return 0, True
+
+
+def _menu_cert(stdin, stdout, stderr, *, renew):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1), False
+    if renew and not _confirm(stdin, stdout, "确认强制续期证书？(y/N)："):
+        stdout.write("已取消。\n")
+        return 0, False
+    try:
+        if renew:
+            manage.cert_renew(default_repo_root(), subprocess.run)
+            stdout.write("证书续期已触发。\n")
+        else:
+            status = manage.cert_status(default_repo_root(), subprocess.run)
+            stdout.write("证书存在：%s\n" % ("是" if status["present"] else "否"))
+            stdout.write("到期时间：%s\n" % status["not_after"].split("=", 1)[-1])
+    except RuntimeError as error:
+        return _error(stderr, str(error), 1), False
+    except Exception:
+        return _error(stderr, "cert_command_failed", 1), False
+    return 0, False
+
+
+def _menu_history_rollback(stdin, stdout, stderr, factory):
+    user = _menu_user_id(stdin, stdout, stderr)
+    if user is None:
+        return 0, False
+    try:
+        service = factory()
+        history = service.history(user)
+    except Exception:
+        return _error(stderr, "service_unavailable", 1), False
+    _write_history(stdout, user, history)
+    release = _prompt(stdin, stdout, "输入要回退的版本 ID（留空返回菜单）：")
+    if not release:
+        return 0, False
+    if not _confirm(stdin, stdout, "确认回退用户 %d 到版本 %s？(y/N)：" % (user, release)):
+        stdout.write("已取消。\n")
+        return 0, False
+    try:
+        service.rollback(user, release)
+    except ServiceError as error:
+        return _error(stderr, error.code, 1), False
+    except Exception:
+        return _error(stderr, "service_unavailable", 1), False
+    stdout.write("已回滚用户 %d 到版本 %s。\n" % (user, release))
+    return 0, False
+
+
+def _menu_single_user(stdin, stdout, stderr, factory, operation):
+    user = _menu_user_id(stdin, stdout, stderr)
+    if user is None:
+        return 0, False
+    if operation == "rotate":
+        message = "将轮换用户 %d 的订阅链接，旧链接立即失效。确认执行？(y/N)：" % user
+        success = "订阅链接已轮换：\n"
+    else:
+        message = "将重新初始化 owner 为用户 %d，旧 owner 路由立即撤销。确认执行？(y/N)：" % user
+        success = "所有者已重新初始化；请更新机场订阅后执行 sync。\n"
+    if not _confirm(stdin, stdout, message):
+        stdout.write("已取消。\n")
+        return 0, False
+    try:
+        if operation == "rotate":
+            result = factory().rotate_link(user)
+            stdout.write(success)
+            for url in result["urls"]:
+                stdout.write("%s\n" % url)
+        else:
+            factory().reinitialize_owner(user)
+            stdout.write(success)
+    except ServiceError as error:
+        return _error(stderr, error.code, 1), False
+    except Exception:
+        return _error(stderr, "service_unavailable", 1), False
+    return 0, False
+
+
+def _menu_install_rollback(stdin, stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1), False
+    stdout.write(
+        "即将回滚整合安装：删除 clash-sub systemd unit、nginx 配置与发布目录\n"
+        "（保留 3x-ui 数据库与已签发证书）。此操作不可自动撤销。\n"
+        "输入 ROLLBACK 确认回滚安装：\n"
+    )
+    try:
+        answer = stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip() != "ROLLBACK":
+        stdout.write("已取消。\n")
+        return 0, False
+    try:
+        Installer(default_repo_root()).rollback_install()
+    except InstallerError as error:
+        return _error(stderr, error.code, 1), False
+    stdout.write("已回滚安装。若此前已收口（inbound listen=127.0.0.1），请在 3x-ui 面板把 Reality 入站 listen 改回 0.0.0.0 以恢复公网 10443 直连。\n")
+    return 0, False
+
+
+def _menu_user_id(stdin, stdout, stderr):
+    raw = _prompt(stdin, stdout, "请输入用户 ID：")
+    user = _user_id(raw) if raw is not None else None
+    if user is None:
+        _error(stderr, "invalid_command", 2)
+        return None
+    return user
+
+
+def _prompt(stdin, stdout, message):
+    stdout.write(message)
+    try:
+        line = stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return line.strip() if line else None
+
+
+def _confirm(stdin, stdout, message):
+    answer = _prompt(stdin, stdout, message)
+    return answer is not None and answer.lower() == "y"
 
 
 def _parser():
@@ -99,6 +320,7 @@ def _parser():
     commands.add_parser("recover", add_help=False)
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
+    commands.add_parser("template-sync", add_help=False)
     update = commands.add_parser("update", add_help=False)
     update.add_argument("--post-update", action="store_true")
     cert = commands.add_parser("cert", add_help=False)
@@ -132,7 +354,9 @@ def _run_command(parsed, stdout, stderr, factory):
             if getattr(parsed, "post_update", False)
             else manage.run_update
         )
-        return _managed(stdout, stderr, action)
+        return _managed(stdout, stderr, action, success_output=_UPDATE_REMINDER)
+    if command == "template-sync":
+        return _template_sync(stdout, stderr)
     if command == "cert":
         return _cert_command(parsed, stdout, stderr)
     if command == "sync":
@@ -370,7 +594,7 @@ def _recover(stdout, stderr):
     return 0
 
 
-def _managed(stdout, stderr, action):
+def _managed(stdout, stderr, action, success_output=None):
     if os.geteuid() != 0:
         return _error(stderr, "not_root", 1)
     try:
@@ -379,7 +603,20 @@ def _managed(stdout, stderr, action):
         return _error(stderr, str(error), 1)
     except Exception:
         return _error(stderr, "management_command_failed", 1)
-    stdout.write("操作已完成。\n")
+    stdout.write(success_output if success_output is not None else "操作已完成。\n")
+    return 0
+
+
+def _template_sync(stdout, stderr):
+    try:
+        result = template_sync.run_template_sync(default_repo_root())
+    except template_sync.TemplateSyncError as error:
+        return _error(stderr, error.code, 1)
+    except Exception:
+        return _error(stderr, "template_sync_failed", 1)
+    for relative in result["changed"]:
+        stdout.write("%s\n" % relative)
+    stdout.write("模板已同步。请查看 git diff，运行测试后再提交。\n")
     return 0
 
 

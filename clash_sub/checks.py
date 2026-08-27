@@ -51,7 +51,7 @@ def validate_clash(text, forbidden_values):
     targets = proxy_names | group_names | _BUILTIN_TARGETS
     _validate_group_targets(document["proxy-groups"], targets)
     _validate_rule_providers(document["rule-providers"])
-    _validate_rules(document["rules"], targets)
+    _validate_rules(document["rules"], targets, set(document["rule-providers"]))
     return document
 
 
@@ -133,13 +133,16 @@ def _validate_rule_providers(providers):
         raise CheckError("rule-providers are invalid")
 
 
-def _validate_rules(rules, targets):
+def _validate_rules(rules, targets, providers):
     if not isinstance(rules, list):
         raise CheckError("rules must be a list")
     for rule in rules:
         if not isinstance(rule, str) or not rule.strip():
             raise CheckError("rule is invalid")
         parts = [part.strip() for part in rule.split(",")]
+        if parts[0] == "RULE-SET":
+            if len(parts) < 3 or parts[1] not in providers:
+                raise CheckError("rule references unknown provider")
         target = _rule_target(parts)
         if target is not None and target not in targets:
             raise CheckError("rule references unknown target")

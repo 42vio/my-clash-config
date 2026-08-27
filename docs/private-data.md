@@ -17,9 +17,27 @@
 | `<private-root>/.activation-journal.json` | 仅在运行时激活被中断时存在的旧工件快照；必须先由 `clash-sub recover` 处理 | `0600` root:root |
 | `<private-root>/reference-configs/…` | 三份原始参考配置，**永久记录**，永不参与版本清理 | `0600` root:root |
 | `<public-root>/releases/<user>/…` | 当前静态发布 YAML（Nginx 直接读取） | 目录 `2750` root:www-data，文件 `0640` |
+| `private/workbench/balanced.yaml`（开发机仓库内） | **本地模板工作稿**：含真实节点的完整 balanced 配置，仅存在于维护它的 Mac 上 | `0600` 当前用户 |
 
 `<private-root>` 全树 `0700`；`<public-root>` 归组 www-data 且 setgid，
 Nginx worker 恰好可读发布文件、无法进入私有树。
+
+## 本地工作稿（`private/workbench/balanced.yaml`）
+
+这是**开发机上**维护的完整、私密 balanced 工作稿（含真实节点、服务器
+地址、UUID、密码与 REALITY 密钥），是 `clash-sub template-sync` 的唯一
+输入：
+
+- 敏感性与 `<private-root>/home.yaml` 相同：链接即密码级。永远不进入
+  Git（`private/` 被全量忽略）、不上传服务器、不进入任何备份介质；
+  `template-sync` 的校验失败与错误输出也绝不回显其内容。
+- 权限要求：普通文件（非 symlink、单硬链接）、当前用户所有、`0600`、
+  不超过 5 MiB；不满足时 `template-sync` 直接拒绝。
+- 备份范围：它**不在**服务器备份清单里（服务器没有这份文件）；需要备份
+  时随开发机自身的加密备份策略处理，与服务器私有数据备份互不相关。
+- 服务器侧的唯一数据流仍是 `clash-sub update && clash-sub sync`——工作稿
+  提升为公共模板后经由 Git 分发，私密值在 `template-sync` 内被剥离并
+  校验。
 
 ## 为什么令牌是明文
 

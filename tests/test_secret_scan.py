@@ -487,6 +487,50 @@ class PrivateValueComparisonTests(ScannerTestCase):
             self.assertNotIn(PRIVATE_PASSWORD, report)
             self.assertNotIn(PRIVATE_TOKEN_HASH_TEXT, report)
 
+    def test_tracked_workbench_path_is_always_forbidden(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(
+                repository,
+                "private/workbench/balanced.yaml",
+                "proxies: []\n",
+            )
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn(
+                "tracked-private-data: private/workbench/balanced.yaml",
+                self.captured_report,
+            )
+
+    def test_workbench_values_are_extracted_by_private_root_comparison(self):
+        # A value that exists ONLY in the workbench proves the extraction
+        # range includes it (the other private files use different canaries).
+        workbench_password = "workbench-only-password-0123456789abcdef"
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            self.write_private_files(private_root)
+            workbench = private_root / "workbench"
+            workbench.mkdir(parents=True, exist_ok=True)
+            (workbench / "balanced.yaml").write_text(
+                "proxies:\n  - name: synthetic-workbench-node\n"
+                "    password: %s\n" % workbench_password,
+                encoding="utf-8",
+            )
+            self.stage(
+                repository,
+                "templates/clash.yaml",
+                "rule: pasted %s by accident\n" % workbench_password,
+            )
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("tracked-private-value: templates/clash.yaml", self.captured_report)
+            self.assertNotIn(workbench_password, self.captured_report)
+
     def test_clean_repository_with_private_root_passes(self):
         with TemporaryDirectory() as directory:
             repository = self.make_repository(Path(directory))

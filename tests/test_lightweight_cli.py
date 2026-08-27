@@ -148,18 +148,40 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(tuple(signature.parameters), ("argv", "stdin", "stdout", "stderr", "service_factory"))
         self.assertTrue(all(parameter.default is None for parameter in signature.parameters.values()))
 
-    def test_no_arguments_shows_only_the_four_options_and_exit(self):
+    def test_no_arguments_shows_the_full_menu_and_exits_on_eof(self):
         code, stdout, stderr = run_cli(None, self.service)
 
         self.assertEqual(code, 0)
         self.assertEqual(stdout, MENU)
         self.assertEqual(
             stdout,
-            "1. 更新机场订阅\n"
-            "2. 同步所有配置\n"
-            "3. 查看订阅链接\n"
-            "4. 查看状态和历史版本\n"
-            "0. 退出\n",
+            "================================\n"
+            "      clash-sub 管理菜单\n"
+            "================================\n"
+            "配置管理\n"
+            "  1. 更新机场订阅\n"
+            "  2. 重新生成所有配置（不更新代码）\n"
+            "  3. 查看订阅链接\n"
+            "  4. 查看状态和历史版本\n"
+            "\n"
+            "程序维护\n"
+            "  5. 更新仓库代码\n"
+            "  6. 更新仓库代码并同步配置（推荐）\n"
+            "\n"
+            "证书与备份\n"
+            "  7. 查看证书状态\n"
+            "  8. 强制续期证书\n"
+            "  9. 创建完整备份\n"
+            "\n"
+            "故障与用户管理\n"
+            " 10. 恢复中断的配置发布\n"
+            " 11. 用户历史/回退\n"
+            " 12. 轮换用户订阅链接\n"
+            " 13. 重新初始化 owner\n"
+            " 14. 回滚整合安装\n"
+            "\n"
+            "  0. 退出\n"
+            "================================\n",
         )
         self.assertEqual(stderr, "")
         self.assertEqual(self.service.calls, [])
@@ -229,7 +251,8 @@ class LightweightCliTests(unittest.TestCase):
                 code, stdout, stderr = run_cli(argv, service, stdin_text=stdin_text)
 
                 self.assertEqual(code, 1)
-                self.assertEqual(stdout, (MENU if argv is None else "") + "同步部分完成。\n")
+                self.assertTrue(stdout.startswith(MENU if argv is None else ""))
+                self.assertIn("同步部分完成。\n", stdout)
                 self.assertEqual(stderr, "客户端 ID 8（错误代码：member_update_failed）\n")
                 self.assertNotIn("member@example.test", stdout + stderr)
 
@@ -336,13 +359,16 @@ class LightweightCliTests(unittest.TestCase):
                 self.assertEqual(stderr, "")
                 self.assertEqual(service.calls[0], (method, arguments))
 
-    def test_reinitialize_owner_is_noninteractive_and_never_appears_in_the_daily_menu(self):
+    def test_reinitialize_owner_is_noninteractive_and_also_reachable_from_the_menu(self):
         code, stdout, stderr = run_cli(["reinitialize-owner", "9"], self.service)
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(stdout, "所有者已重新初始化；请更新机场订阅后执行 sync。\n")
-        self.assertNotIn("重新初始化", MENU)
+        self.assertIn("重新初始化 owner", MENU)
+        self.assertNotIn("template-sync", MENU)
+        self.assertNotIn("traffic-update", MENU)
+        self.assertNotIn("post-update", MENU)
 
     def test_reinitialize_owner_requires_a_canonical_decimal_database_id(self):
         code, stdout, stderr = run_cli(["reinitialize-owner", "+9"], self.service)
@@ -527,6 +553,290 @@ class LightweightCliTests(unittest.TestCase):
             recorded = marker.read_text(encoding="utf-8").splitlines()
             self.assertEqual(recorded[-1], "sync")
             self.assertTrue(recorded[0].endswith("clash-sub"), recorded)
+
+
+class MenuLoopTests(unittest.TestCase):
+    """The full terminal menu: looping, confirmations, and update exits."""
+
+    def setUp(self):
+        self.service = FakeService()
+
+    def test_menu_loops_until_zero_and_dispatches_each_action_once(self):
+        code, stdout, stderr = run_cli(
+            None, self.service, stdin_text="3\n2\n4\n0\n"
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout.count(MENU), 4)
+        self.assertEqual(
+            self.service.calls,
+            [("links", ()), ("sync_all", ()), ("status", ()), ("history", (7,)), ("history", (8,))],
+        )
+
+    def test_menu_invalid_selection_reports_error_and_keeps_looping(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="99\nabc\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 2)
+        self.assertEqual(self.service.calls, [])
+
+    def test_menu_cert_status_and_backup_dispatch_to_manage_actions(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "cert_status", return_value={"present": True, "not_after": "Sep 25 12:00:00 2026 GMT"}
+        ) as cert_status, patch.object(
+            manage, "create_backup", return_value=Path("/backups/x.tar.gz")
+        ) as backup:
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="7\n9\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(cert_status.call_count, 1)
+        self.assertEqual(backup.call_count, 1)
+        self.assertIn("证书存在：是", stdout)
+
+    def test_menu_cert_renew_requires_confirmation_and_cancel_has_no_side_effect(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "cert_renew", return_value=True
+        ) as renew:
+            cancelled, _, _ = run_cli(None, self.service, stdin_text="8\nn\n0\n")
+            confirmed, _, _ = run_cli(None, self.service, stdin_text="8\ny\n0\n")
+
+        self.assertEqual(cancelled, 0)
+        self.assertEqual(confirmed, 0)
+        self.assertEqual(renew.call_count, 1)
+
+    def test_menu_history_and_rollback_flow_prompts_for_each_value(self):
+        code, stdout, stderr = run_cli(
+            None, self.service, stdin_text="11\n7\nrelease-7\ny\n0\n"
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            self.service.calls,
+            [("history", (7,)), ("rollback", (7, "release-7"))],
+        )
+        self.assertIn("用户 7 的历史版本", stdout)
+
+    def test_menu_history_without_release_returns_without_rollback(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="11\n7\n\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.service.calls, [("history", (7,))])
+
+    def test_menu_rollback_confirmation_cancel_keeps_zero_side_effects(self):
+        code, stdout, stderr = run_cli(
+            None, self.service, stdin_text="11\n7\nrelease-7\nn\n0\n"
+        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.service.calls, [("history", (7,))])
+
+    def test_menu_rotate_link_requires_confirmation_and_cancel_keeps_tokens(self):
+        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="12\n7\ny\n0\n")
+        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="12\n7\nn\n0\n")
+
+        self.assertEqual(confirmed_code, 0)
+        self.assertEqual(cancelled_code, 0)
+        self.assertEqual(self.service.calls, [("rotate_link", (7,))])
+
+    def test_menu_reinitialize_owner_requires_confirmation(self):
+        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="13\n9\ny\n0\n")
+        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="13\n9\nn\n0\n")
+
+        self.assertEqual(confirmed_code, 0)
+        self.assertEqual(cancelled_code, 0)
+        self.assertEqual(self.service.calls, [("reinitialize_owner", (9,))])
+
+    def test_menu_install_rollback_requires_the_exact_confirmation_text(self):
+        class FakeInstaller:
+            def __init__(self, root):
+                pass
+
+            def rollback_install(self):
+                self.service_calls.append("rollback_install")
+
+        FakeInstaller.service_calls = []
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ):
+            cancelled_code, _, _ = run_cli(None, self.service, stdin_text="14\nrollback\n0\n")
+            confirmed_code, _, _ = run_cli(None, self.service, stdin_text="14\nROLLBACK\n0\n")
+
+        self.assertEqual(cancelled_code, 0)
+        self.assertEqual(confirmed_code, 0)
+        self.assertEqual(FakeInstaller.service_calls, ["rollback_install"])
+
+    def test_menu_update_prints_the_sync_reminder_and_exits_the_menu(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", return_value=True
+        ):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.count(MENU), 1)
+        self.assertIn("代码更新完成。", stdout)
+        self.assertIn("clash-sub update && clash-sub sync", stdout)
+        self.assertEqual(self.service.calls, [])
+
+    def test_menu_update_failure_exits_the_menu_without_sync(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", side_effect=RuntimeError("git_pull_failed")
+        ):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n0\n")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.count(MENU), 1)
+        self.assertIn("git_pull_failed", stderr)
+        self.assertEqual(self.service.calls, [])
+
+    def test_menu_update_and_sync_spawns_a_fresh_process_for_sync(self):
+        from clash_sub import manage
+
+        spawned = []
+
+        def fake_run(arguments, **kwargs):
+            spawned.append(list(arguments))
+            return SimpleNamespace(returncode=0)
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", return_value=True
+        ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="6\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.count(MENU), 1)
+        self.assertEqual(len(spawned), 1)
+        self.assertEqual(spawned[0][-1], "sync")
+        self.assertTrue(spawned[0][1].endswith("bin/clash-sub"))
+        self.assertTrue(spawned[0][0].endswith(".venv/bin/python"))
+        self.assertIn("clash-sub update && clash-sub sync", stdout)
+
+    def test_menu_update_and_sync_never_spawns_sync_when_update_fails(self):
+        from clash_sub import manage
+
+        spawned = []
+
+        def fake_run(arguments, **kwargs):
+            spawned.append(list(arguments))
+            return SimpleNamespace(returncode=0)
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", side_effect=RuntimeError("git_pull_failed")
+        ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="6\n0\n")
+
+        self.assertEqual(spawned, [])
+        self.assertEqual(code, 1)
+        self.assertIn("git_pull_failed", stderr)
+
+    def test_menu_update_and_sync_reports_a_failing_sync_process(self):
+        from clash_sub import manage
+
+        def fake_run(arguments, **kwargs):
+            return SimpleNamespace(returncode=1)
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", return_value=True
+        ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="6\n")
+
+        self.assertEqual(code, 1)
+        self.assertIn("menu_sync_failed", stderr)
+
+    def test_menu_update_and_sync_timeout_returns_stable_error_and_exits(self):
+        from clash_sub import manage
+
+        def fake_run(arguments, **kwargs):
+            raise subprocess.TimeoutExpired(arguments, 900)
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", return_value=True
+        ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="6\n0\n")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.count(MENU), 1)
+        self.assertIn("menu_sync_failed", stderr)
+        self.assertNotIn("Traceback", stderr)
+
+    def test_menu_update_and_sync_missing_entry_returns_stable_error_and_exits(self):
+        from clash_sub import manage
+
+        def fake_run(arguments, **kwargs):
+            raise FileNotFoundError("venv python disappeared")
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", return_value=True
+        ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="6\n0\n")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.count(MENU), 1)
+        self.assertIn("menu_sync_failed", stderr)
+        self.assertNotIn("disappeared", stderr)
+
+    def test_menu_update_and_sync_does_not_duplicate_sync_output(self):
+        from clash_sub import manage
+
+        def fake_run(arguments, **kwargs):
+            return SimpleNamespace(returncode=0)
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", return_value=True
+        ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="6\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.count("同步已完成"), 0)
+
+    def test_menu_recover_requires_root(self):
+        with patch("clash_sub.cli.os.geteuid", return_value=1000):
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="10\n0\n")
+
+        self.assertEqual(code, 1)
+        self.assertIn("recovery_not_authorized", stderr)
+
+
+class TemplateSyncCommandTests(unittest.TestCase):
+    def test_template_sync_dispatches_to_the_local_synchronizer(self):
+        from clash_sub import template_sync
+
+        root = Path(__file__).resolve().parents[1]
+        with patch.object(
+            template_sync,
+            "run_template_sync",
+            return_value={"changed": ("templates/clash.yaml",)},
+        ) as sync:
+            code, stdout, stderr = run_cli(["template-sync"], FakeService())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(sync.call_args.args, (root,))
+        self.assertIn("templates/clash.yaml", stdout)
+        self.assertIn("git diff", stdout)
+        self.assertNotIn("private/", stdout)
+
+    def test_template_sync_failure_reports_only_the_stable_code(self):
+        from clash_sub import template_sync
+
+        with patch.object(
+            template_sync,
+            "run_template_sync",
+            side_effect=template_sync.TemplateSyncError("template_source_invalid"),
+        ):
+            code, stdout, stderr = run_cli(["template-sync"], FakeService())
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "")
+        self.assertEqual(stderr, "操作失败（错误代码：template_source_invalid）\n")
 
 
 class InstallCommandTests(unittest.TestCase):
@@ -856,6 +1166,20 @@ class ManageCommandTests(unittest.TestCase):
         self.assertEqual(status, 0)
         update.assert_called_once()
         post.assert_not_called()
+
+    def test_update_success_output_names_the_followup_sync_command_exactly(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage, "run_update", return_value=True
+        ):
+            status = main(["update"], stdout=self.stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertIn("代码更新完成。", self.stdout.getvalue())
+        self.assertIn("如果本次修改涉及模板或生成逻辑，请继续执行：", self.stdout.getvalue())
+        self.assertIn("clash-sub sync", self.stdout.getvalue())
+        self.assertIn("clash-sub update && clash-sub sync", self.stdout.getvalue())
 
 
 if __name__ == "__main__":

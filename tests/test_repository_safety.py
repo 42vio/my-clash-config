@@ -31,10 +31,10 @@ FORBIDDEN_SUBSTRINGS = (
 )
 
 TRACKED_DOCUMENT_PATHS = (
-    "templates/clash.yaml.j2",
-    "templates/variants/balanced.yaml",
-    "templates/variants/standard.yaml",
-    "templates/variants/privacy.yaml",
+    "templates/clash.yaml",
+    "templates/features/home.yaml",
+    "templates/variants/manifest.yaml",
+    "templates/variants/privacy-dns.yaml",
 )
 
 LEGACY_RUNTIME_PATHS = (
@@ -86,7 +86,8 @@ ACTIVE_RUNTIME_PATHS = (
     "deploy",
     "scripts/check_reality_target.py",
     "scripts/scan_tracked_secrets.py",
-    "templates/clash.yaml.j2",
+    "templates/clash.yaml",
+    "templates/features",
     "templates/variants",
     "requirements.txt",
 )

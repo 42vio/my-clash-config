@@ -69,8 +69,17 @@
 
 ## 三种 variant
 
-三种输出的差异由 `templates/variants/*.yaml` 描述（DNS、策略组、规则与
-GEOIP 解析策略），公共结构在 `templates/clash.yaml.j2`：
+公共策略只有一个事实来源：`templates/clash.yaml`（公共 DNS、策略组、
+rule-provider 与 rules，`proxies` 恒为空）。差异按层组合：
+
+- `templates/features/home.yaml`——家庭功能差异（`HomeServer`/`ProxyServer`
+  组、家庭网段规则、向公共组追加的成员与节点注入目标），只进入
+  `balanced` 与 `privacy`；
+- `templates/variants/privacy-dns.yaml`——privacy 独有的最小 DNS 覆盖
+  （递归合并，列表整体替换）；
+- `templates/variants/manifest.yaml`——声明每个 variant 组合哪些
+  feature/override，以及全局节点注入组（`加速线路`、`AI服务`）。
+  组合授权由代码锁定，manifest 不能扩大任何数据源权限。
 
 | 输出 | owner 节点范围 | 普通用户 | 用途 |
 | --- | --- | --- | --- |
@@ -91,15 +100,24 @@ owner：  https://sub.<域名>/s/<token>/clash-<balanced|standard|privacy>.yaml
 clash-sub
 ```
 
-无参数命令显示交互菜单：
+无参数命令显示循环式交互菜单（操作结束回到菜单，`0`/EOF/Ctrl-C 退出；
+轮换链接、强制续期、用户回退、owner 重新初始化与安装回滚均需二次确认）：
 
 ```text
-1. 更新机场订阅
-2. 同步所有配置
-3. 查看订阅链接
-4. 查看状态和历史版本
+配置管理      1. 更新机场订阅 / 2. 重新生成所有配置（不更新代码）/
+              3. 查看订阅链接 / 4. 查看状态和历史版本
+程序维护      5. 更新仓库代码 / 6. 更新仓库代码并同步配置（推荐）
+证书与备份    7. 查看证书状态 / 8. 强制续期证书 / 9. 创建完整备份
+故障与用户管理 10. 恢复中断的配置发布 / 11. 用户历史/回退 /
+              12. 轮换用户订阅链接 / 13. 重新初始化 owner / 14. 回滚整合安装
 0. 退出
 ```
+
+`clash-sub update` 保持原语义（快照 → git pull → pip → 新进程 post-update），
+不自动同步；成功后明确提示继续执行 `clash-sub sync`（或以后直接
+`clash-sub update && clash-sub sync`）。菜单选项 6 等价于这条组合，但
+sync 由 pull 后磁盘入口启动的新进程执行；update 之后菜单退出，不继续
+使用旧模块对象。
 
 不需要记住 refresh 之类的命令——它不存在；systemd 与排错用的非交互子命令
 （`sync` / `traffic-update` / `status` / `links` / `history` / `rollback` /
@@ -137,6 +155,15 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python scripts/scan_tracked_secrets.py            # 跟踪文件敏感信息扫描
 .venv/bin/python scripts/scan_tracked_secrets.py --private-root private
 ```
+
+模板数据流：在 Mac 上维护一份**完整私密工作稿**
+`private/workbench/balanced.yaml`（`0600`，被 Git 忽略），在本机 Clash
+导入实测通过后，运行本地命令 `clash-sub template-sync` 把公共策略安全提升
+进 `templates/`（剥离全部动态节点、拆出家庭差异、合成节点重渲染 +
+Mihomo + 泄漏校验全部通过后才原子替换）。之后查看 `git diff`、跑测试、
+提交并 push；服务器照常只执行 `clash-sub update && clash-sub sync`，
+工作稿永远不上传服务器。详见 [docs/operations.md](docs/operations.md)
+的「本地模板工作流」一节。
 
 安全约定：真实订阅 URL、令牌、UUID、节点密码、REALITY 密钥、机场临时 URL、
 生成结果与含凭据的 release 元数据一律不进入 Git（`private/`、`generated/`

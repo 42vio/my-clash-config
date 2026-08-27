@@ -1,10 +1,21 @@
-_generator:
-  inject-node-groups:
-  - 加速线路
-  - ProxyServer
-  - AI服务
-  inject-home-node-groups:
-  - HomeServer
+mixed-port: 7890
+
+allow-lan: true
+
+bind-address: '*'
+
+mode: rule
+
+log-level: info
+
+ipv6: false
+
+external-controller: 127.0.0.1:9090
+
+profile:
+  store-selected: true
+  store-fake-ip: true
+
 dns:
   enable: true
   ipv6: false
@@ -50,6 +61,9 @@ dns:
   - https://223.5.5.5/dns-query
   - https://doh.pub/dns-query
   direct-nameserver-follow-policy: true
+
+proxies: []
+
 proxy-groups:
 - type: select
   proxies:
@@ -69,58 +83,58 @@ proxy-groups:
   exclude-filter: 流量|到期|剩余|官网|过期
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png
   include-all: true
-- type: fallback
-  name: HomeServer
-  proxies:
-  - 🎯 Direct
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Back.png
 - type: select
-  name: ProxyServer
   proxies:
-  - 🎯 Direct
-  - HomeServer
-  icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/SSID.png
-- type: select
-  proxies: &id001
   - 🎯 Direct
   - 加速线路
   name: 游戏下载
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Game.png
 - type: select
-  proxies: *id001
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: SteamCN
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png
 - type: select
-  proxies: *id001
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: Steam
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png
 - type: select
-  proxies: &id002
+  proxies:
   - 🎯 Direct
   - 加速线路
-  - ProxyServer
   name: BiliBili
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/bilibili.png
 - type: select
-  proxies: *id002
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: PT站加速
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Media.png
 - type: select
-  proxies: *id002
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: 国内流媒体
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png
 - type: select
-  proxies: &id003
+  proxies:
   - 加速线路
   - 🎯 Direct
   name: 国外流媒体
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ForeignMedia.png
 - type: select
-  proxies: *id001
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: 苹果服务
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Apple.png
 - type: select
-  proxies: *id001
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: 微软服务
   icon: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/icon/qure/color/Microsoft.png
 - type: select
@@ -130,11 +144,15 @@ proxy-groups:
   - 🇭🇰 香港节点
   icon: https://raw.githubusercontent.com/Orz-3/mini/master/Color/OpenAI.png
 - type: select
-  proxies: *id001
+  proxies:
+  - 🎯 Direct
+  - 加速线路
   name: 测速工具
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Speedtest.png
 - type: select
-  proxies: *id003
+  proxies:
+  - 加速线路
+  - 🎯 Direct
   name: 国外网站
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Google_Search.png
 - type: select
@@ -145,7 +163,9 @@ proxy-groups:
   - 加速线路
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Advertising.png
 - type: select
-  proxies: *id003
+  proxies:
+  - 加速线路
+  - 🎯 Direct
   name: 🐟 Final
   icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png
 - type: select
@@ -193,8 +213,118 @@ proxy-groups:
   filter: 新|坡|SG|(?i)Singapore
   hidden: true
   include-all: true
+
+rule-providers:
+  Direct:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Direct/Direct.yaml
+    path: ./rule/Direct.yaml
+  Lan:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Lan/Lan.yaml
+    path: ./rule/Lan.yaml
+  Download:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Download/Download.yaml
+    path: ./rule/Download.yaml
+  Advertising:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Advertising/Advertising_Classical.yaml
+    path: ./rule/Advertising_Classical.yaml
+  Hijacking:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Hijacking/Hijacking.yaml
+    path: ./rule/Hijacking.yaml
+  Privacy:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Privacy/Privacy_Classical.yaml
+    path: ./rule/Privacy_Classical.yaml
+  PT:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/PrivateTracker/PrivateTracker.yaml
+    path: ./rule/PrivateTracker.yaml
+  SteamCN:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/SteamCN/SteamCN.yaml
+    path: ./rule/SteamCN.yaml
+  SteamCDN:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://testingcf.jsdelivr.net/gh/Aethersailor/Custom_OpenClash_Rules@4651ea890f4914508721cfd02642b5f86048ec83/rule/Steam_CDN_Classical.yaml
+    path: ./rule/Steam_CDN_Classical.yaml
+  Steam:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Steam/Steam.yaml
+    path: ./rule/Steam.yaml
+  BiliBili:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/BiliBili/BiliBili.yaml
+    path: ./rule/BiliBili.yaml
+  ChinaMedia:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/ChinaMedia/ChinaMedia.yaml
+    path: ./rule/ChinaMedia.yaml
+  GlobalMedia:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/GlobalMedia/GlobalMedia_Classical.yaml
+    path: ./rule/GlobalMedia_Classical.yaml
+  Apple:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Apple/Apple_Classical.yaml
+    path: ./rule/Apple_Classical.yaml
+  Microsoft:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Microsoft/Microsoft.yaml
+    path: ./rule/Microsoft.yaml
+  AI:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://gist.githubusercontent.com/ddgksf2013/cb4121e8b5c5d865cc949cb8120320c4/raw/ad78bd01f5afbdc7400c52e740904294fcb843c2/Ai.yaml
+    path: ./rule/OpenAI.yaml
+  Global:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/Global/Global_Classical.yaml
+    path: ./rule/Global_Classical.yaml
+  China:
+    type: http
+    behavior: classical
+    interval: 86400
+    url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@2df6b08dfc2707c8099056ffab6778092e7d6d3e/rule/Clash/China/China_Classical.yaml
+    path: ./rule/China_Classical.yaml
+
 rules:
-- IP-CIDR,192.168.2.0/24,HomeServer,no-resolve
 - IP-CIDR,199.19.110.145/32,🎯 Direct,no-resolve
 - DOMAIN-SUFFIX,kfcv50.shop,🎯 Direct
 - DOMAIN-SUFFIX,420615.xyz,🎯 Direct

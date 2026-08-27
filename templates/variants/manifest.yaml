@@ -1,0 +1,17 @@
+variants:
+  balanced:
+    features:
+    - home
+    overrides: []
+  standard:
+    features: []
+    overrides: []
+  privacy:
+    features:
+    - home
+    overrides:
+    - privacy-dns
+
+inject-node-groups:
+- 加速线路
+- AI服务
