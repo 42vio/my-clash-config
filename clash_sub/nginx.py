@@ -663,7 +663,7 @@ def _route_block(token, variant, alias, userinfo):
             '    default_type "text/yaml; charset=utf-8";',
             "    alias %s;" % alias,
             '    add_header Profile-Title "%s";' % title,
-            "    add_header Content-Disposition 'attachment; filename=\"%s\"';" % filename,
+            "    add_header Content-Disposition 'attachment; filename=%s';" % filename,
             '    add_header Subscription-Userinfo "%s";' % userinfo,
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",
