@@ -856,8 +856,8 @@ Expected: exactly `templates/clash.yaml`, `templates/variants/manifest.yaml`, an
 
 ```bash
 git log --oneline --decorate -12
-git diff b5af0a9...HEAD --stat
-git diff b5af0a9...HEAD --check
+git diff cb4162f...HEAD --stat -- . ':(exclude)docs/superpowers/plans/2026-08-28-private-home-overlay-upload.md'
+git diff cb4162f...HEAD --check -- . ':(exclude)docs/superpowers/plans/2026-08-28-private-home-overlay-upload.md'
 ```
 
 Use the `superpowers:requesting-code-review` skill. The reviewer must compare the implementation against the spec, verify owner/member isolation, confirm the PT extension removal, and inspect activation rollback and secret-output boundaries.
