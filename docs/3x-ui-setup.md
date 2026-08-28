@@ -6,7 +6,7 @@
 
 ## 安装 3x-ui
 
-在 Debian 12 上直接执行 3x-ui 官方 Quick Start 命令，不传版本参数：
+在 Debian/Ubuntu 等 apt 系统上直接执行 3x-ui 官方 Quick Start 命令，不传版本参数：
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)

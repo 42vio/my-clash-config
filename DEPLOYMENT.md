@@ -1,6 +1,6 @@
-# 部署手册（Debian 12）
+# 部署手册（apt/systemd Linux）
 
-目标环境是重装后的干净 Debian 12 amd64 VPS，资源约束约 512 MiB RAM、256 MiB Swap、10 GiB 磁盘。除 3x-ui 本体外，全部部署由 `bash install.sh` 一条命令完成（Phase 2）。空闲时常驻进程只有 3x-ui 管理的 Xray 与宿主机 Nginx；Python 与 Mihomo 仅在同步和每日流量任务期间短暂运行。
+目标环境是重装后的干净 Linux amd64 VPS，资源约束约 512 MiB RAM、256 MiB Swap、10 GiB 磁盘。安装器不再按发行版或版本号拦截；当前安装步骤仍要求 `apt-get`、systemd 和 Debian 风格的 Nginx 目录布局，主要按 Debian 12+ 验证。除 3x-ui 本体外，全部部署由 `bash install.sh` 一条命令完成（Phase 2）。空闲时常驻进程只有 3x-ui 管理的 Xray 与宿主机 Nginx；Python 与 Mihomo 仅在同步和每日流量任务期间短暂运行。
 
 公网仅开放 TCP 443（Nginx stream 按 SNI 分流）；10443 / 30443 / 20443 仅回环。不开放 UDP 443，不使用公网 1443。3x-ui 面板与原始订阅服务仅监听 127.0.0.1，永不直接暴露公网。
 
@@ -17,7 +17,7 @@
 
 ## Phase 1：基础代理（手动，约 10 分钟）
 
-1. Debian 12 最小安装，`apt update && apt upgrade`。
+1. 准备 amd64 Linux 系统，并确保可用 `apt-get` 与 systemd（推荐 Debian 12+）。
 2. 安装 Git（首次拉取私有仓库必需）：
 
        apt-get install -y git
@@ -87,7 +87,7 @@ ss -tlnp | grep -E '443|10443|30443'
 - `clash-sub backup`：全量备份到 backups/（含 x-ui.db、运行时 private/、nginx 配置）
 - `clash-sub update`：git pull + 依赖同步，随后以新代码进程执行 systemd/nginx 刷新（--post-update 自动接力；变更前自动快照）。update 不自动同步配置；涉及模板或生成逻辑的变更按成功提示继续执行 `clash-sub sync`（日常直接记 `clash-sub update && clash-sub sync`，等价于菜单选项 6）
 - `clash-sub cert` / `clash-sub cert --renew`：证书状态 / 强制续期
-- `clash-sub rollback --install`：回滚整合安装——移除 nginx 配置与 stream include（仅精确移除 installer 写入的块）、停用 systemd 资产、恢复 Debian 默认站点（注：收口后 Reality 监听 127.0.0.1，回滚需同时在 3x-ui 面板把入站 listen 改回 0.0.0.0 才能恢复公网直连）
+- `clash-sub rollback --install`：回滚整合安装——移除 nginx 配置与 stream include（仅精确移除 installer 写入的块）、停用 systemd 资产、恢复默认站点（注：收口后 Reality 监听 127.0.0.1，回滚需同时在 3x-ui 面板把入站 listen 改回 0.0.0.0 才能恢复公网直连）
 - 模板维护（`clash-sub template-sync`）是**开发机本地命令**，在维护者的 Mac 上把私密工作稿提升为公共模板；服务器不运行它，也永远不上传 `private/workbench/` 工作稿——服务器只通过 Git 与 `clash-sub update && clash-sub sync` 获得模板变更。
 
 一次性升级说明：已在运行的旧版本（≤ 2026-08-26 之前部署）的 update 不会自动拉起新进程；首次升级请手动 `git pull` 后再运行 `clash-sub update`（或连续运行两次 update）。此后升级均为单命令。

@@ -138,7 +138,7 @@ sync 由 pull 后磁盘入口启动的新进程执行；update 之后菜单退�
 
 | 文档 | 内容 |
 | --- | --- |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | 干净 Debian 12 服务器部署：3x-ui 手动 + `install.sh` 一键整合 443 |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | apt/systemd Linux 服务器部署：3x-ui 手动 + `install.sh` 一键整合 443 |
 | [docs/3x-ui-setup.md](docs/3x-ui-setup.md) | 3x-ui 官方安装与接入本项目所需的面板配置 |
 | [docs/operations.md](docs/operations.md) | 日常运维：机场更新、流量、历史、回滚、轮换、故障恢复 |
 | [docs/recovery.md](docs/recovery.md) | 重装恢复、域名变更与预留扩展（Trojan / 第二台 VPS） |

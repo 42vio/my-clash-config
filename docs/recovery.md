@@ -12,7 +12,7 @@
 
 ## 恢复步骤
 
-1. Debian 12 安装 → 3x-ui 官方脚本安装。
+1. 准备可用 `apt-get` 与 systemd 的 Linux 系统 → 3x-ui 官方脚本安装。
 2. `systemctl stop x-ui`；用备份内 x-ui.db 覆盖 /etc/x-ui/x-ui.db；`systemctl start x-ui`。
    —— 此时代理已恢复（公网 10443 直连）（若备份的 x-ui.db 来自已收口的服务器，需先把入站 listen 改回 0.0.0.0）。
    同时确认面板监听为 `127.0.0.1`，`webCertFile` 与 `webKeyFile` 为空；旧备份若仍启用面板

@@ -222,23 +222,8 @@ class PreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(InstallerError, "not_root"):
                 self._installer().preflight("example.com")
 
-    def test_rejects_unsupported_distribution(self):
-        os_release = self.root / "os-release"
-        os_release.write_text('ID="ubuntu"\nVERSION_ID="24.04"\n', encoding="utf-8")
-
+    def test_accepts_preflight_without_distribution_check(self):
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", os_release
-        ):
-            with self.assertRaisesRegex(InstallerError, "unsupported_distribution"):
-                self._installer().preflight("example.com")
-
-    def test_accepts_debian_12(self):
-        os_release = self.root / "os-release"
-        os_release.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
-
-        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", os_release
-        ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
             "clash_sub.installer.read_panel_settings",
@@ -256,12 +241,7 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("preflight", state.phases_done)
 
     def test_rejects_default_panel_base_path(self):
-        os_release = self.root / "os-release"
-        os_release.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
-
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", os_release
-        ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
             "clash_sub.installer.read_panel_settings",
@@ -277,12 +257,7 @@ class PreflightTests(unittest.TestCase):
                 self._installer().preflight("example.com")
 
     def test_rejects_malformed_panel_base_path(self):
-        os_release = self.root / "os-release"
-        os_release.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
-
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", os_release
-        ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
             "clash_sub.installer.read_panel_settings",
@@ -301,8 +276,6 @@ class PreflightTests(unittest.TestCase):
         installer = self._installer()
 
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", self._os_release_debian()
-        ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
             "clash_sub.installer.read_panel_settings",
@@ -321,8 +294,6 @@ class PreflightTests(unittest.TestCase):
         installer = self._installer()
 
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", self._os_release_debian()
-        ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
             "clash_sub.installer.read_panel_settings",
@@ -337,21 +308,13 @@ class PreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(InstallerError, "panel_listen_unsafe"):
                 installer.preflight("example.com")
 
-    def _os_release_debian(self):
-        path = self.root / "os-release"
-        path.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
-        return path
-
     def test_rejects_xui_database_problems(self):
-        os_release = self.root / "os-release"
-        os_release.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
-
         def broken(path):
             raise XuiCompatibilityError("boom")
 
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", os_release
-        ), patch("clash_sub.installer.read_xui_snapshot", broken):
+            "clash_sub.installer.read_xui_snapshot", broken
+        ):
             with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
                 self._installer().preflight("example.com")
 
@@ -1340,8 +1303,6 @@ class NodeHostTests(unittest.TestCase):
         resolved = {"sub.42io.cc": ["192.0.2.1"], "node.42io.cc": ["192.0.2.1"]}
 
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", self._os_release()
-        ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
             "clash_sub.installer.read_panel_settings",
@@ -1361,8 +1322,6 @@ class NodeHostTests(unittest.TestCase):
         resolved = {"sub.42io.cc": ["192.0.2.1"], "node.42io.cc": ["203.0.113.9"]}
 
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer._OS_RELEASE_PATH", self._os_release()
-        ), patch(
             "clash_sub.installer.read_xui_snapshot", lambda path: object()
         ), patch(
             "clash_sub.installer.read_panel_settings",
@@ -1377,12 +1336,6 @@ class NodeHostTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(InstallerError, "dns_mismatch"):
                 installer.preflight("42io.cc")
-
-    def _os_release(self):
-        path = self.root / "os-release"
-        path.write_text('ID="debian"\nVERSION_ID="12"\n', encoding="utf-8")
-        return path
-
 
 class OwnerValidationTests(unittest.TestCase):
     def setUp(self):

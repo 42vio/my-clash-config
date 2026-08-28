@@ -1,6 +1,6 @@
 #!/bin/sh
-# clash-sub integration installer bootstrap. Run as root on Debian 12 after
-# 3x-ui is installed with one Reality inbound on port 10443.
+# clash-sub integration installer bootstrap. Run as root on an apt-based Linux
+# system after 3x-ui is installed with one Reality inbound on port 10443.
 set -eu
 [ "$(id -u)" = 0 ] || { echo "install.sh must run as root" >&2; exit 1; }
 cd "$(dirname "$0")"

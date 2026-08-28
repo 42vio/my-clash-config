@@ -31,8 +31,6 @@ from clash_sub.xui import (
 )
 
 _MINIMUM_FREE_BYTES = 1024 ** 3
-_DEBIAN_MAJOR = "12"
-_OS_RELEASE_PATH = Path("/etc/os-release")
 _ACME_RELEASE_URL = "https://github.com/acmesh-official/acme.sh/archive/refs/tags/3.1.4.tar.gz"
 _ACME_RELEASE_SHA256 = "e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
 _INSTALL_PHASES = frozenset({
@@ -313,7 +311,6 @@ class Installer:
     def preflight(self, domain, node_host=None):
         if os.geteuid() != 0:
             raise InstallerError("not_root")
-        self._require_debian()
         self._require_disk()
         self._require_xui()
         self._require_panel_base_path()
@@ -322,21 +319,6 @@ class Installer:
         self._require_host_resolves_locally(node_host or ("node." + domain))
         self._phase_done("preflight")
         return True
-
-    def _require_debian(self):
-        try:
-            with open(_OS_RELEASE_PATH, encoding="ascii") as handle:
-                fields = dict(
-                    line.split("=", 1)
-                    for line in handle.read().splitlines()
-                    if "=" in line
-                )
-        except OSError:
-            raise InstallerError("unsupported_distribution") from None
-        if fields.get("ID", "").strip('"') != "debian" or not fields.get(
-            "VERSION_ID", ""
-        ).strip('"').startswith(_DEBIAN_MAJOR):
-            raise InstallerError("unsupported_distribution")
 
     def _require_disk(self):
         try:
