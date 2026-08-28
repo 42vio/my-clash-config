@@ -83,10 +83,19 @@ class Traffic:
 
 
 @dataclass(frozen=True)
+class AirportProvider:
+    """The owner-only stable airport source rendered into owner profiles."""
+
+    url: str
+    digest: str
+
+
+@dataclass(frozen=True)
 class PreparedRelease:
     release_id: str
     public_paths: Mapping[str, Path]
     manifest_path: Path
+    airport_path: Path | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "public_paths", MappingProxyType(dict(self.public_paths)))

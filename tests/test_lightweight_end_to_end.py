@@ -22,10 +22,9 @@ from clash_sub.nginx import activate_runtime, render_routes
 from clash_sub.release_store import ReleaseStore
 from clash_sub.service import ClashSubService, ServiceError
 from clash_sub.sources import (
-    download_airport_proxies,
+    download_airport_document,
     fetch_xui_proxies,
     load_proxy_snapshot,
-    write_proxy_snapshot,
 )
 from clash_sub.state import load_state, reconcile_state, rotate_user_token, save_state
 from clash_sub.xui import read_xui_snapshot
@@ -102,7 +101,18 @@ class AcceptanceHarness:
         self.render_calls = 0
         self.fail_render = False
         self.fail_xui_source = False
-        self.airport_body = self._document([self._proxy("Airport", "airport-old")])
+        self.airport_body = (
+            b"# AmyTelecom upstream snapshot\n"
+            b"proxies:\n"
+            b"- {name: 'Amy HK 01', type: ss, server: amy-1.example.test, port: 443,"
+            b" cipher: aes-128-gcm, password: airport-old}\n"
+            b"- name: Amy HK 02\n"
+            b"  type: trojan\n"
+            b"  server: amy-2.example.test\n"
+            b"  port: 443\n"
+            b"  password: airport-old-2\n"
+            b"# trailing comment preserved verbatim\n"
+        )
         self._make_runtime()
 
     def _make_runtime(self):
@@ -181,13 +191,14 @@ class AcceptanceHarness:
                 [self._proxy("Member 3x-ui", "member-current", port=10443)]
             ),
         }
-        write_proxy_snapshot(
-            self.private_root / "airport.yaml",
-            [self._proxy("Airport", "airport-snapshot")],
+        home_path = self.private_root / "home.yaml"
+        home_path.write_text(
+            yaml.safe_dump(
+                {"proxies": [self._proxy("Home", "home-snapshot")]}, sort_keys=False
+            ),
+            encoding="utf-8",
         )
-        write_proxy_snapshot(
-            self.private_root / "home.yaml", [self._proxy("Home", "home-snapshot")]
-        )
+        os.chmod(home_path, 0o600)
 
         self.runner = FakeRunner(self)
         self.release_store = ReleaseStore(self.private_root, self.public_root)
@@ -198,7 +209,7 @@ class AcceptanceHarness:
             reconcile_state=reconcile_state,
             rotate_user_token=rotate_user_token,
             fetch_xui_proxies=self._fetch_xui,
-            download_airport_proxies=self._download_airport,
+            download_airport_document=self._download_airport,
             load_proxy_snapshot=load_proxy_snapshot,
             render_user_bundle=self._render,
             validate_clash=validate_clash,
@@ -235,7 +246,7 @@ class AcceptanceHarness:
         return fetch_xui_proxies(url, maximum, opener=self._xui_opener)
 
     def _download_airport(self, url, maximum):
-        return download_airport_proxies(url, maximum, opener=self._airport_opener)
+        return download_airport_document(url, maximum, opener=self._airport_opener)
 
     def _render(self, owner, xui, airport, home, template_root):
         self.render_calls += 1
@@ -247,6 +258,10 @@ class AcceptanceHarness:
         self.xui_bodies[self.source_urls[client_id]] = self._document(
             [self._proxy(name, "%s-password" % name.lower().replace(" ", "-"), port=10443)]
         )
+
+    def import_airport(self, url="https://airport.example.test/import/live"):
+        """Import the airport once; the short-lived URL is never persisted."""
+        return self.service.update_airport(url)
 
     def set_traffic(self, client_id, upload, download):
         connection = sqlite3.connect(self.database)
@@ -289,6 +304,11 @@ class AcceptanceHarness:
             release_id = state.users[client_id].current_release
             if release_id is not None:
                 release = self.release_store.verify_release(client_id, release_id)
+                airport = (
+                    hashlib.sha256(release.airport_path.read_bytes()).hexdigest()
+                    if release.airport_path is not None
+                    else None
+                )
                 releases.append(
                     (
                         client_id,
@@ -299,6 +319,7 @@ class AcceptanceHarness:
                                 for variant, path in release.public_paths.items()
                             )
                         ),
+                        airport,
                     )
                 )
         return {
@@ -336,34 +357,140 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
     def test_owner_and_member_sources_are_isolated(self):
         """A wrong role/source mapping must not reach a rendered release."""
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
 
         owner = harness.release(harness.owner_id)
         member = harness.release(harness.member_id)
-        owner_names = {
-            variant: [proxy["name"] for proxy in yaml.safe_load(path.read_text())["proxies"]]
+        owner_documents = {
+            variant: yaml.safe_load(path.read_text())
             for variant, path in owner.public_paths.items()
         }
-        member_standard = yaml.safe_load(member.public_paths["standard"].read_text())["proxies"]
-        member_names = [proxy["name"] for proxy in member_standard]
+        owner_names = {
+            variant: [proxy["name"] for proxy in document["proxies"]]
+            for variant, document in owner_documents.items()
+        }
+        member_standard = yaml.safe_load(member.public_paths["standard"].read_text())
+        member_names = [proxy["name"] for proxy in member_standard["proxies"]]
 
-        self.assertEqual(owner_names["balanced"], ["Owner 3x-ui", "Airport", "Home"])
-        self.assertEqual(owner_names["standard"], ["Owner 3x-ui", "Airport"])
-        self.assertEqual(owner_names["privacy"], ["Owner 3x-ui", "Airport", "Home"])
+        # Airport nodes stay out of every inline proxies list.
+        self.assertEqual(owner_names["balanced"], ["Owner 3x-ui", "Home"])
+        self.assertEqual(owner_names["standard"], ["Owner 3x-ui"])
+        self.assertEqual(owner_names["privacy"], ["Owner 3x-ui", "Home"])
         self.assertEqual(member_names, ["Member 3x-ui"])
 
-        owner_standard = yaml.safe_load(owner.public_paths["standard"].read_text())["proxies"]
-        owner_xui = next(proxy for proxy in owner_standard if proxy["name"] == "Owner 3x-ui")
+        owner_token = harness.state().users[harness.owner_id].token
+        expected_url = "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % owner_token
+        for variant, document in owner_documents.items():
+            provider = document["proxy-providers"]["AmyTelecom"]
+            self.assertEqual(provider["type"], "http", variant)
+            self.assertEqual(provider["url"], expected_url, variant)
+            self.assertEqual(provider["interval"], 0, variant)
+            self.assertEqual(
+                provider["path"],
+                "./proxy_providers/AmyTelecom-%s.yaml"
+                % hashlib.sha256(harness.airport_body).hexdigest(),
+                variant,
+            )
+            groups = {group["name"]: group for group in document["proxy-groups"]}
+            self.assertEqual(groups["加速线路"]["use"], ["AmyTelecom"], variant)
+            self.assertEqual(groups["自动选择"]["use"], ["AmyTelecom"], variant)
+
+        self.assertNotIn("proxy-providers", member_standard)
+        member_groups = {
+            group["name"]: group for group in member_standard["proxy-groups"]
+        }
+        self.assertNotIn("use", member_groups["加速线路"])
+        member_text = member.public_paths["standard"].read_text()
+        self.assertNotIn("AmyTelecom", member_text)
+        self.assertNotIn("amy-1.example.test", member_text)
+        self.assertNotIn("airport.example.test", member_text)
+
+        owner_xui = next(
+            proxy
+            for proxy in owner_documents["standard"]["proxies"]
+            if proxy["name"] == "Owner 3x-ui"
+        )
         self.assertEqual((owner_xui["server"], owner_xui["port"]), ("example.com", 443))
         self.assertEqual(
-            [(proxy["server"], proxy["port"]) for proxy in member_standard],
+            [
+                (proxy["server"], proxy["port"])
+                for proxy in member_standard["proxies"]
+            ],
             [("example.com", 443)],
         )
-        self.assertNotIn("node.example.test", member.public_paths["standard"].read_text())
         harness.assert_lock_and_markers(self)
+
+    def test_published_airport_yaml_is_byte_identical_and_owner_only(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+
+        release = harness.release(harness.owner_id)
+        routes = harness.route_text()
+        member_token = harness.state().users[harness.member_id].token
+
+        self.assertEqual(release.airport_path.read_bytes(), harness.airport_body)
+        self.assertEqual(
+            (release.manifest_path.parent / "AmyTelecom.yaml").read_bytes(),
+            harness.airport_body,
+        )
+        self.assertIn("alias %s;" % release.airport_path, routes)
+        owner_token = harness.state().users[harness.owner_id].token
+        self.assertIn("location = /s/%s/AmyTelecom.yaml" % owner_token, routes)
+        self.assertNotIn("location = /s/%s/AmyTelecom.yaml" % member_token, routes)
+
+    def test_first_sync_without_an_airport_leaves_the_owner_pending(self):
+        harness = self.make_harness()
+
+        result = harness.service.sync_all()
+
+        self.assertEqual(
+            {item["code"] for item in result["errors"]},
+            {"owner_update_failed"},
+        )
+        status = harness.service.status()
+        self.assertEqual([item["client_id"] for item in status["pending"]], [harness.owner_id])
+        self.assertIsNone(harness.state().users[harness.owner_id].current_release)
+        self.assertIsNotNone(harness.state().users[harness.member_id].current_release)
+
+    def test_sync_all_reuses_the_release_artifact_without_the_upstream(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+
+        def exploding(request, _timeout):
+            raise OSError("upstream must never be contacted")
+
+        harness._airport_opener = exploding
+        harness.set_xui_proxy(harness.owner_id, "Owner changed")
+
+        result = harness.service.sync_all()
+
+        self.assertFalse(result["errors"])
+        release = harness.release(harness.owner_id)
+        self.assertEqual(release.airport_path.read_bytes(), harness.airport_body)
+
+    def test_changed_airport_body_publishes_a_new_digest_cache_path(self):
+        harness = self.make_harness()
+        harness.import_airport()
+
+        first = yaml.safe_load(harness.release(harness.owner_id).public_paths["standard"].read_text())
+        harness.airport_body = harness.airport_body.replace(b"airport-old", b"airport-new")
+        harness.import_airport()
+        second_release = harness.release(harness.owner_id)
+
+        second = yaml.safe_load(second_release.public_paths["standard"].read_text())
+        self.assertNotEqual(
+            first["proxy-providers"]["AmyTelecom"]["path"],
+            second["proxy-providers"]["AmyTelecom"]["path"],
+        )
+        self.assertEqual(second_release.airport_path.read_bytes(), harness.airport_body)
+        self.assertIn("alias %s;" % second_release.airport_path, harness.route_text())
 
     def test_links_are_anonymous_full_urls_with_unique_readable_codes(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
 
         links = harness.service.links()
@@ -383,6 +510,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
     def test_routes_authorize_only_exact_token_user_and_variant_combinations(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         state = harness.state()
         owner = state.users[harness.owner_id]
@@ -393,11 +521,16 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotIn("location = /s/%s/clash-balanced.yaml" % member.token, routes)
         self.assertNotIn("location = /s/%s/clash-privacy.yaml" % member.token, routes)
         self.assertIn("location = /s/%s/clash-balanced.yaml" % owner.token, routes)
+        self.assertIn("location = /s/%s/AmyTelecom.yaml" % owner.token, routes)
+        self.assertNotIn("location = /s/%s/AmyTelecom.yaml" % member.token, routes)
         self.assertEqual(routes.count("location = /s/%s/" % member.token), 1)
-        self.assertEqual(routes.count("location = /s/%s/" % owner.token), 3)
+        self.assertEqual(routes.count("location = /s/%s/" % owner.token), 4)
+        block = routes[routes.index("location = /s/%s/AmyTelecom.yaml" % owner.token):]
+        self.assertNotIn("Subscription-Userinfo", block[: block.index("\n}")])
 
     def test_database_failure_preserves_active_bytes_and_metadata(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
         harness.corrupt_schema()
@@ -410,6 +543,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
     def test_source_failure_preserves_active_bytes_and_metadata(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
         harness.fail_xui_source = True
@@ -422,6 +556,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
     def test_render_failure_preserves_active_bytes_and_metadata(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
         harness.fail_render = True
@@ -434,6 +569,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
     def test_mihomo_failure_preserves_active_bytes_and_metadata(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
         harness.set_xui_proxy(harness.owner_id, "Owner changed")
@@ -447,6 +583,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
     def test_nginx_failure_preserves_active_bytes_metadata_and_candidates(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
         harness.set_xui_proxy(harness.owner_id, "Owner changed")
@@ -459,8 +596,27 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         harness.assert_candidate_cleanup(self)
         harness.assert_lock_and_markers(self)
 
+    def test_failed_airport_activation_restores_the_previous_airport_release(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before = harness.active_view()
+        old_body = harness.airport_body
+        old_airport_path = harness.release(harness.owner_id).airport_path
+
+        harness.airport_body = old_body.replace(b"airport-old", b"airport-new")
+        harness.runner.fail_nginx_test = True
+        with self.assertRaisesRegex(ServiceError, "airport_activation_failed"):
+            harness.import_airport("https://airport.example.test/import/second")
+
+        self.assertEqual(harness.active_view(), before)
+        self.assertEqual(old_airport_path.read_bytes(), old_body)
+        harness.assert_candidate_cleanup(self)
+        harness.assert_lock_and_markers(self)
+
     def test_transient_airport_url_and_credentials_do_not_leak(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         airport_url = "https://airport.example.test/import/temporary-credential-4893"
         airport_credential = "airport-credential-4893"
@@ -511,6 +667,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
     def test_traffic_update_changes_only_route_headers_without_rendering_or_mihomo(self):
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
         previous_routes = harness.route_text()
@@ -527,26 +684,71 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotEqual(harness.route_text(), previous_routes)
         self.assertIn('Subscription-Userinfo "upload=999; download=888; total=10000; expire=0"', harness.route_text())
 
-    def test_rollback_and_rotation_remove_old_exact_routes(self):
+    def test_failed_owner_rotation_keeps_the_old_link_routes_and_release(self):
         harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before = harness.active_view()
+        old_token = harness.state().users[harness.owner_id].token
+        old_routes = harness.route_text()
+
+        harness.runner.fail_nginx_test = True
+        with self.assertRaisesRegex(ServiceError, "rotation_activation_failed"):
+            harness.service.rotate_link(harness.owner_id)
+
+        self.assertEqual(harness.state().users[harness.owner_id].token, old_token)
+        self.assertEqual(harness.active_view(), before)
+        self.assertEqual(harness.route_text(), old_routes)
+        self.assertIn("location = /s/%s/AmyTelecom.yaml" % old_token, harness.route_text())
+        harness.assert_candidate_cleanup(self)
+        harness.assert_lock_and_markers(self)
+
+    def test_rollback_restores_the_matching_airport_and_rotation_revokes_it(self):
+        harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
         first_release = harness.state().users[harness.owner_id].current_release
         old_token = harness.state().users[harness.owner_id].token
-        harness.set_xui_proxy(harness.owner_id, "Owner changed")
-        harness.service.sync_all()
+        old_body = harness.airport_body
 
+        harness.airport_body = old_body.replace(b"airport-old", b"airport-new")
+        harness.import_airport()
         harness.service.rollback(harness.owner_id, first_release)
-        self.assertEqual(harness.state().users[harness.owner_id].current_release, first_release)
-        self.assertIn("/%s/" % first_release, harness.route_text())
+
+        # Rollback must pair the old profiles with the old raw airport file.
+        rolled = harness.release(harness.owner_id)
+        self.assertEqual(rolled.release_id, first_release)
+        self.assertEqual(rolled.airport_path.read_bytes(), old_body)
+        routes = harness.route_text()
+        self.assertIn("location = /s/%s/AmyTelecom.yaml" % old_token, routes)
+        self.assertIn("alias %s;" % rolled.airport_path, routes)
+        standard = yaml.safe_load(rolled.public_paths["standard"].read_text())
+        self.assertEqual(
+            standard["proxy-providers"]["AmyTelecom"]["path"],
+            "./proxy_providers/AmyTelecom-%s.yaml" % hashlib.sha256(old_body).hexdigest(),
+        )
+
         rotated = harness.service.rotate_link(harness.owner_id)
 
         self.assertNotEqual(rotated["token"], old_token)
-        self.assertNotIn("location = /s/%s/" % old_token, harness.route_text())
-        self.assertIn("location = /s/%s/clash-balanced.yaml" % rotated["token"], harness.route_text())
+        routes = harness.route_text()
+        self.assertNotIn("location = /s/%s/" % old_token, routes)
+        self.assertIn("location = /s/%s/clash-balanced.yaml" % rotated["token"], routes)
+        self.assertIn("location = /s/%s/AmyTelecom.yaml" % rotated["token"], routes)
+        rotated_release = harness.release(harness.owner_id)
+        self.assertEqual(rotated_release.airport_path.read_bytes(), old_body)
+        rotated_standard = yaml.safe_load(
+            rotated_release.public_paths["standard"].read_text()
+        )
+        self.assertEqual(
+            rotated_standard["proxy-providers"]["AmyTelecom"]["url"],
+            "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % rotated["token"],
+        )
         harness.assert_lock_and_markers(self)
 
     def test_six_successful_content_changes_retain_five_verified_releases(self):
         harness = self.make_harness()
+        harness.import_airport()
 
         for version in range(6):
             harness.set_xui_proxy(harness.member_id, "Member generation %s" % version)
@@ -571,18 +773,34 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         if not binary:
             self.skipTest("MIHOMO_BIN is not set")
         harness = self.make_harness()
+        harness.import_airport()
         harness.service.sync_all()
 
-        for path in harness.release(harness.owner_id).public_paths.values():
-            completed = subprocess.run(
-                [binary, "-t", "-f", str(path)],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-                check=False,
-            )
-            self.assertEqual(completed.returncode, 0)
+        with TemporaryDirectory(prefix="mihomo-acceptance.") as scratch:
+            airport_file = Path(scratch) / "AmyTelecom.yaml"
+            airport_file.write_bytes(harness.airport_body)
+            for path in harness.release(harness.owner_id).public_paths.values():
+                # Published profiles carry the HTTP provider; validate the
+                # local-file equivalent exactly like the service does.
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
+                document["proxy-providers"]["AmyTelecom"] = {
+                    "type": "file",
+                    "path": str(airport_file),
+                }
+                candidate = Path(scratch) / path.name
+                candidate.write_text(
+                    yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
+                    encoding="utf-8",
+                )
+                completed = subprocess.run(
+                    [binary, "-t", "-f", str(candidate)],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=30,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,8 @@ from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS
 from clash_sub.sources import merge_proxy_sources
 
 
+PROVIDER_NAME = "AmyTelecom"
+
 # Features may only be composed into the variants listed here; the manifest
 # cannot extend this authorization.
 _FEATURE_VARIANTS = {
@@ -47,7 +49,7 @@ def render_user_bundle(is_owner, xui, airport, home, template_root):
     """Render only the variants and proxy sources authorized for one user."""
     sources_by_variant = _authorized_sources(is_owner, xui, airport, home)
     return {
-        variant: _render_variant(Path(template_root), variant, sources)
+        variant: _render_variant(Path(template_root), variant, sources, airport)
         for variant, sources in sources_by_variant
     }
 
@@ -55,8 +57,12 @@ def render_user_bundle(is_owner, xui, airport, home, template_root):
 def _authorized_sources(is_owner, xui, airport, home):
     xui_source = ("3x-ui", xui)
     if not is_owner:
+        if airport is not None:
+            raise ValueError("member profiles must not reference an airport provider")
         return ((MEMBER_VARIANTS[0], (xui_source,)),)
-    owner_sources = (xui_source, ("airport", airport))
+    if airport is None:
+        raise ValueError("owner profiles require the airport provider")
+    owner_sources = (xui_source,)
     owner_sources_with_home = owner_sources + (("home", home),) if home else owner_sources
     return (
         ("balanced", owner_sources_with_home),
@@ -65,15 +71,38 @@ def _authorized_sources(is_owner, xui, airport, home):
     )
 
 
-def _render_variant(template_root, variant, sources):
+def _render_variant(template_root, variant, sources, airport):
     proxies = merge_proxy_sources(sources)
     document, injections = _compose_variant(template_root, variant)
     document["proxies"] = proxies
-    _inject_proxy_names(document, injections, _source_proxy_names(sources, proxies))
+    if airport is not None:
+        document = _with_provider(document, airport)
+    _inject_proxy_names(
+        document,
+        injections,
+        _source_proxy_names(sources, proxies),
+        PROVIDER_NAME if airport is not None else None,
+    )
     rendered = yaml.safe_dump(
         document, allow_unicode=True, sort_keys=False, default_flow_style=False
     )
     return rendered if rendered.endswith("\n") else rendered + "\n"
+
+
+def _with_provider(document, airport):
+    rebuilt = {}
+    for key, value in document.items():
+        rebuilt[key] = value
+        if key == "proxies":
+            rebuilt["proxy-providers"] = {
+                PROVIDER_NAME: {
+                    "type": "http",
+                    "url": airport.url,
+                    "path": "./proxy_providers/%s-%s.yaml" % (PROVIDER_NAME, airport.digest),
+                    "interval": 0,
+                }
+            }
+    return rebuilt
 
 
 def _compose_variant(template_root, variant):
@@ -229,7 +258,7 @@ def _source_proxy_names(sources, proxies):
     return names
 
 
-def _inject_proxy_names(document, injections, source_names):
+def _inject_proxy_names(document, injections, source_names, provider_name=None):
     groups = document["proxy-groups"]
     indexes = {}
     for index, group in enumerate(groups):
@@ -248,6 +277,26 @@ def _inject_proxy_names(document, injections, source_names):
         for name in source_names[source_name]:
             if name not in targets:
                 targets.append(name)
+    if provider_name is None:
+        return
+    # Groups that declared the full node supply ("all" injections) and groups
+    # that declared ``include-all`` receive the airport supply through the
+    # provider's use list instead of inline airport node names.
+    provider_indexes = set()
+    for group_name, source_name in injections.items():
+        if source_name == "all":
+            matching = indexes.get(group_name, [])
+            if len(matching) == 1:
+                provider_indexes.add(matching[0])
+    for index, group in enumerate(groups):
+        if group.get("include-all") is True:
+            provider_indexes.add(index)
+    for index in provider_indexes:
+        uses = groups[index].setdefault("use", [])
+        if not isinstance(uses, list):
+            raise ValueError("proxy group use entries must be a list")
+        if provider_name not in uses:
+            uses.append(provider_name)
 
 
 def _string_list(value):

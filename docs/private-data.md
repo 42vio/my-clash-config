@@ -10,14 +10,19 @@
 | --- | --- | --- |
 | `/opt/my-clash-config/private/config/service.yaml` | 全局私有设置（owner email、订阅主机名、数据库与二进制路径） | `0600` root:root |
 | `<private-root>/state.json` | 用户映射与**明文令牌**（静态 Nginx 架构的有意取舍，见下） | `0600` root:root |
-| `<private-root>/airport.yaml` | 最新机场节点快照（规范化 proxies，不含机场 URL） | `0600` root:root |
 | `<private-root>/home.yaml` | owner 自维护家庭节点 | `0600` root:root |
-| `<private-root>/releases/<user>/…` | 每用户最近五个成功版本（manifest + 来源哈希） | 目录 `0700` |
+| `<private-root>/releases/<user>/…` | 每用户最近五个成功版本（manifest + 来源哈希；owner 版本另含逐字节原样的 `AmyTelecom.yaml` 机场原件） | 目录 `0700` |
 | `<private-root>/operation.lock` | 同步互斥锁 | root:root |
 | `<private-root>/.activation-journal.json` | 仅在运行时激活被中断时存在的旧工件快照；必须先由 `clash-sub recover` 处理 | `0600` root:root |
 | `<private-root>/reference-configs/…` | 三份原始参考配置，**永久记录**，永不参与版本清理 | `0600` root:root |
-| `<public-root>/releases/<user>/…` | 当前静态发布 YAML（Nginx 直接读取） | 目录 `2750` root:www-data，文件 `0640` |
+| `<public-root>/releases/<user>/…` | 当前静态发布 YAML（Nginx 直接读取；owner 版本含 `AmyTelecom.yaml` 稳定机场端点的 alias 目标） | 目录 `2750` root:www-data，文件 `0640` |
 | `private/workbench/balanced.yaml`（开发机仓库内） | **本地模板工作稿**：含真实节点的完整 balanced 配置，仅存在于维护它的 Mac 上 | `0600` 当前用户 |
+
+机场原件不再有独立的可变快照文件：`update-airport` 下载的响应字节
+**逐字节不改写**地存入当次 owner release（私有 `0600` 与公共 `0640`
+两份同 digest 拷贝），短期上游 URL 与机场登录状态永不落盘。稳定端点
+`/s/<owner-token>/AmyTelecom.yaml` 始终 alias 到**当前** owner release
+里的那份，因此轮换令牌、回滚版本都会连同机场原件一起切换。
 
 `<private-root>` 全树 `0700`；`<public-root>` 归组 www-data 且 setgid，
 Nginx worker 恰好可读发布文件、无法进入私有树。
@@ -48,8 +53,8 @@ root-only 的 `state.json` 中即等价于「文件系统权限保护」， Git�
 ## 备份与恢复
 
 - 必须备份两个独立来源：`/opt/my-clash-config/private/config/service.yaml` 与配置的
-  `<private-root>` 全树（含 `state.json`、`airport.yaml`、`home.yaml`、
-  releases 与 `reference-configs/` 原件）。前者不在 `<private-root>` 内，漏掉
+  `<private-root>` 全树（含 `state.json`、`home.yaml`、releases——owner release
+  里已含机场原件——与 `reference-configs/` 原件）。前者不在 `<private-root>` 内，漏掉
   它将无法恢复服务设置。
 - 备份和恢复只在管理员控制的加密存储之间进行，且备份副本同样 root-only；不得把
   这两项写入 Git、普通备份介质或公开云盘。恢复前先保留当前两项的只读副本，恢复后

@@ -170,7 +170,6 @@ class DocumentationCoverageTests(unittest.TestCase):
             nginx_root.mkdir()
             candidates = (
                 private_root / ".state.json.a1b2c3d4",
-                private_root / ".airport.yaml.e5f6g7h8",
                 private_root / "..activation-journal.json.i9j0k1l2",
                 current_root / ".7.m3n4o5p6",
                 nginx_root / ".routes.conf.q7r8s9t0",

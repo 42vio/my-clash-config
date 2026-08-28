@@ -27,11 +27,13 @@ _MANIFEST_FIELDS = frozenset(
         "variants",
     )
 )
+_MANIFEST_OPTIONAL_FIELDS = frozenset(("airport",))
 _MEMBER_VARIANTS = ("standard",)
 _PUBLIC_DIRECTORY_MODE = 0o2750
 _SPACE_HEADROOM = 1024 * 1024
 _MANIFEST_RESERVE = 64 * 1024
 _ACTIVATION_CANDIDATE_RESERVE = 128 * 1024
+AIRPORT_FILENAME = "AmyTelecom.yaml"
 
 
 class ReleaseStoreError(RuntimeError):
@@ -63,9 +65,11 @@ class ReleaseStore:
         client_id: int,
         bundle: Mapping[str, str],
         input_hashes: Mapping[str, str],
+        airport_document: bytes | None = None,
     ) -> PreparedRelease | None:
         client_name = _client_name(client_id)
         variants, files = _validate_bundle(bundle)
+        airport_document = _validate_airport_document(airport_document, variants)
         clean_input_hashes = _validate_input_hashes(input_hashes)
         output_hashes = {variant: _sha256(files[variant].encode("utf-8")) for variant in variants}
 
@@ -75,7 +79,9 @@ class ReleaseStore:
             manifest = _load_verified_manifest(
                 current.manifest_path, client_id, current_release, self._expected_uid
             )
-            if manifest["output_hashes"] == output_hashes:
+            if manifest["output_hashes"] == output_hashes and manifest.get("airport") == (
+                _sha256(airport_document) if airport_document is not None else None
+            ):
                 return None
 
         _preflight_space(
@@ -83,6 +89,7 @@ class ReleaseStore:
             self._public_root,
             files,
             self._activation_paths,
+            airport_document,
         )
 
         release_id = _release_id(self._clock(), self._suffix_factory())
@@ -121,9 +128,14 @@ class ReleaseStore:
                 "input_hashes": clean_input_hashes,
                 "output_hashes": output_hashes,
             }
+            if airport_document is not None:
+                manifest["airport"] = _sha256(airport_document)
             for variant in variants:
                 _write_file(private_stage / _filename(variant), files[variant].encode("utf-8"), 0o600)
                 _write_file(public_stage / _filename(variant), files[variant].encode("utf-8"), 0o600)
+            if airport_document is not None:
+                _write_file(private_stage / AIRPORT_FILENAME, airport_document, 0o600)
+                _write_file(public_stage / AIRPORT_FILENAME, airport_document, 0o600)
             manifest_path = private_stage / "manifest.json"
             _write_file(
                 manifest_path,
@@ -136,9 +148,15 @@ class ReleaseStore:
                 0o600,
             )
 
-            _verify_public_staging(public_stage, variants, self._expected_uid, public_gid)
+            _verify_public_staging(
+                public_stage, variants, self._expected_uid, public_gid,
+                airport=airport_document is not None,
+            )
             _verify_staged_release(private_stage, public_stage, manifest, self._expected_uid, public_gid)
-            _finalize_public_stage(public_stage, variants, self._expected_uid, public_gid)
+            _finalize_public_stage(
+                public_stage, variants, self._expected_uid, public_gid,
+                airport=airport_document is not None,
+            )
             _fsync_directory(private_stage)
             public_target = public_client_root / release_id
             if public_target.exists() or public_target.is_symlink():
@@ -191,11 +209,42 @@ class ReleaseStore:
             expected_private_names.add(filename)
             expected_public_names.add(filename)
             public_paths[variant] = public_file
+        airport_path = None
+        if "airport" in manifest:
+            private_airport = private_release / AIRPORT_FILENAME
+            public_airport = public_release / AIRPORT_FILENAME
+            _require_regular_file(private_airport, "release", self._expected_uid)
+            _require_regular_file(public_airport, "release", self._expected_uid, public_gid)
+            if stat_mode(private_airport) != 0o600 or stat_mode(public_airport) != 0o640:
+                raise ReleaseStoreError("release permissions are invalid")
+            if public_airport.stat().st_gid != public_gid:
+                raise ReleaseStoreError("release permissions are invalid")
+            expected_hash = manifest["airport"]
+            if _sha256(private_airport.read_bytes()) != expected_hash:
+                raise ReleaseStoreError("release hash is invalid")
+            if _sha256(public_airport.read_bytes()) != expected_hash:
+                raise ReleaseStoreError("release hash is invalid")
+            expected_private_names.add(AIRPORT_FILENAME)
+            expected_public_names.add(AIRPORT_FILENAME)
+            airport_path = public_airport
         if _directory_names(private_release) != expected_private_names:
             raise ReleaseStoreError("release is incomplete")
         if _directory_names(public_release) != expected_public_names:
             raise ReleaseStoreError("release is incomplete")
-        return PreparedRelease(release_id, public_paths, manifest_path)
+        return PreparedRelease(release_id, public_paths, manifest_path, airport_path)
+
+    def read_airport_document(self, client_id: int, release_id: str) -> bytes | None:
+        """Return the verified raw airport bytes attached to one release."""
+        verified = self.verify_release(client_id, release_id)
+        if verified.airport_path is None:
+            return None
+        document = verified.airport_path.read_bytes()
+        manifest = _load_verified_manifest(
+            verified.manifest_path, client_id, release_id, self._expected_uid
+        )
+        if _sha256(document) != manifest["airport"]:
+            raise ReleaseStoreError("release hash is invalid")
+        return document
 
     def history(self, client_id: int) -> tuple[PreparedRelease, ...]:
         client_name = _client_name(client_id)
@@ -319,6 +368,18 @@ def _validate_bundle(bundle: Mapping[str, str]) -> tuple[tuple[str, ...], dict[s
     if any(not isinstance(files[variant], str) or not files[variant] for variant in variants):
         raise ReleaseStoreError("release bundle is invalid")
     return variants, files
+
+
+def _validate_airport_document(airport_document, variants) -> bytes | None:
+    # An absent artifact stays legal for owner releases so a legacy release
+    # history remains verifiable; member releases never carry one.
+    if airport_document is None:
+        return None
+    if not isinstance(airport_document, bytes) or not airport_document:
+        raise ReleaseStoreError("airport document is invalid")
+    if variants != OWNER_VARIANTS:
+        raise ReleaseStoreError("airport document is not allowed for member releases")
+    return airport_document
 
 
 def _validate_input_hashes(input_hashes: Mapping[str, str]) -> dict[str, str]:
@@ -517,11 +578,15 @@ def _finalize_public_stage(
     variants: tuple[str, ...],
     expected_uid: int | None = None,
     public_gid: int | None = None,
+    airport: bool = False,
 ) -> None:
     expected_uid = _expected_uid(expected_uid)
     public_gid = _expected_public_gid(public_gid)
-    for variant in variants:
-        public_file = public_stage / _filename(variant)
+    names = [_filename(variant) for variant in variants]
+    if airport:
+        names.append(AIRPORT_FILENAME)
+    for name in names:
+        public_file = public_stage / name
         os.chmod(public_file, 0o640)
         _require_regular_file(public_file, "release", expected_uid, public_gid)
         _fsync_file(public_file)
@@ -572,12 +637,16 @@ def _verify_public_staging(
     variants: tuple[str, ...],
     expected_uid: int | None = None,
     public_gid: int | None = None,
+    airport: bool = False,
 ) -> None:
     expected_uid = _expected_uid(expected_uid)
     public_gid = _expected_public_gid(public_gid)
     _require_public_directory(public_stage, expected_uid, public_gid)
-    for variant in variants:
-        public_file = public_stage / _filename(variant)
+    names = [_filename(variant) for variant in variants]
+    if airport:
+        names.append(AIRPORT_FILENAME)
+    for name in names:
+        public_file = public_stage / name
         _require_regular_file(public_file, "release", expected_uid, public_gid)
         if stat_mode(public_file) != 0o600:
             raise ReleaseStoreError("release permissions are invalid")
@@ -590,9 +659,16 @@ def _verify_staged_release(
     expected_uid: int | None = None,
     public_gid: int | None = None,
 ) -> None:
-    for variant, expected_hash in manifest["output_hashes"].items():
-        private_file = private_stage / _filename(variant)
-        public_file = public_stage / _filename(variant)
+    expected: dict[str, str] = dict(manifest["output_hashes"])
+    if "airport" in manifest:
+        expected[AIRPORT_FILENAME] = manifest["airport"]
+    for name, expected_hash in expected.items():
+        if name == AIRPORT_FILENAME:
+            private_file = private_stage / AIRPORT_FILENAME
+            public_file = public_stage / AIRPORT_FILENAME
+        else:
+            private_file = private_stage / _filename(name)
+            public_file = public_stage / _filename(name)
         if _sha256(private_file.read_bytes()) != expected_hash:
             raise ReleaseStoreError("release hash is invalid")
         if _sha256(public_file.read_bytes()) != expected_hash:
@@ -625,7 +701,9 @@ def _load_verified_manifest(
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ReleaseStoreError("manifest is invalid") from exc
-    if not isinstance(manifest, dict) or set(manifest) != _MANIFEST_FIELDS:
+    if not isinstance(manifest, dict) or not (
+        _MANIFEST_FIELDS <= set(manifest) <= _MANIFEST_FIELDS | _MANIFEST_OPTIONAL_FIELDS
+    ):
         raise ReleaseStoreError("manifest is invalid")
     if manifest.get("schema_version") != 1:
         raise ReleaseStoreError("manifest is invalid")
@@ -646,6 +724,10 @@ def _load_verified_manifest(
     if not isinstance(output_hashes, dict) or set(output_hashes) != set(variants):
         raise ReleaseStoreError("manifest is invalid")
     if any(not isinstance(value, str) or not _HASH_RE.fullmatch(value) for value in output_hashes.values()):
+        raise ReleaseStoreError("manifest is invalid")
+    if "airport" in manifest and (
+        not isinstance(manifest["airport"], str) or not _HASH_RE.fullmatch(manifest["airport"])
+    ):
         raise ReleaseStoreError("manifest is invalid")
     return manifest
 
@@ -715,11 +797,18 @@ def _activation_paths(paths, private_root: Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(result))
 
 
-def _preflight_space(private_root: Path, public_root: Path, files: Mapping[str, str], activation_paths) -> None:
+def _preflight_space(
+    private_root: Path,
+    public_root: Path,
+    files: Mapping[str, str],
+    activation_paths,
+    airport_document: bytes | None = None,
+) -> None:
     output_bytes = sum(len(value.encode("utf-8")) for value in files.values())
+    airport_bytes = len(airport_document) if airport_document is not None else 0
     allocations = [
-        (Path(private_root), output_bytes + _MANIFEST_RESERVE),
-        (Path(public_root), output_bytes),
+        (Path(private_root), output_bytes + airport_bytes + _MANIFEST_RESERVE),
+        (Path(public_root), output_bytes + airport_bytes),
     ]
     allocations.extend((Path(path), _ACTIVATION_CANDIDATE_RESERVE) for path in activation_paths)
     required = {}

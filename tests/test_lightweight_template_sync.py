@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 import yaml
 
+from clash_sub.domain import AirportProvider
 from clash_sub.generator import render_user_bundle
 from clash_sub.template_sync import TemplateSyncError, run_template_sync
 
@@ -64,6 +65,11 @@ HOME_PROXY = {
     },
 }
 
+PROBE_PROVIDER = AirportProvider(
+    "https://sub.example.invalid/s/probe-token/AmyTelecom.yaml", "6" * 64
+)
+
+
 PUBLIC_TEMPLATE_FILES = (
     "templates/clash.yaml",
     "templates/features/home.yaml",
@@ -87,7 +93,7 @@ def make_repo(directory):
 def make_workbench_document(transform=None):
     """Build a synthetic full balanced workbench from the shipped templates."""
     bundle = render_user_bundle(
-        True, [dict(XUI_PROXY)], [dict(AIRPORT_PROXY)], [dict(HOME_PROXY)], TEMPLATE_ROOT
+        True, [dict(XUI_PROXY)], PROBE_PROVIDER, [dict(HOME_PROXY)], TEMPLATE_ROOT
     )
     document = yaml.safe_load(bundle["balanced"])
     if transform is not None:
@@ -269,9 +275,9 @@ class TemplateSyncRoundTripTests(unittest.TestCase):
         run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
 
         owner = render_user_bundle(
-            True, [dict(XUI_PROXY)], [dict(AIRPORT_PROXY)], [dict(HOME_PROXY)], self.root / "templates"
+            True, [dict(XUI_PROXY)], PROBE_PROVIDER, [dict(HOME_PROXY)], self.root / "templates"
         )
-        member = render_user_bundle(False, [dict(XUI_PROXY)], [], [], self.root / "templates")
+        member = render_user_bundle(False, [dict(XUI_PROXY)], None, [], self.root / "templates")
 
         self.assertEqual(tuple(owner), ("balanced", "standard", "privacy"))
         self.assertEqual(tuple(member), ("standard",))
@@ -302,11 +308,11 @@ class TemplateSyncEvolutionTests(unittest.TestCase):
             "owner": render_user_bundle(
                 True,
                 [dict(XUI_PROXY)],
-                [dict(AIRPORT_PROXY)],
+                PROBE_PROVIDER,
                 [dict(HOME_PROXY)],
                 self.root / "templates",
             ),
-            "member": render_user_bundle(False, [dict(XUI_PROXY)], [], [], self.root / "templates"),
+            "member": render_user_bundle(False, [dict(XUI_PROXY)], None, [], self.root / "templates"),
         }
 
     def test_new_public_rule_group_provider_and_dns_reach_every_output(self):
@@ -386,7 +392,7 @@ class TemplateSyncEvolutionTests(unittest.TestCase):
                 {
                     "name": "新聚合组",
                     "type": "select",
-                    "proxies": ["🎯 Direct", "Synthetic 3x-ui", "Synthetic Airport"],
+                    "proxies": ["🎯 Direct", "Synthetic 3x-ui", "Synthetic Home"],
                 },
             )
 

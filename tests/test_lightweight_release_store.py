@@ -886,5 +886,121 @@ class ReleaseStoreTests(unittest.TestCase):
         self.assertEqual(len(self.store.history(7)), 5)
 
 
+AIRPORT_DOCUMENT = (
+    b"# airport comment kept verbatim\n"
+    b"proxies:\n"
+    b"- {name: 'Amy 01', type: ss, server: a.example, port: 443}\n"
+)
+
+
+class AirportArtifactTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        root = Path(self.tempdir.name)
+        self.private_root = root / "private"
+        self.public_root = root / "public"
+        self.public_root.mkdir()
+        os.chown(self.public_root, -1, os.getegid())
+        os.chmod(self.public_root, 0o2750)
+        self.now = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+        self.suffixes = iter(("00000001", "00000002", "00000003"))
+        self.store = ReleaseStore(
+            self.private_root,
+            self.public_root,
+            clock=lambda: self.now,
+            suffix_factory=lambda: next(self.suffixes),
+            expected_uid=os.geteuid(),
+            expected_public_gid=os.getegid(),
+        )
+        self.owner_bundle = {
+            "balanced": "proxies: [balanced]\n",
+            "standard": "proxies: [standard]\n",
+            "privacy": "proxies: [privacy]\n",
+        }
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def prepare_owner(self, airport=AIRPORT_DOCUMENT):
+        return self.store.prepare(7, self.owner_bundle, {"xui": "a" * 64}, airport_document=airport)
+
+    def test_owner_release_stores_the_airport_document_byte_for_byte(self):
+        release = self.prepare_owner()
+
+        self.assertIsNotNone(release)
+        verified = self.store.verify_release(7, release.release_id)
+        self.assertEqual(verified.airport_path, self.public_root / "releases" / "7" / release.release_id / "AmyTelecom.yaml")
+        self.assertEqual(verified.airport_path.read_bytes(), AIRPORT_DOCUMENT)
+        private_airport = verified.manifest_path.parent / "AmyTelecom.yaml"
+        self.assertEqual(private_airport.read_bytes(), AIRPORT_DOCUMENT)
+        self.assertEqual(stat.S_IMODE(private_airport.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(verified.airport_path.stat().st_mode), 0o640)
+        manifest = json.loads(verified.manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["airport"], hashlib.sha256(AIRPORT_DOCUMENT).hexdigest())
+
+    def test_read_airport_document_returns_the_verified_bytes(self):
+        release = self.prepare_owner()
+
+        self.assertEqual(self.store.read_airport_document(7, release.release_id), AIRPORT_DOCUMENT)
+
+    def test_release_without_an_airport_artifact_reads_none_and_forbids_the_file(self):
+        release = self.prepare_owner(airport=None)
+
+        verified = self.store.verify_release(7, release.release_id)
+        self.assertIsNone(verified.airport_path)
+        self.assertIsNone(self.store.read_airport_document(7, release.release_id))
+        manifest = json.loads(verified.manifest_path.read_text(encoding="utf-8"))
+        self.assertNotIn("airport", manifest)
+
+        public_release = self.public_root / "releases" / "7" / release.release_id
+        (public_release / "AmyTelecom.yaml").write_bytes(AIRPORT_DOCUMENT)
+        os.chmod(public_release / "AmyTelecom.yaml", 0o640)
+        os.chown(public_release / "AmyTelecom.yaml", -1, os.getegid())
+        with self.assertRaises(ReleaseStoreError):
+            self.store.verify_release(7, release.release_id)
+
+    def test_tampered_airport_artifacts_fail_verification(self):
+        release = self.prepare_owner()
+        public_airport = self.public_root / "releases" / "7" / release.release_id / "AmyTelecom.yaml"
+        private_airport = self.private_root / "releases" / "7" / release.release_id / "AmyTelecom.yaml"
+
+        public_airport.write_bytes(b"proxies:\n- name: Tampered\n")
+        os.chmod(public_airport, 0o640)
+        with self.assertRaises(ReleaseStoreError):
+            self.store.verify_release(7, release.release_id)
+
+        private_airport.write_bytes(b"proxies:\n- name: Tampered\n")
+        os.chmod(private_airport, 0o600)
+        with self.assertRaises(ReleaseStoreError):
+            self.store.verify_release(7, release.release_id)
+
+    def test_member_bundle_rejects_an_airport_document(self):
+        with self.assertRaises(ReleaseStoreError):
+            self.store.prepare(
+                7, {"standard": "proxies: []\n"}, {"xui": "a" * 64}, airport_document=AIRPORT_DOCUMENT
+            )
+
+    def test_invalid_airport_documents_fail_closed(self):
+        for airport in (b"", "proxies: []\n", 42):
+            with self.subTest(airport=airport):
+                with self.assertRaises(ReleaseStoreError):
+                    self.store.prepare(
+                        7, self.owner_bundle, {"xui": "a" * 64}, airport_document=airport
+                    )
+
+    def test_prepare_dedup_requires_a_matching_airport_digest(self):
+        first = self.prepare_owner()
+        self.store.mark_current(7, first.release_id)
+        same = self.prepare_owner()
+        self.assertIsNone(same)
+
+        changed = self.prepare_owner(airport=AIRPORT_DOCUMENT + b"# extra\n")
+        self.assertIsNotNone(changed)
+        self.assertNotEqual(changed.release_id, first.release_id)
+        self.assertNotEqual(
+            self.store.read_airport_document(7, changed.release_id), AIRPORT_DOCUMENT
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

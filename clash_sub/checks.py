@@ -1,3 +1,4 @@
+import re
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -22,17 +23,28 @@ _REALITY_FIELDS = {
     "client-fingerprint",
     "reality-opts",
 }
+_PROVIDER_NAME = "AmyTelecom"
+_PROVIDER_PATH_RE = re.compile(r"^\.\/proxy_providers\/AmyTelecom-[0-9a-f]{64}\.yaml$")
 
 
-def validate_clash(text, forbidden_values):
-    """Return a checked Clash mapping without exposing private candidate values."""
+def validate_clash(text, forbidden_values, allowed_provider_url=None):
+    """Return a checked Clash mapping without exposing private candidate values.
+
+    ``allowed_provider_url`` authorizes exactly one owner ``AmyTelecom``
+    provider.  The URL and the owner token inside it are then permitted only
+    as the exact value of ``proxy-providers.AmyTelecom.url``; every other
+    field occurrence stays a forbidden value.
+    """
     if not isinstance(text, str) or "{{" in text or "}}" in text:
         raise CheckError("rendered config contains invalid template data")
-    for value in forbidden_values:
-        if isinstance(value, str) and value and value in text:
-            raise CheckError("rendered config contains forbidden value")
-    if "http://127.0.0.1" in text:
-        raise CheckError("rendered config contains forbidden value")
+    if allowed_provider_url is not None and (
+        not isinstance(allowed_provider_url, str)
+        or not allowed_provider_url.startswith("https://")
+    ):
+        raise CheckError("invalid provider authorization")
+    forbidden = tuple(
+        value for value in forbidden_values if isinstance(value, str) and value
+    )
     try:
         document = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -42,17 +54,78 @@ def validate_clash(text, forbidden_values):
     missing = _REQUIRED_TOP_LEVEL.difference(document)
     if missing:
         raise CheckError("rendered config is missing required section")
-    if "proxy-providers" in document:
-        raise CheckError("rendered config must not contain proxy-providers")
+    providers = _validate_proxy_providers(document.get("proxy-providers"), allowed_provider_url)
+    try:
+        _scan_string_scalars(document, forbidden, allowed_provider_url)
+    except RecursionError:
+        # A YAML alias cycle expands into a recursive structure.
+        raise CheckError("rendered config contains invalid YAML") from None
     proxy_names = _validate_proxies(document["proxies"])
     group_names = _validate_groups(document["proxy-groups"])
     if proxy_names & group_names:
         raise CheckError("proxy name conflicts with proxy group name")
     targets = proxy_names | group_names | _BUILTIN_TARGETS
     _validate_group_targets(document["proxy-groups"], targets)
+    _validate_group_uses(document["proxy-groups"], providers)
     _validate_rule_providers(document["rule-providers"])
     _validate_rules(document["rules"], targets, set(document["rule-providers"]))
     return document
+
+
+def _scan_string_scalars(node, forbidden, allowed_provider_url, path=()):
+    """Reject forbidden substrings in every field except the provider URL.
+
+    Only the exact string value at ``proxy-providers.AmyTelecom.url`` is
+    exempt (and only when it equals the authorized URL); mapping keys and
+    every other string scalar, at any depth, stay fully scanned.
+    """
+    if isinstance(node, str):
+        if (
+            allowed_provider_url is not None
+            and path == ("proxy-providers", _PROVIDER_NAME, "url")
+            and node == allowed_provider_url
+        ):
+            return
+        for value in forbidden:
+            if value in node:
+                raise CheckError("rendered config contains forbidden value")
+        if "http://127.0.0.1" in node:
+            raise CheckError("rendered config contains forbidden value")
+        return
+    if isinstance(node, Mapping):
+        for key, value in node.items():
+            _scan_string_scalars(key, forbidden, None)
+            _scan_string_scalars(
+                value, forbidden, allowed_provider_url, path + (str(key),)
+            )
+        return
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            _scan_string_scalars(item, forbidden, allowed_provider_url, path)
+
+
+def _validate_proxy_providers(providers, allowed_provider_url):
+    if providers is None:
+        if allowed_provider_url is not None:
+            raise CheckError("owner config must declare the airport proxy-provider")
+        return set()
+    if allowed_provider_url is None:
+        raise CheckError("rendered config must not contain proxy-providers")
+    if not isinstance(providers, Mapping) or set(providers) != {_PROVIDER_NAME}:
+        raise CheckError("proxy-providers must declare exactly the airport provider")
+    provider = providers[_PROVIDER_NAME]
+    interval = provider.get("interval") if isinstance(provider, Mapping) else None
+    if (
+        not isinstance(provider, Mapping)
+        or provider.get("type") != "http"
+        or provider.get("url") != allowed_provider_url
+        or type(interval) is not int
+        or interval != 0
+        or not isinstance(provider.get("path"), str)
+        or not _PROVIDER_PATH_RE.fullmatch(provider["path"])
+    ):
+        raise CheckError("airport proxy-provider mapping is invalid")
+    return {_PROVIDER_NAME}
 
 
 def _validate_proxies(proxies):
@@ -124,6 +197,21 @@ def _validate_group_targets(groups, targets):
             if target_index is not None:
                 references[index].append(target_index)
     _validate_group_cycles(references)
+
+
+def _validate_group_uses(groups, providers):
+    for group in groups:
+        uses = group.get("use")
+        if uses is None:
+            continue
+        if (
+            not isinstance(uses, list)
+            or not uses
+            or not all(_valid_name(use) for use in uses)
+        ):
+            raise CheckError("proxy group use entries are invalid")
+        if any(use.strip() not in providers for use in uses):
+            raise CheckError("proxy group references unknown provider")
 
 
 def _validate_rule_providers(providers):

@@ -84,7 +84,7 @@ Mihomo 最新稳定版。升级前
 ## 非交互子命令（systemd 与排错用）
 
 ```text
-clash-sub sync                    # 重新读取 3x-ui/模板/机场/家庭节点并发布（菜单 2 等价）
+clash-sub sync                    # 重新读取 3x-ui/模板/机场原件（当前 release）/家庭节点并发布（菜单 2 等价）
 clash-sub traffic-update          # 仅更新流量响应头（每日 timer 调用）
 clash-sub status                  # 最后成功时间、每用户当前版本、待同步来源、最近错误
 clash-sub links                   # 全部有效订阅地址（按 email 分组 + 六位识别码）
@@ -161,11 +161,19 @@ VPS**，服务器不保存任何机场登录状态或机场 URL）：
    隐藏输入提示「请输入机场订阅地址：」处粘贴 URL 回车。隐藏输入不回显，
    URL 不进入 argv、shell history、环境变量、日志或任何持久化文件。
 3. 输入框仅接受 https:// 开头的地址；下载有固定超时与响应体上限。成功后
-   服务器只保存规范化的**节点快照**（`<private-root>/airport.yaml`，不含
-   URL），并立即重新生成、校验、发布 owner 的三个 variant，同时更新
-   owner 流量头。
+   服务器把响应字节**逐字节不改写**地存入当次 owner release（私有与公共
+   两份同摘要拷贝，注释/格式/顺序原样），并立即重新生成、校验、发布
+   owner 的三个 variant：机场节点不再内联展开，而是通过稳定地址
+   `/s/<owner-token>/AmyTelecom.yaml` 以 `AmyTelecom` HTTP provider 引用
+   （`interval: 0`，不引入任何后台轮询；缓存 `path` 随机场内容摘要变化，
+   客户端刷新主配置即拿到新机场内容）。该稳定地址同时也是一个可独立
+   使用的机场订阅/Provider 源，仅 owner 令牌可访问。
 4. 失败（URL 过期、非 YAML、proxies 为空、任一 owner variant 校验不过）
-   时保留旧快照与旧发布，`clash-sub status` 会显示错误代码。
+   时保留旧机场原件与旧发布，`clash-sub status` 会显示错误代码。
+5. 此后的 `clash-sub sync` / 令牌轮换 / 版本回退**绝不重新访问**已过期的
+   上游机场 URL：sync 复用当前已验证 release 里的机场原件；轮换用新令牌
+   重建 owner release（旧令牌的机场端点立即失效）；回退把稳定地址切回
+   该版本携带的匹配机场原件，不会出现旧配置配新机场的组合。
 
 ### 机场要求「生成链接与下载同出口」时
 
@@ -291,14 +299,13 @@ owner 没有 release，状态会显示 pending。随后按手机流程更新机�
 find /var/lib/clash-sub/private/staging /var/lib/clash-sub/private/releases /var/lib/clash-sub/public/releases -xdev -printf '%m %u:%g %p\n' 2>/dev/null | sort
 ```
 
-运行时激活候选文件也只读盘点；下列匹配严格限定为 state、机场快照、journal、
+运行时激活候选文件也只读盘点；下列匹配严格限定为 state、journal、
 current marker 与 routes 候选名，不把其他隐藏文件当成可处理对象。命令只输出路径，
 不删除任何文件：
 
 ```bash
 while IFS= read -r -d '' candidate; do
   if [[ "$candidate" =~ ^/var/lib/clash-sub/private/\.state\.json\.[[:alnum:]_]+$ ||
-        "$candidate" =~ ^/var/lib/clash-sub/private/\.airport\.yaml\.[[:alnum:]_]+$ ||
         "$candidate" =~ ^/var/lib/clash-sub/private/\.\.activation-journal\.json\.[[:alnum:]_]+$ ||
         "$candidate" =~ ^/var/lib/clash-sub/private/current/\.[1-9][0-9]*\.[[:alnum:]_]+$ ||
         "$candidate" =~ ^/etc/nginx/clash-sub/\.routes\.conf\.[[:alnum:]_]+$ ]]; then
@@ -323,7 +330,8 @@ done < <(
   重签证书 → `clash-sub update` → `clash-sub sync`）；旧订阅 URL 随之失效，
   完成后把新链接发给每位用户一次。
 - **更换 VPS / IP**：在新 VPS 上按 [DEPLOYMENT.md](../DEPLOYMENT.md) 重新
-  部署；迁移 `<private-root>`（含 state.json 与家庭/机场快照）后重新签发
+  部署；迁移 `<private-root>`（含 state.json、家庭快照与 releases——owner
+  release 里已含机场原件）后重新签发
   证书、重建 3x-ui 客户端凭据；DNS A 记录指向新 IP；订阅地址不变（域名
   未换时）。旧 VPS 上的令牌与节点凭据全部作废。
 - IP 被封时订阅与 REALITY 同时失效（同机部署）；按预先保留的离线恢复
@@ -344,7 +352,8 @@ done < <(
 ## 私有数据备份
 
 `/opt/my-clash-config/private/config/service.yaml` 与配置的 `<private-root>` 是必须
-一起备份的两项私有数据：后者包含 state.json、机场/家庭快照、releases 与参考
+一起备份的两项私有数据：后者包含 state.json、家庭快照、releases（owner release
+内含逐字节原样的机场原件）与参考
 原件，前者包含服务设置且不位于 private root 内。备份与恢复只在管理员控制的
 加密存储之间进行，两个副本均保持 root-only；恢复前保留当前副本，恢复后核对
 service.yaml 为 `0600 root:root`、private root 为 `0700 root:root` 和内部私有

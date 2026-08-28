@@ -1,7 +1,7 @@
 # my-clash-config：轻量私有 Clash 订阅服务
 
 对外统一使用 **Clash** 命名；服务器上唯一的管理命令是 `clash-sub`。本仓库从每人的 3x-ui 客户端、owner 的
-机场快照与家庭节点出发，渲染 `balanced` / `standard` / `privacy` 三种完整
+稳定机场 Provider（`AmyTelecom`）与家庭节点出发，渲染 `balanced` / `standard` / `privacy` 三种完整
 配置，经固定版本 Mihomo 真实校验后原子发布，由宿主机 Nginx 通过高强度
 随机令牌路径**静态只读**发布。平时没有任何 Python、Mihomo 或转换进程常驻。
 
@@ -13,10 +13,13 @@
 
 | 角色 | 配置中允许的节点来源 | 可获得的 variant |
 | --- | --- | --- |
-| owner | 自己的 3x-ui 客户端 + 最新机场快照 + 自维护家庭节点 | `balanced`、`standard`、`privacy` |
+| owner | 自己的 3x-ui 客户端 + `AmyTelecom` 机场 Provider + 自维护家庭节点 | `balanced`、`standard`、`privacy` |
 | 普通用户（member） | 仅自己的 3x-ui 客户端 | 仅 `standard` |
 
-普通用户之间完全隔离：输出中不含 owner 或其他任何用户的节点、名称或凭据。
+owner 的机场节点**不内联展开**进配置：owner profile 引用一个固定名称的
+HTTP `proxy-provider`（`AmyTelecom`），由客户端按需拉取同域的稳定机场
+YAML `/s/<owner-token>/AmyTelecom.yaml`。普通用户之间完全隔离：输出中不含
+owner 或其他任何用户的节点、名称、机场 URL 或凭据。
 每位用户持有独立令牌与独立 3x-ui 客户端（独立 UUID、配额、到期时间），
 泄漏时可单独轮换、单独撤销。
 
@@ -50,7 +53,7 @@
 ```text
 3x-ui SQLite（只读发现客户端）──┐
 3x-ui 回环 Clash 订阅（每人 subId）─┤
-机场 Clash 快照（仅 owner）────────┤
+机场原件（仅 owner，release 内逐字节保存）┤
 家庭节点（仅 owner，私有文件）──────┤
 基础模板 + variant 差异────────────┤
                                   ▼
@@ -82,16 +85,24 @@ rule-provider 与 rules，`proxies` 恒为空）。差异按层组合：
 
 | 输出 | owner 节点范围 | 普通用户 | 用途 |
 | --- | --- | --- | --- |
-| `balanced` | 3x-ui + 机场 + 家庭 | 不发布 | 通用完整配置 |
-| `standard` | 3x-ui + 机场（不含家庭） | 仅本人 3x-ui 节点 | 标准跨平台配置，默认发给其他用户 |
-| `privacy` | 3x-ui + 机场 + 家庭 | 不发布 | 隐私优先配置（Fake-IP DNS） |
+| `balanced` | 3x-ui + `AmyTelecom` Provider + 家庭 | 不发布 | 通用完整配置 |
+| `standard` | 3x-ui + `AmyTelecom` Provider（不含家庭） | 仅本人 3x-ui 节点 | 标准跨平台配置，默认发给其他用户 |
+| `privacy` | 3x-ui + `AmyTelecom` Provider + 家庭 | 不发布 | 隐私优先配置（Fake-IP DNS） |
 
 订阅地址形状（Token 是唯一授权凭据，识别码不能单独下载）：
 
 ```text
 普通用户：https://sub.<域名>/s/<token>/clash-standard.yaml
 owner：  https://sub.<域名>/s/<token>/clash-<balanced|standard|privacy>.yaml
+        https://sub.<域名>/s/<token>/AmyTelecom.yaml   ← 稳定机场原件（owner 专属）
 ```
+
+owner 的三个 variant 各引用恰好一个 `AmyTelecom` HTTP provider：`url`
+固定为上面的稳定机场地址，`interval: 0` 关闭后台轮询（服务端不引入任何
+定时器），缓存 `path` 携带机场内容的 SHA-256 摘要——机场内容更新后摘要
+变化，客户端刷新主配置时即改用新缓存文件并重新下载稳定地址。机场 YAML
+本身在服务端**逐字节不改写**（注释、格式、顺序原样），绑定在 owner 的
+release 里随版本一起回滚；短期机场订阅 URL 只在更新当次使用，永不落盘。
 
 ## 日常管理：只记一个命令
 

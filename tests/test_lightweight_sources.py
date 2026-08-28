@@ -16,13 +16,12 @@ from clash_sub.sources import (
     SourceError,
     XUI_INBOUND_PORT,
     _HttpsRedirectHandler,
-    download_airport_proxies,
+    download_airport_document,
     fetch_xui_proxies,
     load_proxy_snapshot,
     merge_proxy_sources,
     normalize_xui_endpoints,
     parse_subscription_userinfo,
-    write_proxy_snapshot,
 )
 
 
@@ -49,6 +48,20 @@ class FakeResponse:
 
 def proxy_yaml(name="Example"):
     return ("proxies:\n- name: %s\n  type: ss\n" % name).encode("utf-8")
+
+
+def airport_document():
+    """An upstream airport body whose exact bytes must survive the pipeline."""
+    return (
+        "# airport header comment\n"
+        "proxies:\n"
+        "- {name: 'Amy 01', type: ss, server: a.example, port: 443}\n"
+        "- name: Amy 02\n"
+        "  type: trojan\n"
+        "  server: b.example\n"
+        "  port: 443\n"
+        "# trailing comment kept verbatim\n"
+    ).encode("utf-8")
 
 
 class SourceFetchingTests(unittest.TestCase):
@@ -88,13 +101,53 @@ class SourceFetchingTests(unittest.TestCase):
     def test_airport_requires_https_and_rejects_non_https_redirects(self):
         response = FakeResponse(proxy_yaml(), "http://redirected.example/subscription")
         with self.assertRaises(SourceError):
-            download_airport_proxies(
+            download_airport_document(
                 "https://airport.example/private-token", 1024, opener=self.opener_for(response)
             )
         with self.assertRaises(SourceError):
-            download_airport_proxies(
+            download_airport_document(
                 "http://airport.example/private-token", 1024, opener=self.opener_for(response)
             )
+
+    def test_airport_download_preserves_the_exact_response_bytes(self):
+        body = airport_document()
+        response = FakeResponse(body, "https://airport.example/final")
+
+        result = download_airport_document(
+            "https://airport.example/private-token", 1024, opener=self.opener_for(response)
+        )
+
+        self.assertEqual(result, body)
+        self.assertIsInstance(result, bytes)
+
+    def test_airport_download_validates_only_a_non_empty_proxy_document(self):
+        for body in (
+            b"",
+            b"[]\n",
+            b"proxies: []\n",
+            b"rules:\n- MATCH,DIRECT\n",
+            b"proxies: not-a-list\n",
+            b"!!python/object/apply:os.system ['echo unsafe']\n",
+            b"proxies: [\n",
+        ):
+            response = FakeResponse(body, "https://airport.example/final")
+            with self.subTest(body=body):
+                with self.assertRaises(SourceError):
+                    download_airport_document(
+                        "https://airport.example/private-token",
+                        1024,
+                        opener=self.opener_for(response),
+                    )
+
+    def test_airport_download_reads_only_the_bounded_extra_byte(self):
+        oversized = FakeResponse(
+            airport_document() + b"x" * 1024, "https://airport.example/final"
+        )
+        with self.assertRaises(SourceError):
+            download_airport_document(
+                "https://airport.example/private-token", 32, opener=self.opener_for(oversized)
+            )
+        self.assertEqual(oversized.read_sizes, [33])
 
     def test_airport_redirect_policy_allows_only_three_https_hops(self):
         handler = _HttpsRedirectHandler()
@@ -163,7 +216,7 @@ class SourceFetchingTests(unittest.TestCase):
         stderr = io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             with self.assertRaises(SourceError) as caught:
-                download_airport_proxies(secret, 1024, opener=self.failing_opener)
+                download_airport_document(secret, 1024, opener=self.failing_opener)
         self.assertNotIn(secret, str(caught.exception))
         self.assertNotIn(secret, repr(caught.exception))
         self.assertEqual(stdout.getvalue(), "")
@@ -176,7 +229,7 @@ class SourceFetchingTests(unittest.TestCase):
             raise OSError(secret)
 
         with self.assertRaises(SourceError) as caught:
-            download_airport_proxies(secret, 1024, opener=failing_opener)
+            download_airport_document(secret, 1024, opener=failing_opener)
 
         rendered = "".join(traceback.format_exception(caught.exception))
         self.assertNotIn(secret, rendered)
@@ -224,9 +277,9 @@ class SourceFetchingTests(unittest.TestCase):
             return CapturingOpener()
 
         with patch("urllib.request.build_opener", side_effect=build_opener) as builder:
-            proxies = download_airport_proxies("https://airport.example/private-token", 1024)
+            document = download_airport_document("https://airport.example/private-token", 1024)
 
-        self.assertEqual(proxies[0]["name"], "Example")
+        self.assertEqual(document, proxy_yaml())
         builder.assert_called_once()
         self.assertEqual(len(captured["handlers"]), 2)
         self.assertIsInstance(captured["handlers"][0], urllib.request.ProxyHandler)
@@ -236,30 +289,27 @@ class SourceFetchingTests(unittest.TestCase):
 
 
 class SnapshotAndMergeTests(unittest.TestCase):
-    def test_snapshot_is_root_only_atomic_yaml_without_a_source_url(self):
-        secret = "https://airport.example/private-five-minute-token"
-        proxies = [{"name": "Airport", "type": "ss", "server": "example.invalid"}]
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "airport.yaml"
-            write_proxy_snapshot(path, proxies)
-            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-            self.assertEqual(load_proxy_snapshot(path), proxies)
-            self.assertNotIn(secret, path.read_text(encoding="utf-8"))
-            self.assertEqual(list(Path(directory).iterdir()), [path])
+    def _home_snapshot(self, directory):
+        path = Path(directory) / "home.yaml"
+        path.write_text(
+            "proxies:\n- name: Home\n  type: ss\n  server: example.invalid\n",
+            encoding="utf-8",
+        )
+        os.chmod(path, 0o600)
+        return path
 
     def test_snapshot_loads_a_regular_single_link_file_with_the_expected_owner(self):
-        proxies = [{"name": "Home", "type": "ss", "server": "example.invalid"}]
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "home.yaml"
-            write_proxy_snapshot(path, proxies)
+            path = self._home_snapshot(directory)
 
-            self.assertEqual(load_proxy_snapshot(path), proxies)
+            self.assertEqual(
+                load_proxy_snapshot(path),
+                [{"name": "Home", "type": "ss", "server": "example.invalid"}],
+            )
 
     def test_snapshot_rejects_a_file_owned_by_someone_other_than_the_effective_owner(self):
-        proxies = [{"name": "Home", "type": "ss", "server": "example.invalid"}]
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "home.yaml"
-            write_proxy_snapshot(path, proxies)
+            path = self._home_snapshot(directory)
             if os.geteuid() == 0:
                 os.chown(path, 1, -1)
                 with self.assertRaises(SourceError):
@@ -270,10 +320,8 @@ class SnapshotAndMergeTests(unittest.TestCase):
                         load_proxy_snapshot(path)
 
     def test_snapshot_rejects_a_hard_linked_file(self):
-        proxies = [{"name": "Home", "type": "ss", "server": "example.invalid"}]
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "home.yaml"
-            write_proxy_snapshot(path, proxies)
+            path = self._home_snapshot(directory)
             os.link(path, path.with_name("linked-home.yaml"))
 
             with self.assertRaises(SourceError):

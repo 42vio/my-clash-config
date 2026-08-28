@@ -1,7 +1,6 @@
 import copy
 import os
 import stat
-import tempfile
 import urllib.request
 from collections import Counter
 from collections.abc import Mapping
@@ -34,11 +33,56 @@ def fetch_xui_proxies(url, max_bytes, opener=None):
     return _fetch_proxies(url, max_bytes, opener, _valid_xui_url)
 
 
-def download_airport_proxies(url, max_bytes, opener=None):
-    """Fetch an HTTPS airport source without retaining its URL."""
+def download_airport_document(url, max_bytes, opener=None):
+    """Fetch an HTTPS airport body and return its exact bytes unchanged.
+
+    The document is parsed only far enough to confirm a non-empty proxy
+    list; comments, formatting, and ordering survive for publication.
+    """
     if not _valid_airport_url(url):
         _source_fail()
-    return _fetch_proxies(url, max_bytes, opener, _valid_airport_url, airport=True)
+    return _fetch_document(url, max_bytes, opener)
+
+
+def _fetch_document(url, max_bytes, opener):
+    if type(max_bytes) is not int or max_bytes <= 0:
+        _source_fail()
+    request = Request(url, headers={"Accept": "application/yaml"})
+    try:
+        active_opener = opener
+        if active_opener is None:
+            active_opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}), _HttpsRedirectHandler()
+            )
+        response = _open(active_opener, request)
+        with response:
+            final_url = response.geturl()
+            if not _valid_airport_url(final_url):
+                _source_fail()
+            body = response.read(max_bytes + 1)
+        if not isinstance(body, bytes) or len(body) > max_bytes:
+            _source_fail()
+        _require_proxy_document(body)
+        return body
+    except SourceError:
+        raise
+    except Exception:
+        pass
+    raise SourceError(_SOURCE_ERROR)
+
+
+def _require_proxy_document(body):
+    try:
+        document = yaml.safe_load(body)
+        valid = (
+            isinstance(document, Mapping)
+            and isinstance(document.get("proxies"), list)
+            and bool(document["proxies"])
+        )
+    except (TypeError, ValueError, yaml.YAMLError, UnicodeError, RecursionError):
+        raise SourceError(_SOURCE_ERROR) from None
+    if not valid:
+        _source_fail()
 
 
 def load_proxy_snapshot(path):
@@ -55,39 +99,6 @@ def load_proxy_snapshot(path):
         ):
             _snapshot_fail()
         return _parse_proxy_document(snapshot.read_bytes(), _SNAPSHOT_ERROR)
-    except SourceError:
-        raise
-    except (OSError, TypeError, ValueError, yaml.YAMLError, UnicodeError):
-        _snapshot_fail()
-
-
-def write_proxy_snapshot(path, proxies):
-    """Atomically replace one root-only canonical proxy snapshot."""
-    snapshot = Path(path)
-    try:
-        normalized = _normalize_proxies({"proxies": proxies})
-        content = yaml.safe_dump(
-            {"proxies": normalized},
-            allow_unicode=True,
-            default_flow_style=False,
-            sort_keys=True,
-        )
-        descriptor, temporary = tempfile.mkstemp(
-            prefix=".%s." % snapshot.name, dir=str(snapshot.parent)
-        )
-        try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                output.write(content)
-                output.flush()
-                os.fsync(output.fileno())
-            descriptor = None
-            os.replace(temporary, snapshot)
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-            if os.path.exists(temporary):
-                os.unlink(temporary)
     except SourceError:
         raise
     except (OSError, TypeError, ValueError, yaml.YAMLError, UnicodeError):
@@ -189,20 +200,14 @@ class _HttpsRedirectHandler(HTTPRedirectHandler):
         )
 
 
-def _fetch_proxies(url, max_bytes, opener, valid_final_url, airport=False):
+def _fetch_proxies(url, max_bytes, opener, valid_final_url):
     if type(max_bytes) is not int or max_bytes <= 0:
         _source_fail()
     request = Request(url, headers={"Accept": "application/yaml"})
     try:
         active_opener = opener
         if active_opener is None:
-            active_opener = (
-                urllib.request.build_opener(
-                    urllib.request.ProxyHandler({}), _HttpsRedirectHandler()
-                )
-                if airport
-                else urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            )
+            active_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         response = _open(active_opener, request)
         with response:
             final_url = response.geturl()

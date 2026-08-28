@@ -24,6 +24,7 @@ from urllib.parse import parse_qsl, urlsplit
 import yaml
 
 from clash_sub.checks import CheckError, MihomoValidator, validate_clash
+from clash_sub.domain import AirportProvider
 from clash_sub.generator import render_user_bundle
 
 
@@ -71,6 +72,8 @@ _STRUCTURAL_PROXY_KEYS = {
 # Synthetic probes used only to exercise candidate composition; none of
 # these values may ever collide with workbench content.
 _PROBE_PREFIX = "template-sync-probe-"
+_PROBE_PROVIDER_URL = "https://template-sync.invalid/s/probe/AmyTelecom.yaml"
+_PROBE_PROVIDER_DIGEST = "5" * 64
 _PROBE_REALITY = {
     "type": "vless",
     "port": 443,
@@ -201,10 +204,25 @@ def _load_workbench(root):
     if any(str(key).startswith("_") for key in document):
         raise TemplateSyncError("template_source_invalid")
     try:
-        validate_clash(text, ())
+        validate_clash(text, (), allowed_provider_url=_workbench_provider_url(document))
     except CheckError:
         raise TemplateSyncError("template_source_invalid") from None
     return document
+
+
+def _workbench_provider_url(document):
+    """Authorize the workbench's own airport provider mapping, if present.
+
+    A workbench rendered from the current generator carries exactly the
+    synthetic AmyTelecom provider; any other provider shape stays rejected.
+    """
+    providers = document.get("proxy-providers")
+    if not isinstance(providers, dict) or set(providers) != {"AmyTelecom"}:
+        return None
+    url = providers["AmyTelecom"].get("url") if isinstance(providers["AmyTelecom"], dict) else None
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return None
+    return url
 
 
 def _split_workbench(root, workbench):
@@ -212,6 +230,9 @@ def _split_workbench(root, workbench):
     dynamic_names = [proxy["name"] for proxy in candidate["proxies"]]
     dynamic = set(dynamic_names)
     candidate["proxies"] = []
+    # The provider mapping and the injected provider use lists are composed
+    # at render time; the shared templates must stay free of both.
+    candidate.pop("proxy-providers", None)
 
     feature_path = root / "templates" / "features" / ("%s.yaml" % FEATURE_NAME)
     try:
@@ -236,12 +257,12 @@ def _split_workbench(root, workbench):
             member in dynamic for member in proxies if isinstance(member, str)
         )
         if name in owned:
-            feature_groups.append(_strip_dynamic_members(group, dynamic))
+            feature_groups.append(_without_provider_use(_strip_dynamic_members(group, dynamic)))
             continue
         if had_dynamic:
             node_injected.append(name)
         if not isinstance(proxies, list):
-            public_groups.append(group)
+            public_groups.append(_without_provider_use(group))
             continue
         stripped = [
             member
@@ -253,7 +274,7 @@ def _split_workbench(root, workbench):
             extend_members[name] = kept_owned
         if stripped != proxies or kept_owned:
             group = dict(group, proxies=stripped)
-        public_groups.append(group)
+        public_groups.append(_without_provider_use(group))
 
     if len(feature_groups) != len(owned_order):
         raise TemplateSyncError("template_feature_invalid")
@@ -305,6 +326,15 @@ def _strip_dynamic_members(group, dynamic):
     if stripped == proxies:
         return group
     return dict(group, proxies=stripped)
+
+
+def _without_provider_use(group):
+    """Drop the render-time provider use list from one split group copy."""
+    if "use" not in group:
+        return group
+    stripped = dict(group)
+    stripped.pop("use")
+    return stripped
 
 
 def _validated_feature(feature):
@@ -397,13 +427,14 @@ def _probe_proxies():
 
 def _validate_candidates(candidate_root, mihomo, runner, forbidden_names, forbidden_values, scanner):
     xui, airport, home = _probe_proxies()
+    provider = AirportProvider(_PROBE_PROVIDER_URL, _PROBE_PROVIDER_DIGEST)
     try:
         owner = render_user_bundle(
-            True, [copy.deepcopy(xui)], [copy.deepcopy(airport)], [copy.deepcopy(home)],
+            True, [copy.deepcopy(xui)], provider, [copy.deepcopy(home)],
             candidate_root / "templates",
         )
         member = render_user_bundle(
-            False, [copy.deepcopy(xui)], [], [], candidate_root / "templates"
+            False, [copy.deepcopy(xui)], None, [], candidate_root / "templates"
         )
     except ValueError:
         raise TemplateSyncError("template_candidate_invalid") from None
@@ -414,17 +445,37 @@ def _validate_candidates(candidate_root, mihomo, runner, forbidden_names, forbid
         (candidate_root / relative).read_text(encoding="utf-8")
         for relative in TEMPLATE_RELATIVE_PATHS
     )
-    for text in outputs:
+    for text in outputs[:3]:
         try:
-            validate_clash(text, ())
+            validate_clash(text, (), allowed_provider_url=_PROBE_PROVIDER_URL)
         except CheckError:
             raise TemplateSyncError("template_candidate_invalid") from None
+    try:
+        validate_clash(outputs[3], ())
+    except CheckError:
+        raise TemplateSyncError("template_candidate_invalid") from None
 
     validator = MihomoValidator(mihomo, runner=runner)
     with tempfile.TemporaryDirectory(prefix="clash-sub-template-sync-validate.") as scratch:
+        # Mihomo checks a local-file provider pointing at the synthetic
+        # airport probe; the published shape keeps the HTTP provider mapping.
+        airport_file = Path(scratch) / "AmyTelecom.yaml"
+        airport_file.write_text(
+            yaml.safe_dump({"proxies": [airport]}, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
         for index, text in enumerate(outputs):
+            document = yaml.safe_load(text)
+            if index < 3:
+                document["proxy-providers"]["AmyTelecom"] = {
+                    "type": "file",
+                    "path": str(airport_file),
+                }
             candidate = Path(scratch) / ("probe-%d.yaml" % index)
-            candidate.write_text(text, encoding="utf-8")
+            candidate.write_text(
+                yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
             try:
                 validator.validate(candidate)
             except CheckError:

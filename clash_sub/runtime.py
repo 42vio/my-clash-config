@@ -10,7 +10,7 @@ from clash_sub.nginx import activate_runtime, recover_runtime, render_routes
 from clash_sub.release_store import ReleaseStore
 from clash_sub.service import ClashSubService
 from clash_sub.sources import (
-    download_airport_proxies,
+    download_airport_document,
     fetch_xui_proxies,
     load_proxy_snapshot,
 )
@@ -44,7 +44,7 @@ def build_service(root=None, runner=None):
         rotate_user_token=rotate_user_token,
         reinitialize_owner=reinitialize_owner,
         fetch_xui_proxies=fetch_xui_proxies,
-        download_airport_proxies=download_airport_proxies,
+        download_airport_document=download_airport_document,
         load_proxy_snapshot=load_proxy_snapshot,
         render_user_bundle=render_user_bundle,
         validate_clash=validate_clash,

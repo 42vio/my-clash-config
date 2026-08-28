@@ -166,6 +166,80 @@ class LightweightNginxTests(unittest.TestCase):
             text,
         )
 
+    def _airport_alias(self):
+        return (
+            self.public_root
+            / "releases"
+            / "7"
+            / self.state.users[7].current_release
+            / "AmyTelecom.yaml"
+        )
+
+    def _add_airport_artifact(self):
+        alias = self._airport_alias()
+        alias.write_text("proxies:\n- name: Amy\n", encoding="utf-8")
+        os.chmod(alias, 0o640)
+        public_gid = grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid()
+        os.chown(alias, -1, public_gid)
+        return alias
+
+    def test_owner_routes_include_the_exact_stable_amytelecom_route(self):
+        alias = self._add_airport_artifact()
+
+        text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
+
+        block = "location = /s/%s/AmyTelecom.yaml {" % self.owner_token
+        self.assertIn(block, text)
+        self.assertEqual(text.count("location = /s/%s/" % self.owner_token), 4)
+        self.assertEqual(text.count("location = /s/%s/" % self.member_token), 1)
+        self.assertIn("alias %s;" % alias, text)
+        self.assertIn('add_header Profile-Title "AmyTelecom";', text)
+        self.assertIn(
+            "add_header Content-Disposition 'attachment; filename=AmyTelecom.yaml';", text
+        )
+        airport_lines = text[text.index(block) :].splitlines()
+        airport_block = "\n".join(
+            airport_lines[: next(i for i, line in enumerate(airport_lines) if line == "}") + 1]
+        )
+        self.assertNotIn("Subscription-Userinfo", airport_block)
+        self.assertIn("if ($request_method !~ ^(GET|HEAD)$) { return 404; }", airport_block)
+        self.assertIn('if ($args != "") { return 404; }', airport_block)
+        self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", airport_block)
+        self.assertIn("client_max_body_size 1k;", airport_block)
+        self.assertIn("access_log off;", airport_block)
+        self.assertIn("log_not_found off;", airport_block)
+        self.assertIn('default_type "text/yaml; charset=utf-8";', airport_block)
+        self.assertIn("add_header X-Content-Type-Options nosniff always;", airport_block)
+        self.assertIn("add_header Cache-Control no-store always;", airport_block)
+        self.assertNotIn(self.owner.email, airport_block)
+        self.assertNotIn("airport.example", text)
+
+    def test_amytelecom_route_is_absent_without_an_airport_artifact(self):
+        text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
+
+        self.assertNotIn("AmyTelecom.yaml", text)
+        self.assertEqual(text.count("location = /s/%s/" % self.owner_token), 3)
+
+    def test_amytelecom_route_rejects_insecure_artifacts_without_leaking_the_token(self):
+        for name in ("mode", "symlink", "hard link"):
+            with self.subTest(name=name):
+                alias = self._add_airport_artifact()
+                if name == "mode":
+                    os.chmod(alias, 0o644)
+                elif name == "symlink":
+                    alias.unlink()
+                    alias.symlink_to(self.public_root / "releases" / "7" / "clash-balanced.yaml")
+                else:
+                    os.link(alias, alias.with_name("linked.yaml"))
+                with self.assertRaisesRegex(NginxError, "release path") as caught:
+                    render_routes(
+                        self.config, self.state, (self.owner, self.member, self.disabled)
+                    )
+                self.assertNotIn(self.owner_token, str(caught.exception))
+                linked = alias.with_name("linked.yaml")
+                if linked.exists() or linked.is_symlink():
+                    linked.unlink()
+
     def test_routes_reject_a_symlinked_release_ancestor_without_exposing_the_token(self):
         self.assertIsNotNone(render_routes, "Nginx routes are not implemented")
         releases = self.public_root / "releases"

@@ -54,6 +54,136 @@ def dump(document):
     return yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
 
 
+PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
+OWNER_TOKEN = "owner-token"
+
+
+def owner_document():
+    document = valid_document()
+    document["proxy-providers"] = {
+        "AmyTelecom": {
+            "type": "http",
+            "url": PROVIDER_URL,
+            "path": "./proxy_providers/AmyTelecom-%s.yaml" % ("1" * 64),
+            "interval": 0,
+        }
+    }
+    document["proxy-groups"][0]["use"] = ["AmyTelecom"]
+    return document
+
+
+class ProviderMappingTests(unittest.TestCase):
+    def test_owner_document_with_the_exact_provider_mapping_is_accepted(self):
+        parsed = validate_clash(
+            dump(owner_document()), (OWNER_TOKEN,), allowed_provider_url=PROVIDER_URL
+        )
+
+        self.assertEqual(tuple(parsed["proxy-providers"]), ("AmyTelecom",))
+
+    def test_provider_mapping_is_rejected_without_the_owner_authorization(self):
+        with self.assertRaisesRegex(CheckError, "proxy-providers"):
+            validate_clash(dump(owner_document()), ())
+
+    def test_only_the_exact_amytelecom_mapping_is_accepted(self):
+        cases = (
+            ("foreign name", {"AmyTelecom2": owner_document()["proxy-providers"]["AmyTelecom"]}),
+            ("extra provider", dict(owner_document()["proxy-providers"], Extra={"type": "http", "url": PROVIDER_URL})),
+            ("wrong type", {"AmyTelecom": dict(owner_document()["proxy-providers"]["AmyTelecom"], type="file")}),
+            ("wrong url", {"AmyTelecom": dict(owner_document()["proxy-providers"]["AmyTelecom"], url=PROVIDER_URL + "x")}),
+            ("positive interval", {"AmyTelecom": dict(owner_document()["proxy-providers"]["AmyTelecom"], interval=3600)}),
+            ("boolean interval", {"AmyTelecom": dict(owner_document()["proxy-providers"]["AmyTelecom"], interval=False)}),
+            ("missing interval", {"AmyTelecom": {"type": "http", "url": PROVIDER_URL}}),
+            ("wrong path", {"AmyTelecom": dict(owner_document()["proxy-providers"]["AmyTelecom"], path="./proxy_providers/AmyTelecom.yaml")}),
+            ("short digest path", {"AmyTelecom": dict(owner_document()["proxy-providers"]["AmyTelecom"], path="./proxy_providers/AmyTelecom-abc.yaml")}),
+            ("non-mapping provider", {"AmyTelecom": "https://airport.example"}),
+        )
+        for name, providers in cases:
+            with self.subTest(name=name):
+                document = owner_document()
+                document["proxy-providers"] = providers
+                with self.assertRaisesRegex(CheckError, "provider"):
+                    validate_clash(dump(document), (), allowed_provider_url=PROVIDER_URL)
+
+    def test_owner_authorization_requires_a_declared_provider(self):
+        document = valid_document()
+
+        with self.assertRaisesRegex(CheckError, "airport proxy-provider"):
+            validate_clash(dump(document), (), allowed_provider_url=PROVIDER_URL)
+
+    def test_owner_token_may_only_appear_inside_the_expected_provider_url(self):
+        validate_clash(dump(owner_document()), (OWNER_TOKEN,), allowed_provider_url=PROVIDER_URL)
+
+        document = owner_document()
+        document["notes"] = "leaked %s inline" % OWNER_TOKEN
+        with self.assertRaisesRegex(CheckError, "forbidden value"):
+            validate_clash(dump(document), (OWNER_TOKEN,), allowed_provider_url=PROVIDER_URL)
+
+    def test_the_full_provider_url_is_rejected_outside_the_provider_url_field(self):
+        for field in ("notes", ("dns", "notes"), "comment"):
+            document = owner_document()
+            if isinstance(field, tuple):
+                document["dns"]["notes"] = PROVIDER_URL
+            else:
+                document[field] = PROVIDER_URL
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(CheckError, "forbidden value"):
+                    validate_clash(dump(document), (OWNER_TOKEN,), allowed_provider_url=PROVIDER_URL)
+
+        document = owner_document()
+        document["proxy-groups"][0]["notes"] = [PROVIDER_URL]
+        with self.assertRaisesRegex(CheckError, "forbidden value"):
+            validate_clash(dump(document), (OWNER_TOKEN,), allowed_provider_url=PROVIDER_URL)
+
+    def test_member_documents_reject_the_provider_url_in_any_field(self):
+        document = valid_document()
+        document["notes"] = PROVIDER_URL
+
+        with self.assertRaisesRegex(CheckError, "forbidden value"):
+            validate_clash(dump(document), (PROVIDER_URL, OWNER_TOKEN))
+
+        document = valid_document()
+        document["notes"] = "inline %s leak" % OWNER_TOKEN
+        with self.assertRaisesRegex(CheckError, "forbidden value"):
+            validate_clash(dump(document), (PROVIDER_URL, OWNER_TOKEN))
+
+    def test_group_use_must_reference_a_declared_provider(self):
+        document = owner_document()
+        document["proxy-groups"][0]["use"] = ["Unknown"]
+
+        with self.assertRaisesRegex(CheckError, "unknown provider"):
+            validate_clash(dump(document), (), allowed_provider_url=PROVIDER_URL)
+
+        document = owner_document()
+        document["proxy-groups"][0]["use"] = []
+        with self.assertRaisesRegex(CheckError, "use"):
+            validate_clash(dump(document), (), allowed_provider_url=PROVIDER_URL)
+
+    def test_member_documents_reject_any_use_reference(self):
+        document = valid_document()
+        document["proxy-groups"][0]["use"] = ["AmyTelecom"]
+
+        with self.assertRaisesRegex(CheckError, "unknown provider"):
+            validate_clash(dump(document), ())
+
+    def test_a_yaml_alias_cycle_fails_closed_instead_of_recursing(self):
+        text = (
+            "dns: &cycle {enable: true}\n"
+            "proxies: []\n"
+            "proxy-groups: []\n"
+            "rule-providers:\n"
+            "  Direct: {type: http}\n"
+            "rules:\n"
+            "- MATCH,DIRECT\n"
+            "notes:\n"
+            "  next: *cycle\n"
+            "  self: &inner\n"
+            "    peer: *inner\n"
+        )
+
+        with self.assertRaisesRegex(CheckError, "invalid YAML"):
+            validate_clash(text, ())
+
+
 class LightweightChecksTests(unittest.TestCase):
     def test_valid_document_is_accepted(self):
         self.assertIsNotNone(validate_clash)

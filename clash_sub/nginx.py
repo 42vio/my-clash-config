@@ -107,11 +107,18 @@ def render_routes(config, state, clients):
         if client is None or not user.active or not client.enabled:
             continue
         release_id = _release_id(user.current_release)
-        variants = OWNER_VARIANTS if client_id == state.owner_client_id else MEMBER_VARIANTS
         traffic = _userinfo(client)
-        for variant in variants:
-            alias = _release_path(public_root, client_id, release_id, variant)
-            blocks.append(_route_block(user.token, variant, alias, traffic))
+        if client_id == state.owner_client_id:
+            for variant in OWNER_VARIANTS:
+                alias = _release_path(public_root, client_id, release_id, variant)
+                blocks.append(_route_block(user.token, variant, alias, traffic))
+            airport_alias = _airport_release_path(public_root, client_id, release_id)
+            if airport_alias is not None:
+                blocks.append(_airport_route_block(user.token, airport_alias))
+        else:
+            for variant in MEMBER_VARIANTS:
+                alias = _release_path(public_root, client_id, release_id, variant)
+                blocks.append(_route_block(user.token, variant, alias, traffic))
     return "\n".join(blocks) + ("\n" if blocks else "")
 
 
@@ -644,6 +651,57 @@ def _userinfo(client):
         client.download,
         client.total,
         client.expiry_ms // 1000,
+    )
+
+
+def _airport_release_path(public_root, client_id, release_id):
+    """Resolve the owner release's raw airport file, or None when absent.
+
+    A release without the artifact (a legacy owner release) simply has no
+    stable airport route; an insecure or tampered artifact stays an error.
+    """
+    root = Path(public_root)
+    release_root = root / "releases"
+    client_root = release_root / str(client_id)
+    release_root_path = client_root / release_id
+    path = release_root_path / "AmyTelecom.yaml"
+    public_gid = _public_gid(root)
+    for path_part in (root, release_root, client_root, release_root_path):
+        _require_public_release_directory(path_part, public_gid)
+    if not path.exists() and not path.is_symlink():
+        return None
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or _mode(path) != _ROUTE_MODE
+        or path.stat().st_uid != _expected_uid()
+        or path.stat().st_gid != public_gid
+        or path.stat().st_nlink != 1
+    ):
+        raise NginxError("invalid release path")
+    return path
+
+
+def _airport_route_block(token, alias):
+    if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+        raise NginxError("invalid subscription token")
+    return "\n".join(
+        (
+            "location = /s/%s/AmyTelecom.yaml {" % token,
+            '    if ($request_method !~ ^(GET|HEAD)$) { return 404; }',
+            '    if ($args != "") { return 404; }',
+            "    limit_req zone=clash_subscription burst=5 nodelay;",
+            "    client_max_body_size 1k;",
+            "    access_log off;",
+            "    log_not_found off;",
+            '    default_type "text/yaml; charset=utf-8";',
+            "    alias %s;" % alias,
+            '    add_header Profile-Title "AmyTelecom";',
+            "    add_header Content-Disposition 'attachment; filename=AmyTelecom.yaml';",
+            "    add_header X-Content-Type-Options nosniff always;",
+            "    add_header Cache-Control no-store always;",
+            "}",
+        )
     )
 
 
