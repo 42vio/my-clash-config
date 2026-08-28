@@ -15,7 +15,9 @@
 1. Debian 12 安装 → 3x-ui 官方脚本安装。
 2. `systemctl stop x-ui`；用备份内 x-ui.db 覆盖 /etc/x-ui/x-ui.db；`systemctl start x-ui`。
    —— 此时代理已恢复（公网 10443 直连）（若备份的 x-ui.db 来自已收口的服务器，需先把入站 listen 改回 0.0.0.0）。
-3. git clone 本仓库到 /opt/my-clash-config → 恢复 private/config/service.yaml 与运行时
+   同时确认面板监听为 `127.0.0.1`，`webCertFile` 与 `webKeyFile` 为空；旧备份若仍启用面板
+   证书，可在面板中清空，或通过 `x-ui` 菜单的 **Revoke & Remove Certificate** 删除。
+3. 若系统没有 Git，先执行 `apt-get update && apt-get install -y git`；然后 git clone 本仓库到 /opt/my-clash-config → 恢复 private/config/service.yaml 与运行时
    private-root（state.json 等）→ `CLASH_SUB_DOMAIN=<域名> CLASH_SUB_OWNER_EMAIL=<owner> bash install.sh`
    （证书自动重签；幂等可重跑；否则 subscription_init 会以默认 owner-example 覆盖恢复的 service.yaml；
    可选 `CLASH_SUB_NODE_HOST=<节点主机>` 覆盖默认节点地址 `node.<域名>`，原安装用过它则必须再次提供）。

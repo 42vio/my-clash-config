@@ -274,6 +274,27 @@ class XuiSnapshotTests(unittest.TestCase):
             read_panel_settings(self.database), (2053, "/xui7k2m/", "127.0.0.1")
         )
 
+    def test_read_panel_settings_rejects_enabled_panel_tls(self):
+        for values in (
+            ("/root/cert/ip/fullchain.pem", "/root/cert/ip/privkey.pem"),
+            ("/root/cert/ip/fullchain.pem", ""),
+            ("", "/root/cert/ip/privkey.pem"),
+        ):
+            with self.subTest(values=values):
+                self._initialize_database()
+                with closing(sqlite3.connect(self.database)) as connection, connection:
+                    connection.executemany(
+                        "INSERT INTO settings VALUES (?, ?)",
+                        (("webCertFile", values[0]), ("webKeyFile", values[1])),
+                    )
+
+                with self.assertRaises(XuiCompatibilityError) as raised:
+                    read_panel_settings(self.database)
+
+                self.assertEqual(
+                    type(raised.exception).__name__, "XuiPanelTlsEnabledError"
+                )
+
     def test_read_panel_settings_normalizes_base_path_like_upstream(self):
         cases = (
             ("xui7k2m", "/xui7k2m/"),

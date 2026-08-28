@@ -7,6 +7,37 @@ from unittest.mock import patch
 
 from clash_sub.installer import InstallPaths, InstallState
 from clash_sub.domain import ServiceConfig
+from clash_sub.service import _OperationLock
+
+
+class MihomoManagementTests(unittest.TestCase):
+    def test_upgrade_refuses_to_race_a_configuration_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            private_root = root / "runtime-private"
+            private_root.mkdir(mode=0o700)
+            config = ServiceConfig(
+                "owner@example.test",
+                "sub.example.test:443",
+                "example.test:443",
+                root / "xui.db",
+                private_root,
+                root / "public",
+                root / "routes.conf",
+                root / "mihomo",
+                root / "nginx",
+                root / "systemctl",
+                root / "templates",
+            )
+            from clash_sub.manage import update_mihomo
+
+            with patch("clash_sub.manage.load_config", return_value=config), patch(
+                "clash_sub.manage.install_latest_mihomo"
+            ) as install, _OperationLock(private_root / "operation.lock"):
+                with self.assertRaisesRegex(RuntimeError, "operation_busy"):
+                    update_mihomo(root, subprocess.run)
+
+            install.assert_not_called()
 
 
 class BackupTests(unittest.TestCase):

@@ -8,7 +8,11 @@ from clash_sub.domain import Traffic, XuiClient, XuiSnapshot
 
 
 class XuiCompatibilityError(RuntimeError):
-    """Raised when the pinned 3x-ui database schema is incompatible."""
+    """Raised when the 3x-ui database schema or required settings are incompatible."""
+
+
+class XuiPanelTlsEnabledError(XuiCompatibilityError):
+    """Raised when the panel still serves HTTPS instead of loopback HTTP."""
 
 
 _ERROR = "3x-ui database compatibility check failed"
@@ -34,6 +38,7 @@ _REQUIRED_SETTINGS = (
     "subClashPath",
 )
 _PANEL_SETTINGS = ("webPort", "webBasePath", "webListen")
+_PANEL_TLS_SETTINGS = ("webCertFile", "webKeyFile")
 _RAW_BASE_PATH = re.compile(r"^/?[A-Za-z0-9_-]*/?$")
 
 
@@ -178,7 +183,9 @@ def read_panel_settings(path: Path) -> tuple[int, str, str]:
 
     The base path is returned in the normalized upstream ``GetBasePath()``
     form (leading and trailing slash, ``"/"`` when unset). The listen value
-    is returned verbatim; callers decide whether the address is safe.
+    is returned verbatim; callers decide whether the address is safe. Panel
+    TLS is rejected because this project terminates TLS at Nginx and uses a
+    loopback HTTP upstream.
     """
     try:
         connection = sqlite3.connect(
@@ -189,8 +196,10 @@ def read_panel_settings(path: Path) -> tuple[int, str, str]:
             _validate_schema(connection)
             rows = connection.execute(
                 "SELECT key, value FROM settings WHERE key IN (%s)"
-                % ", ".join("?" for _ in _PANEL_SETTINGS),
-                _PANEL_SETTINGS,
+                % ", ".join(
+                    "?" for _ in (_PANEL_SETTINGS + _PANEL_TLS_SETTINGS)
+                ),
+                _PANEL_SETTINGS + _PANEL_TLS_SETTINGS,
             ).fetchall()
         finally:
             connection.close()
@@ -203,8 +212,16 @@ def read_panel_settings(path: Path) -> tuple[int, str, str]:
         if key in values:
             _fail()
         values[key] = value
-    if set(values) != set(_PANEL_SETTINGS):
+    if not set(_PANEL_SETTINGS).issubset(values):
         _fail()
+    for key in _PANEL_TLS_SETTINGS:
+        value = values.get(key, "")
+        if not isinstance(value, str):
+            _fail()
+        if value:
+            raise XuiPanelTlsEnabledError(
+                "3x-ui panel TLS must be disabled before integration"
+            )
     return (
         _port(values["webPort"]),
         _base_path(values["webBasePath"]),

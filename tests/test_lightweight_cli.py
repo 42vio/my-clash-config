@@ -167,18 +167,19 @@ class LightweightCliTests(unittest.TestCase):
             "程序维护\n"
             "  5. 更新仓库代码\n"
             "  6. 更新仓库代码并同步配置（推荐）\n"
+            "  7. 升级 Mihomo 校验器\n"
             "\n"
             "证书与备份\n"
-            "  7. 查看证书状态\n"
-            "  8. 强制续期证书\n"
-            "  9. 创建完整备份\n"
+            "  8. 查看证书状态\n"
+            "  9. 强制续期证书\n"
+            " 10. 创建完整备份\n"
             "\n"
             "故障与用户管理\n"
-            " 10. 恢复中断的配置发布\n"
-            " 11. 用户历史/回退\n"
-            " 12. 轮换用户订阅链接\n"
-            " 13. 重新初始化 owner\n"
-            " 14. 回滚整合安装\n"
+            " 11. 恢复中断的配置发布\n"
+            " 12. 用户历史/回退\n"
+            " 13. 轮换用户订阅链接\n"
+            " 14. 重新初始化 owner\n"
+            " 15. 回滚整合安装\n"
             "\n"
             "  0. 退出\n"
             "================================\n",
@@ -589,12 +590,45 @@ class MenuLoopTests(unittest.TestCase):
         ) as cert_status, patch.object(
             manage, "create_backup", return_value=Path("/backups/x.tar.gz")
         ) as backup:
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="7\n9\n0\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n10\n0\n")
 
         self.assertEqual(code, 0)
         self.assertEqual(cert_status.call_count, 1)
         self.assertEqual(backup.call_count, 1)
         self.assertIn("证书存在：是", stdout)
+
+    def test_menu_mihomo_upgrade_requires_confirmation(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage,
+            "update_mihomo",
+            return_value={"changed": True, "version": "v1.19.28"},
+            create=True,
+        ) as update:
+            cancelled, _, _ = run_cli(None, self.service, stdin_text="7\nn\n0\n")
+            confirmed, stdout, _ = run_cli(None, self.service, stdin_text="7\ny\n0\n")
+
+        self.assertEqual(cancelled, 0)
+        self.assertEqual(confirmed, 0)
+        self.assertEqual(update.call_count, 1)
+        self.assertIn("v1.19.28", stdout)
+
+    def test_mihomo_update_command_dispatches_noninteractively(self):
+        from clash_sub import manage
+
+        with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
+            manage,
+            "update_mihomo",
+            return_value={"changed": False, "version": "v1.19.28"},
+            create=True,
+        ) as update:
+            code, stdout, stderr = run_cli(["mihomo-update"], self.service)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(update.call_count, 1)
+        self.assertIn("v1.19.28", stdout)
 
     def test_menu_cert_renew_requires_confirmation_and_cancel_has_no_side_effect(self):
         from clash_sub import manage
@@ -602,8 +636,8 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "cert_renew", return_value=True
         ) as renew:
-            cancelled, _, _ = run_cli(None, self.service, stdin_text="8\nn\n0\n")
-            confirmed, _, _ = run_cli(None, self.service, stdin_text="8\ny\n0\n")
+            cancelled, _, _ = run_cli(None, self.service, stdin_text="9\nn\n0\n")
+            confirmed, _, _ = run_cli(None, self.service, stdin_text="9\ny\n0\n")
 
         self.assertEqual(cancelled, 0)
         self.assertEqual(confirmed, 0)
@@ -611,7 +645,7 @@ class MenuLoopTests(unittest.TestCase):
 
     def test_menu_history_and_rollback_flow_prompts_for_each_value(self):
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="11\n7\nrelease-7\ny\n0\n"
+            None, self.service, stdin_text="12\n7\nrelease-7\ny\n0\n"
         )
 
         self.assertEqual(code, 0)
@@ -622,30 +656,30 @@ class MenuLoopTests(unittest.TestCase):
         self.assertIn("用户 7 的历史版本", stdout)
 
     def test_menu_history_without_release_returns_without_rollback(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="11\n7\n\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="12\n7\n\n0\n")
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("history", (7,))])
 
     def test_menu_rollback_confirmation_cancel_keeps_zero_side_effects(self):
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="11\n7\nrelease-7\nn\n0\n"
+            None, self.service, stdin_text="12\n7\nrelease-7\nn\n0\n"
         )
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("history", (7,))])
 
     def test_menu_rotate_link_requires_confirmation_and_cancel_keeps_tokens(self):
-        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="12\n7\ny\n0\n")
-        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="12\n7\nn\n0\n")
+        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="13\n7\ny\n0\n")
+        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="13\n7\nn\n0\n")
 
         self.assertEqual(confirmed_code, 0)
         self.assertEqual(cancelled_code, 0)
         self.assertEqual(self.service.calls, [("rotate_link", (7,))])
 
     def test_menu_reinitialize_owner_requires_confirmation(self):
-        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="13\n9\ny\n0\n")
-        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="13\n9\nn\n0\n")
+        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="14\n9\ny\n0\n")
+        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="14\n9\nn\n0\n")
 
         self.assertEqual(confirmed_code, 0)
         self.assertEqual(cancelled_code, 0)
@@ -663,8 +697,8 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch(
             "clash_sub.cli.Installer", FakeInstaller
         ):
-            cancelled_code, _, _ = run_cli(None, self.service, stdin_text="14\nrollback\n0\n")
-            confirmed_code, _, _ = run_cli(None, self.service, stdin_text="14\nROLLBACK\n0\n")
+            cancelled_code, _, _ = run_cli(None, self.service, stdin_text="15\nrollback\n0\n")
+            confirmed_code, _, _ = run_cli(None, self.service, stdin_text="15\nROLLBACK\n0\n")
 
         self.assertEqual(cancelled_code, 0)
         self.assertEqual(confirmed_code, 0)
@@ -799,7 +833,7 @@ class MenuLoopTests(unittest.TestCase):
 
     def test_menu_recover_requires_root(self):
         with patch("clash_sub.cli.os.geteuid", return_value=1000):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="10\n0\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text="11\n0\n")
 
         self.assertEqual(code, 1)
         self.assertIn("recovery_not_authorized", stderr)

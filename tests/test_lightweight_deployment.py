@@ -100,11 +100,6 @@ class DocumentationCoverageTests(unittest.TestCase):
         for phrase in ("TCP 443", "10443", "30443", "20443", "不开放 UDP 443", "不使用公网 1443"):
             self.assertIn(phrase, deployment)
 
-    def test_xui_setup_documents_manual_pinned_installation(self):
-        xui = self.texts["xui-setup"]
-        for phrase in ("3.6.0", "26.6.27", "人工", "bash /tmp/3x-ui-install"):
-            self.assertIn(phrase, xui)
-
     def test_xui_setup_documents_loopback_listeners_and_readonly_sqlite(self):
         xui = self.texts["xui-setup"]
         for phrase in ("127.0.0.1", "Clash 输出", "x-ui.db", "只读"):
@@ -262,6 +257,11 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("python3 -m venv", text)
         self.assertIn("clash-sub install", text)
         self.assertIn("python3-venv", text)
+        self.assertIn("git", text)
+
+    def test_deployment_prerequisites_install_git_before_clone(self):
+        deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+        self.assertIn("apt-get install -y git", deployment)
 
     def test_traffic_unit_is_root_only_hardened_traffic_update_without_generation(self):
         service = TRAFFIC_SERVICE.read_text(encoding="utf-8")

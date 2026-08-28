@@ -16,13 +16,19 @@ from pathlib import Path
 import yaml
 
 from clash_sub.domain import ServiceConfig
+from clash_sub.mihomo import MihomoUpdateError, install_latest_mihomo
 from clash_sub.nginx import (
     NginxError,
     activate_nginx_files,
     render_stream_config,
     render_sub_server,
 )
-from clash_sub.xui import XuiCompatibilityError, read_panel_settings, read_xui_snapshot
+from clash_sub.xui import (
+    XuiCompatibilityError,
+    XuiPanelTlsEnabledError,
+    read_panel_settings,
+    read_xui_snapshot,
+)
 
 _MINIMUM_FREE_BYTES = 1024 ** 3
 _DEBIAN_MAJOR = "12"
@@ -30,7 +36,7 @@ _OS_RELEASE_PATH = Path("/etc/os-release")
 _ACME_RELEASE_URL = "https://github.com/acmesh-official/acme.sh/archive/refs/tags/3.1.4.tar.gz"
 _ACME_RELEASE_SHA256 = "e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
 _INSTALL_PHASES = frozenset({
-    "preflight", "low_memory", "nginx_packages", "certificate",
+    "preflight", "low_memory", "nginx_packages", "mihomo", "certificate",
     "nginx_activation", "systemd_harden", "subscription_init", "report",
 })
 _SYSTEMD_PATH_RE = re.compile(r"^/[A-Za-z0-9._+@=,:~/-]+$")
@@ -61,6 +67,7 @@ class InstallPaths:
     xui_database: Path = Path("/etc/x-ui/x-ui.db")
     private_root: Path = Path("/var/lib/clash-sub/private")
     public_root: Path = Path("/var/lib/clash-sub/public")
+    mihomo_binary: Path = Path("/usr/local/lib/clash-sub/mihomo")
 
     def stream_conf(self):
         return self.stream_conf_dir / "clash-sub.conf"
@@ -253,6 +260,7 @@ class Installer:
         recover = self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf"
         return {
             self.paths.stream_conf(), self.paths.http_conf(), self.paths.routes_conf,
+            self.paths.mihomo_binary,
             self.paths.cli_symlink, restart, recover,
             self.paths.systemd_dir / "clash-sub-traffic.service",
             self.paths.systemd_dir / "clash-sub-traffic.timer",
@@ -342,6 +350,8 @@ class Installer:
         try:
             read_xui_snapshot(self.paths.xui_database)
             read_panel_settings(self.paths.xui_database)
+        except XuiPanelTlsEnabledError:
+            raise InstallerError("panel_tls_unsupported") from None
         except XuiCompatibilityError:
             raise InstallerError("xui_incompatible") from None
 
@@ -434,6 +444,7 @@ class Installer:
                 "--no-install-recommends",
                 "nginx",
                 "libnginx-mod-stream",
+                "curl",
             ]
         )
         if self._remove_default_site_will_proceed():
@@ -454,6 +465,23 @@ class Installer:
         if "nginx_packages" not in state.phases_done:
             state.phases_done.append("nginx_packages")
         self._save_state(state)
+
+    def install_mihomo(self):
+        state = self.state()
+        self._record_replacement(state, self.paths.mihomo_binary)
+        if str(self.paths.mihomo_binary) not in state.files_written:
+            state.files_written.append(str(self.paths.mihomo_binary))
+        self._save_state(state)
+        try:
+            install_latest_mihomo(
+                self.repo_root,
+                self.runner,
+                binary=self.paths.mihomo_binary,
+                public_root=self.paths.public_root,
+            )
+        except MihomoUpdateError as error:
+            raise InstallerError(str(error)) from None
+        self._phase_done("mihomo")
 
     def _service_state(self, unit):
         def query(flag):
@@ -625,7 +653,7 @@ class Installer:
             private_root=self.paths.private_root,
             public_root=self.paths.public_root,
             nginx_routes=self.paths.routes_conf,
-            mihomo_binary=Path("/usr/local/lib/clash-sub/mihomo"),
+            mihomo_binary=self.paths.mihomo_binary,
             nginx_binary=Path("/usr/sbin/nginx"),
             systemctl_binary=Path("/usr/bin/systemctl"),
             template_root=self.repo_root / "templates",
@@ -801,7 +829,7 @@ class Installer:
             "private-root": str(self.paths.private_root),
             "public-root": str(self.paths.public_root),
             "nginx-routes": str(self.paths.routes_conf),
-            "mihomo-binary": "/usr/local/lib/clash-sub/mihomo",
+            "mihomo-binary": str(self.paths.mihomo_binary),
             "nginx-binary": "/usr/sbin/nginx",
             "systemctl-binary": "/usr/bin/systemctl",
             "max-source-bytes": 5242880,
@@ -866,6 +894,7 @@ class Installer:
             ("preflight", lambda: self.preflight(domain, node_host)),
             ("low_memory", lambda: self.optimize_low_memory(swap_mb)),
             ("nginx_packages", self.install_nginx_packages),
+            ("mihomo", self.install_mihomo),
             ("certificate", lambda: self.issue_certificate(domain, cf_token)),
             (
                 "nginx_activation",
@@ -890,6 +919,8 @@ class Installer:
     def _panel_settings(self):
         try:
             return read_panel_settings(self.paths.xui_database)
+        except XuiPanelTlsEnabledError:
+            raise InstallerError("panel_tls_unsupported") from None
         except XuiCompatibilityError:
             raise InstallerError("xui_incompatible") from None
 

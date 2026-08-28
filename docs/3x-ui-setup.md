@@ -1,127 +1,76 @@
-# 3x-ui 人工初始化清单（固定版本）
+# 3x-ui 人工初始化清单
 
-本清单描述服务器面板侧的最终状态，**全部步骤人工执行**：本仓库的任何脚本
-都不会下载、安装或修改 3x-ui / Xray。文中非版本号的名称、地址、端口与
-路径均为示例占位，真实值只存在于 3x-ui 本身与 root-only 私有配置中。
+本清单只记录接入本项目实际需要的 3x-ui 操作。3x-ui 与 Xray 不由本仓库
+安装或修改，也不要求固定版本；兼容性由 `clash-sub` 对当前 SQLite 结构和
+必要设置的只读检查决定。
 
-## 固定版本
+## 安装 3x-ui
 
-| 组件 | 固定值 |
-| --- | --- |
-| 操作系统 | Debian 12（bookworm），amd64 |
-| 3x-ui 面板 | 3.6.0（原生安装，systemd `x-ui` 单元） |
-| Xray-core | 26.6.27（在 3x-ui 内选择，关闭自动升级） |
-| 公网入站 | VLESS + RAW/TCP + REALITY，TCP 443，flow `xtls-rprx-vision` |
+在 Debian 12 上直接执行 3x-ui 官方 Quick Start 命令，不传版本参数：
 
-> 注：自 2026-08 整合方案起，Reality 入站使用 127.0.0.1:10443（公网仅 443，经 nginx stream
-> 分流），本文的公网 443 直连描述为历史流程。见 DEPLOYMENT.md 与
-> docs/superpowers/specs/2026-08-25-clash-sub-integration-design.md。
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+```
 
-不要升级到更高版本：升级前必须先按
-[docs/operations.md](operations.md) 的「3x-ui 升级流程」做数据库兼容检查。
+该命令会以 root 执行上游当前安装脚本，具体内容和默认版本由 3x-ui 项目维护。
+安装时使用默认 SQLite 数据库，并记住安装器生成的面板端口、用户名、密码和
+访问路径。当前官方安装器会生成随机登录信息与访问路径。
 
-## 步骤（按顺序）
+如果安装向导要求选择证书，可以像本次实际演练一样选择 IP 证书，直接通过
+`https://<VPS-IP>:<面板端口>/<访问路径>/` 登录。该证书只用于整合前访问
+3x-ui，不是 VLESS + REALITY 或 `clash-sub` 的依赖；后续订阅和面板的公网
+TLS 证书由本项目 `install.sh` 通过 acme.sh 单独签发。
 
-1. **准备干净主机**：重装 Debian 12 amd64 后，先完整执行
-   [DEPLOYMENT.md](../DEPLOYMENT.md) 的「检查主机并安装轻量前置包」与 UFW
-   步骤。不要复用跑过其他代理栈的主机。
-   运行下面的只读 REALITY 探测前，在同一 Bash 会话中把安全示例替换成真实候选
-   域名；示例仅用于语法校验，不能作为可用 Target。
+## 在面板中完成配置
 
-   ~~~bash
-   readonly XUI_REALITY_TARGET_HOST="example.invalid"
-   printf '%s\n' "$XUI_REALITY_TARGET_HOST" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$' || { printf 'invalid target host\n' >&2; false; }
-   test "$XUI_REALITY_TARGET_HOST" != "example.invalid" || { printf 'replace XUI_REALITY_TARGET_HOST before probing\n' >&2; false; }
-   ~~~
-2. **下载 3.6.0 官方安装脚本到本地文件并先审阅再执行**，绝不把网络响应
-   直接管道给 shell。先只读确认下载工具和临时目标：
+1. 确认 Web Base Path 不是 `/`。官方安装器生成的随机访问路径可以直接使用。
+2. 启用 3x-ui 订阅服务和 **Clash 输出**，订阅监听保持
+   `127.0.0.1`。
+3. 创建一个启用的 VLESS + RAW/TCP + REALITY 入站，端口使用 `10443`。
+   初次验证代理时可监听 `0.0.0.0`，客户端连接 VPS 的 `10443`。
+4. 添加客户端。每位用户使用独立 UUID、订阅 ID 和 email；记住 owner 的
+   email，运行本项目安装器时需要输入同一个值。
+5. 用 3x-ui 提供的客户端配置确认代理能够正常连接。
 
-   ```bash
-   curl --version; test ! -e /tmp/3x-ui-install-v3.6.0.sh
-   ```
+在运行本项目 `bash install.sh` 之前，必须让 3x-ui 面板回到回环 HTTP：
 
-   确认后单独下载：
+- 在面板设置中同时清空 `webCertFile`、`webKeyFile`，把面板监听改为
+  `127.0.0.1` 后保存；或者
+- 先在面板中把监听改为 `127.0.0.1`，再在服务器终端运行 `x-ui`，通过
+  **Revoke & Remove Certificate** 删除证书。
 
-   ```bash
-   curl --fail --show-error --location \
-     --output /tmp/3x-ui-install-v3.6.0.sh \
-     https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.6.0/install.sh
-   ```
+操作后原来的 IP HTTPS 面板会立即断开，这是正常现象；接着运行本项目安装器
+即可。preflight 如果发现面板证书仍然启用，会以 `panel_tls_unsupported`
+停止，不会继续生成一个必然返回 502 的反向代理配置。
 
-   下载后先进行只读校验与审阅；将 Debian `sha256sum` 输出和来源写进管理员
-   私有部署日志，再决定是否执行：
+至此，本项目实际依赖的 3x-ui 状态只有：
 
-   ```bash
-   sha256sum /tmp/3x-ui-install-v3.6.0.sh
-   less /tmp/3x-ui-install-v3.6.0.sh
-   ```
+- 默认 SQLite 数据库可由 `/etc/x-ui/x-ui.db` 只读访问；
+- Web Base Path 非 `/`，面板监听为 `127.0.0.1`；
+- `webCertFile` 与 `webKeyFile` 均为空，由 Nginx 统一终止 TLS；
+- 订阅服务和 Clash 输出已启用，订阅监听为 `127.0.0.1`；
+- 恰好一个已启用的 VLESS + REALITY 入站使用端口 `10443`；
+- owner email 能唯一匹配一个已启用客户端。
 
-   审阅通过后，最后一条才是独立的人工安装操作：
+然后继续执行 [DEPLOYMENT.md](../DEPLOYMENT.md) 的 Phase 2。安装完成后，把
+Reality 入站监听从 `0.0.0.0` 改为 `127.0.0.1`，再运行：
 
-   ```bash
-   bash /tmp/3x-ui-install-v3.6.0.sh v3.6.0
-   ```
+```bash
+clash-sub sync
+clash-sub links
+```
 
-   最后的 `bash` 是有意保留的管理员运行的**上游 3x-ui 安装步骤**：它在
-   下载、校验记录和源码审阅之后执行，不是本项目提供的一键整机安装器。安装后
-   保留来源与校验和在管理员私有部署日志（同样不进本仓库）。
-3. **面板设置**：强唯一用户名与密码、启用 2FA、生成随机 Web Base Path
-   （示例形状 `/x7Hq2mVt`），面板监听 `127.0.0.1:<面板端口>`（示例
-   `2053`）。该回环地址稍后填入 Nginx 模板的 `{{PANEL_UPSTREAM}}`。
-4. **原始订阅服务**：监听 `127.0.0.1:<订阅端口>`（示例 `2096`），并在
-   面板中**启用 Clash 输出**——`clash-sub` 只从该回环 Clash 接口获取节点
-   YAML，不使用 `/sub/` 或 `/json/` 原始输出；流量与到期数据由只读
-   `x-ui.db` 查询提供。
-5. **固定 Xray 版本**：在 3x-ui 中选择 Xray-core 26.6.27，用
-   `<xray-二进制路径> version` 核对，并**关闭自动核心升级**。
-6. **创建唯一公网入站**：协议 VLESS、传输 RAW/TCP、安全 REALITY、端口
-   TCP 443、flow `xtls-rprx-vision`；REALITY dest/SNI 必须先通过本仓库
-   的只读检测脚本：
+## 版本与升级
 
-   ```bash
-   /opt/my-clash-config/.venv/bin/python /opt/my-clash-config/scripts/check_reality_target.py \
-     --host "$XUI_REALITY_TARGET_HOST"
-   ```
+首次安装使用 3x-ui 官方脚本的当前默认版本，不在本仓库固定 3x-ui 或 Xray
+版本。升级前仍应备份 `x-ui.db`；升级后运行 `clash-sub status` 和
+`clash-sub sync`。如果数据库结构不兼容，程序会失败关闭并保留上一份已发布
+配置。具体步骤见 [operations.md](operations.md) 的“3x-ui 升级流程”。
 
-   预期 `reachable`、`tls13`、`alpn_h2`、`x25519`、`certificate_name`
-   全部通过。密钥对由 3x-ui 生成，至少一个非空 short ID。除它之外任何
-   进程不得监听公网 443（TCP 或 UDP）。
-7. **每人一个独立客户端**：绝不共享 UUID 或订阅 ID。owner 客户端的
-   email 标识必须与私有 `service.yaml` 的 `owner-email` 一致（首次同步
-   时唯一匹配并持久化其数据库主键）；其他用户各建一个客户端，`clash-sub`
-   首次同步时自动为每个客户端生成独立订阅令牌。
+## 数据和秘密边界
 
-## 完成后的核对表
+`clash-sub` 只读查询 `x-ui.db` 中的客户端、流量与订阅设置，并通过回环
+Clash 订阅地址获取节点 YAML；代码不会向 3x-ui 数据库写入 SQL。
 
-| 检查 | 预期 |
-| --- | --- |
-| `x-ui --version`（或面板关于页） | 3.6.0 |
-| Xray 二进制 `version` | 26.6.27 |
-| 面板监听 | 仅 `127.0.0.1:<面板端口>` |
-| 订阅服务监听 | 仅 `127.0.0.1:<订阅端口>`，Clash 输出已启用 |
-| `ss -H -lntp | grep ':443\b'` | 仅 Xray 进程，无 UDP 443 |
-| 入站协议 / 传输 / 安全 | VLESS / tcp / reality |
-| 每客户端 flow | `xtls-rprx-vision` |
-| 客户端数量 | 每人一个，无共享 UUID |
-| short ID | 至少一个非空值 |
-| SQLite 位置 | 与 `service.yaml` 的 `xui-database` 一致（示例 `/etc/x-ui/x-ui.db`） |
-
-## 与本仓库的数据接口
-
-`clash-sub` 对 3x-ui 只有两类**只读**访问，代码中不存在任何写 SQL：
-
-1. 以只读模式打开 SQLite（示例 `/etc/x-ui/x-ui.db`），仅查询客户端主键、
-   email 标识、subId、启用状态、配额/到期与订阅服务设置；表或字段结构与
-   固定预期不符时全局失败关闭，不修改任何已发布配置。
-2. 通过已验证的回环地址 `http://127.0.0.1:<订阅端口>/<订阅路径>/<subId>`
-   仅获取 Clash YAML；`Subscription-Userinfo` 由读取 SQLite 的流量任务生成。
-
-## 秘密边界
-
-- **REALITY 私钥只留在 Xray/3x-ui 中**：不进本仓库、不进私有
-  `service.yaml`、不进部署日志明文、不进任何生成的 Clash 文件；发布的
-  Clash 配置只携带公钥与 short ID。
-- 面板凭据、2FA 密钥、Web Base Path、订阅路径、客户端 UUID 与管理员
-  私有部署日志同样不进仓库，也不出现在任何脚本输出里。
-- `scripts/check_reality_target.py` 只读：仅做 TLS 1.3 / ALPN / X25519 /
-   可达性 / 证书名探测，输出限于布尔值与稳定代码。
+REALITY 私钥、面板凭据、证书私钥、访问路径、客户端 UUID 与订阅 ID 都只
+保留在服务器私有环境中，不得提交到本仓库或写入公开日志。

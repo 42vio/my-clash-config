@@ -14,7 +14,9 @@ from pathlib import Path
 
 from clash_sub.config import ConfigError, load_config
 from clash_sub.installer import InstallPaths, Installer, load_install_state
+from clash_sub.mihomo import MihomoUpdateError, install_latest_mihomo
 from clash_sub.runtime import config_path
+from clash_sub.service import _OperationLock
 
 
 def _backups_root(repo_root):
@@ -297,11 +299,30 @@ def run_post_update(repo_root, runner):
         private_root=config.private_root,
         public_root=config.public_root,
         routes_conf=config.nginx_routes,
+        mihomo_binary=config.mihomo_binary,
     )
     Installer(repo_root, paths=paths, runner=runner).harden_systemd()
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
     return True
+
+
+def update_mihomo(repo_root, runner):
+    """Upgrade Mihomo independently from repository code updates."""
+    repo_root = Path(repo_root)
+    try:
+        config = load_config(config_path(repo_root), repo_root)
+        with _OperationLock(Path(config.private_root) / "operation.lock"):
+            return install_latest_mihomo(
+                repo_root,
+                runner,
+                binary=config.mihomo_binary,
+                public_root=config.public_root,
+            )
+    except MihomoUpdateError as error:
+        raise RuntimeError(str(error)) from None
+    except ConfigError:
+        raise RuntimeError("service_config_invalid") from None
 
 
 def health_report(repo_root, runner):

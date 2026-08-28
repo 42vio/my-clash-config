@@ -23,7 +23,7 @@ from clash_sub.installer import (
     load_install_state,
     save_install_state,
 )
-from clash_sub.xui import XuiCompatibilityError
+from clash_sub.xui import XuiCompatibilityError, XuiPanelTlsEnabledError
 
 
 FakeSnapshotClient = namedtuple("FakeSnapshotClient", "email enabled")
@@ -355,6 +355,18 @@ class PreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
                 self._installer().preflight("example.com")
 
+    def test_rejects_panel_tls_with_stable_error(self):
+        def panel_tls_enabled(path):
+            raise XuiPanelTlsEnabledError(
+                "3x-ui panel TLS must be disabled before integration"
+            )
+
+        with patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch("clash_sub.installer.read_panel_settings", panel_tls_enabled):
+            with self.assertRaisesRegex(InstallerError, "panel_tls_unsupported"):
+                self._installer()._require_xui()
+
     def test_requires_free_tcp_port(self):
         server = socket.socket()
         server.bind(("127.0.0.1", 0))
@@ -660,6 +672,7 @@ class NginxPackagePhaseTests(unittest.TestCase):
             any("apt-get" in item and "nginx" in item for item in joined)
         )
         self.assertTrue(any("libnginx-mod-stream" in item for item in joined))
+        self.assertTrue(any("curl" in item for item in joined))
         self.assertIn("nginx_packages", load_install_state(self.root / "private" / "install-state.json").phases_done)
 
     def test_appends_stream_include_to_empty_conf(self):
@@ -678,6 +691,55 @@ class NginxPackagePhaseTests(unittest.TestCase):
         self._installer().install_nginx_packages()
 
         self.assertEqual(self.nginx_conf.read_text(encoding="utf-8"), marked)
+
+
+class MihomoInstallPhaseTests(unittest.TestCase):
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = Path(self.tempdir.name).resolve()
+        (self.root / "private").mkdir()
+        self.paths = InstallPaths(
+            mihomo_binary=self.root / "lib" / "mihomo",
+            public_root=self.root / "public",
+        )
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def test_installs_mihomo_and_journals_completed_phase(self):
+        self.paths.mihomo_binary.parent.mkdir(parents=True)
+        self.paths.mihomo_binary.write_bytes(b"old binary")
+        self.paths.mihomo_binary.chmod(0o755)
+        installer = Installer(self.root, paths=self.paths)
+        with patch("clash_sub.installer.install_latest_mihomo", return_value={"changed": True, "version": "v1.19.28"}) as install:
+            installer.install_mihomo()
+
+        install.assert_called_once_with(
+            self.root,
+            installer.runner,
+            binary=self.paths.mihomo_binary,
+            public_root=self.paths.public_root,
+        )
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn("mihomo", state.phases_done)
+        self.assertIn(str(self.paths.mihomo_binary), state.files_written)
+        self.assertIn(str(self.paths.mihomo_binary), state.replaced_files)
+
+    def test_install_rollback_restores_replaced_mihomo(self):
+        self.paths.mihomo_binary.parent.mkdir(parents=True)
+        self.paths.mihomo_binary.write_bytes(b"old binary")
+        self.paths.mihomo_binary.chmod(0o755)
+        installer = Installer(self.root, paths=self.paths)
+
+        def replace(*args, **kwargs):
+            self.paths.mihomo_binary.write_bytes(b"new binary")
+            return {"changed": True, "version": "v1.19.28"}
+
+        with patch("clash_sub.installer.install_latest_mihomo", side_effect=replace):
+            installer.install_mihomo()
+        installer.rollback_install()
+
+        self.assertEqual(self.paths.mihomo_binary.read_bytes(), b"old binary")
 
 
 class DefaultSiteRemovalTests(unittest.TestCase):
@@ -1189,6 +1251,7 @@ class SubscriptionInitPhaseTests(unittest.TestCase):
             private_root=self.root / "var" / "private",
             public_root=self.root / "var" / "public",
             routes_conf=self.root / "clash-sub" / "routes.conf",
+            mihomo_binary=self.root / "bin" / "mihomo",
         )
 
     def tearDown(self):
@@ -1208,6 +1271,7 @@ class SubscriptionInitPhaseTests(unittest.TestCase):
         self.assertIn("subscription-authority: sub.example.com:443", content)
         self.assertIn("xui-public-endpoint: node.example.com:443", content)
         self.assertIn(str(self.paths.xui_database), content)
+        self.assertIn("mihomo-binary: %s" % self.paths.mihomo_binary, content)
         mode = (self.root / "private" / "config" / "service.yaml").stat().st_mode & 0o777
         self.assertEqual(mode, 0o600)
         state = load_install_state(self.root / "private" / "install-state.json")
@@ -1339,6 +1403,7 @@ class OwnerValidationTests(unittest.TestCase):
                 "preflight",
                 "optimize_low_memory",
                 "install_nginx_packages",
+                "install_mihomo",
                 "issue_certificate",
                 "activate_nginx",
                 "harden_systemd",
@@ -1429,6 +1494,8 @@ class InstallOrchestrationTests(unittest.TestCase):
         )
 
         with patch.object(Installer, "install_nginx_packages") as pkg, patch.object(
+            Installer, "install_mihomo"
+        ) as mihomo, patch.object(
             Installer, "issue_certificate"
         ) as cert, patch.object(Installer, "activate_nginx") as activate, patch.object(
             Installer, "harden_systemd"
@@ -1453,6 +1520,7 @@ class InstallOrchestrationTests(unittest.TestCase):
         low_memory.assert_not_called()
         self.assertFalse(any("preflight" in message for message in self.printed))
         pkg.assert_called_once()
+        mihomo.assert_called_once()
         cert.assert_called_once_with("example.com", "tok")
         activate.assert_called_once_with(
             domain="example.com", panel_port=ANY, panel_base_path=ANY
@@ -3105,6 +3173,8 @@ class InstallResumeGuardTests(unittest.TestCase):
         with patch.object(Installer, "preflight") as preflight, patch.object(
             Installer, "install_nginx_packages"
         ) as pkg, patch.object(
+            Installer, "install_mihomo"
+        ), patch.object(
             Installer, "optimize_low_memory"
         ), patch.object(
             Installer, "issue_certificate"
@@ -3134,6 +3204,18 @@ class InstallResumeGuardTests(unittest.TestCase):
 
         with patch("clash_sub.installer.read_panel_settings", broken):
             with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
+                installer._panel_settings()
+
+    def test_panel_tls_maps_to_stable_installer_error(self):
+        installer = Installer(self.root, runner=self._noop_runner)
+
+        def panel_tls_enabled(path):
+            raise XuiPanelTlsEnabledError(
+                "3x-ui panel TLS must be disabled before integration"
+            )
+
+        with patch("clash_sub.installer.read_panel_settings", panel_tls_enabled):
+            with self.assertRaisesRegex(InstallerError, "panel_tls_unsupported"):
                 installer._panel_settings()
 
     def test_panel_settings_returns_port_base_path_and_listen(self):

@@ -1,7 +1,6 @@
 # my-clash-config：轻量私有 Clash 订阅服务
 
-对外统一使用 **Clash** 命名；服务器上唯一的管理命令是 `clash-sub`（没有
-`refresh`、`clashctl` 之类的别名）。本仓库从每人的 3x-ui 客户端、owner 的
+对外统一使用 **Clash** 命名；服务器上唯一的管理命令是 `clash-sub`。本仓库从每人的 3x-ui 客户端、owner 的
 机场快照与家庭节点出发，渲染 `balanced` / `standard` / `privacy` 三种完整
 配置，经固定版本 Mihomo 真实校验后原子发布，由宿主机 Nginx 通过高强度
 随机令牌路径**静态只读**发布。平时没有任何 Python、Mihomo 或转换进程常驻。
@@ -23,7 +22,7 @@
 
 ## 架构决策记录（2026-08 更新）
 
-本版推翻早前「不引入 Nginx stream、Reality 直占 443」的决策，改为 Nginx stream 统一 443 入口：
+本版使用 Nginx stream 统一 443 入口：
 
 - 公网仅开放 443：`ssl_preread` 按 SNI 分流——`sub.<域名>` → 127.0.0.1:30443（订阅+面板，终止 TLS），
   其余任意 SNI → 127.0.0.1:10443（Xray Reality，不终止 TLS）；
@@ -106,10 +105,11 @@ clash-sub
 ```text
 配置管理      1. 更新机场订阅 / 2. 重新生成所有配置（不更新代码）/
               3. 查看订阅链接 / 4. 查看状态和历史版本
-程序维护      5. 更新仓库代码 / 6. 更新仓库代码并同步配置（推荐）
-证书与备份    7. 查看证书状态 / 8. 强制续期证书 / 9. 创建完整备份
-故障与用户管理 10. 恢复中断的配置发布 / 11. 用户历史/回退 /
-              12. 轮换用户订阅链接 / 13. 重新初始化 owner / 14. 回滚整合安装
+程序维护      5. 更新仓库代码 / 6. 更新仓库代码并同步配置（推荐）/
+              7. 升级 Mihomo 校验器
+证书与备份    8. 查看证书状态 / 9. 强制续期证书 / 10. 创建完整备份
+故障与用户管理 11. 恢复中断的配置发布 / 12. 用户历史/回退 /
+              13. 轮换用户订阅链接 / 14. 重新初始化 owner / 15. 回滚整合安装
 0. 退出
 ```
 
@@ -121,7 +121,7 @@ sync 由 pull 后磁盘入口启动的新进程执行；update 之后菜单退�
 
 不需要记住 refresh 之类的命令——它不存在；systemd 与排错用的非交互子命令
 （`sync` / `traffic-update` / `status` / `links` / `history` / `rollback` /
-`rotate-link`）见 [docs/operations.md](docs/operations.md)。
+`rotate-link` / `mihomo-update`）见 [docs/operations.md](docs/operations.md)。
 
 ## 明确不做
 
@@ -139,7 +139,7 @@ sync 由 pull 后磁盘入口启动的新进程执行；update 之后菜单退�
 | 文档 | 内容 |
 | --- | --- |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | 干净 Debian 12 服务器部署：3x-ui 手动 + `install.sh` 一键整合 443 |
-| [docs/3x-ui-setup.md](docs/3x-ui-setup.md) | 固定版本 3x-ui / Xray 人工初始化清单 |
+| [docs/3x-ui-setup.md](docs/3x-ui-setup.md) | 3x-ui 官方安装与接入本项目所需的面板配置 |
 | [docs/operations.md](docs/operations.md) | 日常运维：机场更新、流量、历史、回滚、轮换、故障恢复 |
 | [docs/recovery.md](docs/recovery.md) | 重装恢复、域名变更与预留扩展（Trojan / 第二台 VPS） |
 | [docs/private-data.md](docs/private-data.md) | 私有数据布局、权限、备份与恢复边界 |

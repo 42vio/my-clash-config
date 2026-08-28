@@ -18,20 +18,25 @@
 ## Phase 1：基础代理（手动，约 10 分钟）
 
 1. Debian 12 最小安装，`apt update && apt upgrade`。
-2. 安装 3x-ui（官方脚本），记下面板端口/路径/凭据。版本 pin 与人工加固细节（2FA、随机
-   Web Base Path、回环面板/订阅）见 [docs/3x-ui-setup.md](docs/3x-ui-setup.md)；
-   该文的公网入站端口在本拓扑下为 10443（不再是 443）。
-3. 安装 Mihomo 校验二进制（`clash-sub sync` 的配置校验依赖它）：
+2. 安装 Git（首次拉取私有仓库必需）：
 
-   从 https://github.com/MetaCubeX/mihomo/releases 下载 linux-amd64（与 CI 无关，
-   固定一个 release 版本即可，下载后建议核对 release 的 sha256），解压后先
-   `mkdir -p /usr/local/lib/clash-sub`，再把
-   二进制放到 `/usr/local/lib/clash-sub/mihomo` 并 `chmod 755`。
-4. 面板设置（两项都必须）：
+       apt-get install -y git
+
+3. 使用 3x-ui 官方 Quick Start 命令安装当前默认版本，不传版本参数：
+
+       bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+
+   安装时使用默认 SQLite 数据库，记下面板端口、访问路径和凭据。随后按
+   [docs/3x-ui-setup.md](docs/3x-ui-setup.md) 创建 10443 入站与 owner 客户端；
+   本仓库不固定 3x-ui 或 Xray 版本。
+4. 接入本项目之前确认面板设置：
    - **Web 根路径（webBasePath）**：设为随机串（如 `/xui7k2m/`）。preflight 会校验它非 `/`，
      installer 直接读取该值作为面板反代路径——不再单独生成。
    - **面板监听**：设为 127.0.0.1（上游默认监听 0.0.0.0，会裸奔公网端口；本方案经
      nginx 反代访问，无需公网直连）。
+   - **面板证书**：清空 `webCertFile` 与 `webKeyFile`，或在终端 `x-ui` 菜单执行
+     **Revoke & Remove Certificate**。Nginx 以 HTTP 回源并统一终止公网 TLS；证书仍启用时
+     preflight 会以 `panel_tls_unsupported` 停止。
    - 启用 Clash 订阅（subListen=127.0.0.1 默认即可）。
 5. 建入站：协议 VLESS、端口 10443、listen 0.0.0.0、传输 TCP、Security=Reality
    （serverName 填第三方伪装域），添加 client（email 记住，作为 owner-email）。
@@ -41,7 +46,7 @@
 
 以 root：
 
-    git clone <repo> /opt/my-clash-config && cd /opt/my-clash-config
+    git clone https://github.com/42vio/my-clash-config /opt/my-clash-config && cd /opt/my-clash-config
     bash install.sh
 
 交互输入：主域名、Cloudflare API Token、owner 的 client email（仅当 3x-ui 中恰好只有一个
@@ -52,8 +57,10 @@ CLASH_SUB_SWAP_MB 环境变量决定，交互模式下也不询问）。
 否则安装以 owner_email_required 终止）。
 
 installer 阶段：preflight（只读检查，含 DNS 前置与 443 空闲）→ 低配优化（swap/swappiness/journald）
-→ 安装 nginx+stream 模块 → acme.sh 签发 wildcard → 激活 443 分流与订阅/面板 TLS → systemd 自愈补齐
+→ 安装 nginx+stream 模块 → 自动安装 Mihomo 最新稳定版（官方 SHA-256 校验）→ acme.sh 签发 wildcard → 激活 443 分流与订阅/面板 TLS → systemd 自愈补齐
 → 生成 service.yaml → 报告。任一阶段失败即停止；重跑自动跳过已完成阶段（幂等）。
+Mihomo 安装到 `/usr/local/lib/clash-sub/mihomo`，无需手工下载；后续只在明确执行菜单
+“升级 Mihomo 校验器”或 `clash-sub mihomo-update` 时检查并升级，不随代码更新静默追新。
 模块自检说明：无需单独验证 stream 模块——安装阶段的 nginx 配置激活步骤会先跑
 `nginx -t`，模块缺失时立即失败。
 

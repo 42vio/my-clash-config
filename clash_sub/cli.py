@@ -31,18 +31,19 @@ MENU = (
     "程序维护\n"
     "  5. 更新仓库代码\n"
     "  6. 更新仓库代码并同步配置（推荐）\n"
+    "  7. 升级 Mihomo 校验器\n"
     "\n"
     "证书与备份\n"
-    "  7. 查看证书状态\n"
-    "  8. 强制续期证书\n"
-    "  9. 创建完整备份\n"
+    "  8. 查看证书状态\n"
+    "  9. 强制续期证书\n"
+    " 10. 创建完整备份\n"
     "\n"
     "故障与用户管理\n"
-    " 10. 恢复中断的配置发布\n"
-    " 11. 用户历史/回退\n"
-    " 12. 轮换用户订阅链接\n"
-    " 13. 重新初始化 owner\n"
-    " 14. 回滚整合安装\n"
+    " 11. 恢复中断的配置发布\n"
+    " 12. 用户历史/回退\n"
+    " 13. 轮换用户订阅链接\n"
+    " 14. 重新初始化 owner\n"
+    " 15. 回滚整合安装\n"
     "\n"
     "  0. 退出\n"
     "================================\n"
@@ -113,20 +114,22 @@ def _menu_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "6":
         return _menu_update_and_sync(stdout, stderr)
     if choice == "7":
-        return _menu_cert(stdin, stdout, stderr, renew=False)
+        return _menu_mihomo_update(stdin, stdout, stderr)
     if choice == "8":
-        return _menu_cert(stdin, stdout, stderr, renew=True)
+        return _menu_cert(stdin, stdout, stderr, renew=False)
     if choice == "9":
-        return _managed(stdout, stderr, manage.create_backup), False
+        return _menu_cert(stdin, stdout, stderr, renew=True)
     if choice == "10":
-        return _recover(stdout, stderr), False
+        return _managed(stdout, stderr, manage.create_backup), False
     if choice == "11":
-        return _menu_history_rollback(stdin, stdout, stderr, factory)
+        return _recover(stdout, stderr), False
     if choice == "12":
-        return _menu_single_user(stdin, stdout, stderr, factory, "rotate")
+        return _menu_history_rollback(stdin, stdout, stderr, factory)
     if choice == "13":
-        return _menu_single_user(stdin, stdout, stderr, factory, "reinitialize")
+        return _menu_single_user(stdin, stdout, stderr, factory, "rotate")
     if choice == "14":
+        return _menu_single_user(stdin, stdout, stderr, factory, "reinitialize")
+    if choice == "15":
         return _menu_install_rollback(stdin, stdout, stderr)
     _error(stderr, "invalid_menu_selection", 2)
     return 0, False
@@ -197,6 +200,16 @@ def _menu_cert(stdin, stdout, stderr, *, renew):
     except Exception:
         return _error(stderr, "cert_command_failed", 1), False
     return 0, False
+
+
+def _menu_mihomo_update(stdin, stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1), False
+    if not _confirm(stdin, stdout, "确认检查并升级 Mihomo？(y/N)："):
+        stdout.write("已取消。\n")
+        return 0, False
+    code = _mihomo_update(stdout, stderr)
+    return code, False
 
 
 def _menu_history_rollback(stdin, stdout, stderr, factory):
@@ -321,6 +334,7 @@ def _parser():
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
     commands.add_parser("template-sync", add_help=False)
+    commands.add_parser("mihomo-update", add_help=False)
     update = commands.add_parser("update", add_help=False)
     update.add_argument("--post-update", action="store_true")
     cert = commands.add_parser("cert", add_help=False)
@@ -357,6 +371,8 @@ def _run_command(parsed, stdout, stderr, factory):
         return _managed(stdout, stderr, action, success_output=_UPDATE_REMINDER)
     if command == "template-sync":
         return _template_sync(stdout, stderr)
+    if command == "mihomo-update":
+        return _mihomo_update(stdout, stderr)
     if command == "cert":
         return _cert_command(parsed, stdout, stderr)
     if command == "sync":
@@ -604,6 +620,22 @@ def _managed(stdout, stderr, action, success_output=None):
     except Exception:
         return _error(stderr, "management_command_failed", 1)
     stdout.write(success_output if success_output is not None else "操作已完成。\n")
+    return 0
+
+
+def _mihomo_update(stdout, stderr):
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1)
+    try:
+        result = manage.update_mihomo(default_repo_root(), subprocess.run)
+    except RuntimeError as error:
+        return _error(stderr, str(error), 1)
+    except Exception:
+        return _error(stderr, "mihomo_update_failed", 1)
+    if result["changed"]:
+        stdout.write("Mihomo 已升级到 %s；建议执行 clash-sub sync。\n" % result["version"])
+    else:
+        stdout.write("Mihomo 已是最新稳定版 %s。\n" % result["version"])
     return 0
 
 

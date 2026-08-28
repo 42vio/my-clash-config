@@ -4,9 +4,11 @@
 set -eu
 [ "$(id -u)" = 0 ] || { echo "install.sh must run as root" >&2; exit 1; }
 cd "$(dirname "$0")"
-if ! command -v python3 >/dev/null 2>&1; then
+if ! command -v python3 >/dev/null 2>&1 || \
+   ! command -v curl >/dev/null 2>&1 || \
+   ! command -v git >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y --no-install-recommends python3 python3-venv curl
+    apt-get install -y --no-install-recommends python3 python3-venv curl git
 fi
 [ -x .venv/bin/python ] || python3 -m venv .venv || {
     apt-get update

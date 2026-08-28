@@ -23,18 +23,19 @@ clash-sub
 程序维护
   5. 更新仓库代码
   6. 更新仓库代码并同步配置（推荐）
+  7. 升级 Mihomo 校验器
 
 证书与备份
-  7. 查看证书状态
-  8. 强制续期证书
-  9. 创建完整备份
+  8. 查看证书状态
+  9. 强制续期证书
+ 10. 创建完整备份
 
 故障与用户管理
- 10. 恢复中断的配置发布
- 11. 用户历史/回退
- 12. 轮换用户订阅链接
- 13. 重新初始化 owner
- 14. 回滚整合安装
+ 11. 恢复中断的配置发布
+ 12. 用户历史/回退
+ 13. 轮换用户订阅链接
+ 14. 重新初始化 owner
+ 15. 回滚整合安装
 
   0. 退出
 ================================
@@ -61,6 +62,11 @@ clash-sub update && clash-sub sync
 调用旧 service 对象；update 失败时绝不 sync。update 成功后菜单退出
 （不继续使用旧代码处理后续选项），失败保留错误码退出。
 
+菜单选项 7（或 `clash-sub mihomo-update`）只检查 Mihomo 最新稳定版。升级前
+校验 GitHub release 提供的 SHA-256，并用候选二进制检查当前已发布的全部 YAML；
+全部通过后才原子替换。它不随 `clash-sub update` 自动运行，升级成功后按提示
+执行 `clash-sub sync`。
+
 所有输出默认脱敏：不显示令牌、UUID、subId、节点凭据或源 URL。唯一例外是
 「查看订阅链接」与 `rotate-link`——它们的目的就是展示完整地址。
 
@@ -77,6 +83,7 @@ clash-sub rotate-link <user-id>   # 轮换令牌；随后用 root-only links 重
 clash-sub reinitialize-owner <numeric-client-id>  # 仅持久化 owner ID 消失后的人工迁移
 clash-sub recover                 # root-only；启动恢复 unit 调用，不要求 Nginx 已运行
 clash-sub update                  # 代码更新（见上，成功后按提示执行 sync）
+clash-sub mihomo-update           # 检查并升级 Mihomo 最新稳定版
 clash-sub cert [--renew]          # 证书状态 / 强制续期
 clash-sub backup                  # 全量备份
 clash-sub install                 # root-only 整合安装（见 DEPLOYMENT.md）
@@ -237,9 +244,11 @@ DNS API 变化、Let's Encrypt 兼容问题或续期失败时，不等季度检�
    路径，以私有配置为准），并确认最近五个 release 完整。
 2. **停止**：`systemctl stop x-ui`，避免升级期间数据库被写。
 3. **在副本上核对结构**：对备份副本只读检查表与字段（客户端表、subId、
-   启用状态、配额/到期、订阅服务设置）与当前固定预期一致；结构变化时
+   启用状态、配额/到期、订阅服务设置）与 `clash-sub` 当前支持的结构一致；结构变化时
    **不要升级**，先在本仓库测试环境验证新 schema。
-4. **升级** 3x-ui / Xray（人工执行官方安装步骤），保持或重新固定版本。
+4. **升级** 3x-ui / Xray（人工执行官方稳定版本升级步骤，不使用 `dev-latest`）。升级后保持
+   `webCertFile` 与 `webKeyFile` 为空；如果安装器重新启用了面板证书，通过面板清空，或在
+   `x-ui` 菜单执行 **Revoke & Remove Certificate**。公网 TLS 仍由 Nginx 统一终止。
 5. `clash-sub status` 然后 `clash-sub sync`：数据库结构不匹配时全局
    失败关闭、非零退出；此时客户端**继续使用旧 YAML 和旧路由**，直到人工
    确认兼容并成功同步。
