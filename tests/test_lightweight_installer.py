@@ -2998,7 +2998,7 @@ class RollbackWriteAheadRegressionTests(unittest.TestCase):
                 raise OSError("tail save failed")
             return real_save(state)
 
-        def fake_activate(files, runner, nginx_binary):
+        def fake_activate(files, runner, **_):
             for path, data, _ in files:
                 path = Path(path)
                 path.parent.mkdir(parents=True, exist_ok=True)

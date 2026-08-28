@@ -213,7 +213,7 @@ class DocumentationCoverageTests(unittest.TestCase):
         for phrase in (
             "更新机场订阅",
             "重新生成所有配置",
-            "更新仓库代码并同步配置",
+            "更新代码并同步配置",
             "template-sync",
             "不提供短链",
             "实时查询",

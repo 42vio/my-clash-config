@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from getpass import getpass
 from pathlib import Path
@@ -18,36 +19,6 @@ from clash_sub.runtime import build_service, repo_root as default_repo_root
 from clash_sub.service import ServiceError, _OperationLock
 
 
-MENU = (
-    "================================\n"
-    "      clash-sub 管理菜单\n"
-    "================================\n"
-    "配置管理\n"
-    "  1. 更新机场订阅\n"
-    "  2. 重新生成所有配置（不更新代码）\n"
-    "  3. 查看订阅链接\n"
-    "  4. 查看状态和历史版本\n"
-    "\n"
-    "程序维护\n"
-    "  5. 更新仓库代码\n"
-    "  6. 更新仓库代码并同步配置（推荐）\n"
-    "  7. 升级 Mihomo 校验器\n"
-    "\n"
-    "证书与备份\n"
-    "  8. 查看证书状态\n"
-    "  9. 强制续期证书\n"
-    " 10. 创建完整备份\n"
-    "\n"
-    "故障与用户管理\n"
-    " 11. 恢复中断的配置发布\n"
-    " 12. 用户历史/回退\n"
-    " 13. 轮换用户订阅链接\n"
-    " 14. 重新初始化 owner\n"
-    " 15. 回滚整合安装\n"
-    "\n"
-    "  0. 退出\n"
-    "================================\n"
-)
 _ERROR_TEMPLATE = "操作失败（错误代码：%s）\n"
 _UPDATE_REMINDER = (
     "代码更新完成。\n"
@@ -58,6 +29,143 @@ _UPDATE_REMINDER = (
     "clash-sub update && clash-sub sync\n"
 )
 _SYNC_SPAWN_TIMEOUT = 900
+_MENU_BOX_WIDTH = 46
+_RETURN_PROMPT = "按回车键返回当前菜单："
+
+_GREEN = "\033[0;32m"
+_YELLOW = "\033[0;33m"
+_RED = "\033[0;31m"
+_RESET = "\033[0m"
+
+
+class _Colors:
+    """Terminal palette that degrades to plain text when disabled."""
+
+    def __init__(self, enabled):
+        self.enabled = enabled
+
+    def _paint(self, text, code):
+        return code + text + _RESET if self.enabled else text
+
+    def green(self, text):
+        return self._paint(text, _GREEN)
+
+    def yellow(self, text):
+        return self._paint(text, _YELLOW)
+
+    def red(self, text):
+        return self._paint(text, _RED)
+
+
+def _colors_for(stream):
+    try:
+        return _Colors(bool(stream.isatty()))
+    except (AttributeError, ValueError):
+        return _Colors(False)
+
+
+# 每行是 ("title", 文本) / ("divider",) / ("option", 编号, ((文本, 颜色), ...))
+_MAIN_MENU_ROWS = (
+    ("title", "clash-sub 管理脚本"),
+    ("option", "0", (("退出", None),)),
+    ("divider",),
+    ("option", "1", (("更新机场订阅", None),)),
+    ("option", "2", (("重新生成所有配置", None),)),
+    ("option", "3", (("查看订阅链接", None),)),
+    ("option", "4", (("查看运行状态", None),)),
+    ("divider",),
+    ("option", "5", (("程序维护", None),)),
+    ("option", "6", (("证书管理", None),)),
+    ("option", "7", (("备份与恢复", None),)),
+    ("option", "8", (("用户与版本", None),)),
+)
+
+_MAINTENANCE_MENU_ROWS = (
+    ("option", "1", (("更新代码并同步配置", None), ("（推荐）", "green"))),
+    ("option", "2", (("仅更新仓库代码", None),)),
+    ("option", "3", (("升级 Mihomo 校验器", None),)),
+    ("option", "0", (("返回主菜单", None),)),
+)
+
+_CERT_MENU_ROWS = (
+    ("option", "1", (("查看证书状态", None),)),
+    ("option", "2", (("强制续期", "red"), ("证书", None))),
+    ("option", "0", (("返回主菜单", None),)),
+)
+
+_BACKUP_MENU_ROWS = (
+    ("option", "1", (("创建完整备份", None),)),
+    ("option", "2", (("恢复中断的配置发布", None),)),
+    ("option", "3", (("回滚", "red"), ("整合安装", None))),
+    ("option", "0", (("返回主菜单", None),)),
+)
+
+_USER_MENU_ROWS = (
+    ("option", "1", (("查看用户历史版本", None),)),
+    ("option", "2", (("回退", "red"), ("用户版本", None))),
+    ("option", "3", (("轮换", "red"), ("用户订阅链接", None))),
+    ("option", "4", (("重新初始化", "red"), (" owner", None))),
+    ("option", "0", (("返回主菜单", None),)),
+)
+
+
+def _display_width(text):
+    return sum(2 if unicodedata.east_asian_width(char) in ("W", "F") else 1 for char in text)
+
+
+def _render_label(segments, colors):
+    painted = []
+    plain = []
+    for text, tone in segments:
+        if tone == "green":
+            painted.append(colors.green(text))
+        elif tone == "red":
+            painted.append(colors.red(text))
+        else:
+            painted.append(text)
+        plain.append(text)
+    return "".join(painted), "".join(plain)
+
+
+def _render_option_line(number, segments, colors):
+    painted, plain = _render_label(segments, colors)
+    return colors.green("%s." % number), painted, _display_width("%s. %s" % (number, plain))
+
+
+def _render_main_menu(colors):
+    rule = "─" * _MENU_BOX_WIDTH
+    lines = ["╔%s╗\n" % rule]
+    for row in _MAIN_MENU_ROWS:
+        if row[0] == "divider":
+            lines.append("│%s│\n" % rule)
+        elif row[0] == "title":
+            padding = " " * (_MENU_BOX_WIDTH - 2 - _display_width(row[1]))
+            lines.append("│  %s%s│\n" % (colors.green(row[1]), padding))
+        else:
+            _, number, segments = row
+            number_painted, label_painted, width = _render_option_line(number, segments, colors)
+            padding = " " * (_MENU_BOX_WIDTH - 2 - width)
+            lines.append("│  %s %s%s│\n" % (number_painted, label_painted, padding))
+    lines.append("╚%s╝\n" % rule)
+    lines.append("\n")
+    return "".join(lines)
+
+
+def _render_submenu(rows, colors):
+    lines = []
+    for row in rows:
+        _, number, segments = row
+        number_painted, label_painted, _width = _render_option_line(number, segments, colors)
+        lines.append("%s %s\n" % (number_painted, label_painted))
+    lines.append("\n")
+    return "".join(lines)
+
+
+MENU = _render_main_menu(_Colors(False)) + "请输入选项 [0-8]："
+MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
+CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
+BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
+USER_MENU = _render_submenu(_USER_MENU_ROWS, _Colors(False)) + "请输入选项 [0-4]："
 
 
 class _CommandParser(argparse.ArgumentParser):
@@ -84,23 +192,41 @@ def main(argv=None, stdin=None, stdout=None, stderr=None, service_factory=None) 
     return _run_command(parsed, stdout, stderr, factory)
 
 
+class _MenuExit(Exception):
+    """EOF or Ctrl-C anywhere in the menu leaves quietly with status 0."""
+
+    def __init__(self, code=0):
+        super().__init__(code)
+        self.code = code
+
+
 def _menu(stdin, stdout, stderr, factory):
-    """Loop the full menu: invalid input stays, failures exit, 0/EOF leaves."""
+    """Loop the menu tree: invalid input stays, failures exit, 0/EOF leaves."""
+    try:
+        return _main_menu(stdin, stdout, stderr, factory, _colors_for(stdout))
+    except _MenuExit as exit:
+        return exit.code
+
+
+def _main_menu(stdin, stdout, stderr, factory, colors):
     while True:
-        stdout.write(MENU)
-        try:
-            choice = stdin.readline()
-        except (EOFError, KeyboardInterrupt):
+        stdout.write(_render_main_menu(colors))
+        choice = _read_choice(stdin, stdout, 8)
+        if choice == "0":
             return 0
-        choice = choice.strip()
-        if not choice or choice == "0":
-            return 0
-        code, exit_menu = _menu_dispatch(choice, stdin, stdout, stderr, factory)
+        outcome = _main_dispatch(choice, stdin, stdout, stderr, factory, colors)
+        if outcome is None:
+            _menu_error(stderr, "invalid_menu_selection")
+            continue
+        code, exit_menu = outcome
         if exit_menu or code != 0:
-            return code
+            raise _MenuExit(code)
+        # 只有主菜单直接操作（1-4）结束后停顿；二级菜单返回时直接重显主菜单。
+        if choice in ("1", "2", "3", "4"):
+            _pause(stdin, stdout, colors)
 
 
-def _menu_dispatch(choice, stdin, stdout, stderr, factory):
+def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "1":
         return _menu_airport(stdin, stdout, stderr, factory)
     if choice == "2":
@@ -108,31 +234,103 @@ def _menu_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "3":
         return _call("links", None, stdout, stderr, factory), False
     if choice == "4":
-        return _call("status", None, stdout, stderr, factory, include_history=True), False
+        return _call("status", None, stdout, stderr, factory), False
     if choice == "5":
-        return _menu_update(stdout, stderr)
+        return _run_submenu(
+            _MAINTENANCE_MENU_ROWS, 3, _maintenance_dispatch, stdin, stdout, stderr, factory, colors
+        )
     if choice == "6":
-        return _menu_update_and_sync(stdout, stderr)
+        return _run_submenu(
+            _CERT_MENU_ROWS, 2, _cert_dispatch, stdin, stdout, stderr, factory, colors
+        )
     if choice == "7":
-        return _menu_mihomo_update(stdin, stdout, stderr)
+        return _run_submenu(
+            _BACKUP_MENU_ROWS, 3, _backup_dispatch, stdin, stdout, stderr, factory, colors
+        )
     if choice == "8":
-        return _menu_cert(stdin, stdout, stderr, renew=False)
-    if choice == "9":
-        return _menu_cert(stdin, stdout, stderr, renew=True)
-    if choice == "10":
+        return _run_submenu(
+            _USER_MENU_ROWS, 4, _user_dispatch, stdin, stdout, stderr, factory, colors
+        )
+    return None
+
+
+def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors):
+    while True:
+        stdout.write(_render_submenu(rows, colors))
+        choice = _read_choice(stdin, stdout, maximum)
+        if choice == "0":
+            return 0, False
+        outcome = dispatch(choice, stdin, stdout, stderr, factory)
+        if outcome is None:
+            _menu_error(stderr, "invalid_menu_selection")
+            continue
+        code, exit_menu = outcome
+        if exit_menu or code != 0:
+            return code, True
+        _pause(stdin, stdout, colors)
+
+
+def _maintenance_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == "1":
+        return _menu_update_and_sync(stdout, stderr)
+    if choice == "2":
+        return _menu_update(stdout, stderr)
+    if choice == "3":
+        return _menu_mihomo_update(stdin, stdout, stderr)
+    return None
+
+
+def _cert_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice in ("1", "2"):
+        return _menu_cert(stdin, stdout, stderr, renew=choice == "2")
+    return None
+
+
+def _backup_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == "1":
         return _managed(stdout, stderr, manage.create_backup), False
-    if choice == "11":
+    if choice == "2":
         return _recover(stdout, stderr), False
-    if choice == "12":
-        return _menu_history_rollback(stdin, stdout, stderr, factory)
-    if choice == "13":
-        return _menu_single_user(stdin, stdout, stderr, factory, "rotate")
-    if choice == "14":
-        return _menu_single_user(stdin, stdout, stderr, factory, "reinitialize")
-    if choice == "15":
+    if choice == "3":
         return _menu_install_rollback(stdin, stdout, stderr)
-    _error(stderr, "invalid_menu_selection", 2)
-    return 0, False
+    return None
+
+
+def _user_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == "1":
+        return _menu_history_view(stdin, stdout, stderr, factory)
+    if choice == "2":
+        return _menu_rollback(stdin, stdout, stderr, factory)
+    if choice == "3":
+        return _menu_single_user(stdin, stdout, stderr, factory, "rotate")
+    if choice == "4":
+        return _menu_single_user(stdin, stdout, stderr, factory, "reinitialize")
+    return None
+
+
+def _read_choice(stdin, stdout, maximum):
+    stdout.write("请输入选项 [0-%d]：" % maximum)
+    stdout.flush()
+    try:
+        line = stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        raise _MenuExit(0)
+    if line == "":
+        raise _MenuExit(0)
+    return line.strip()
+
+
+def _pause(stdin, stdout, colors):
+    stdout.write(colors.yellow(_RETURN_PROMPT))
+    stdout.flush()
+    try:
+        stdin.readline()
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def _menu_error(stderr, code):
+    stderr.write(_colors_for(stderr).red(_ERROR_TEMPLATE % code))
 
 
 def _menu_airport(stdin, stdout, stderr, factory):
@@ -211,7 +409,19 @@ def _menu_mihomo_update(stdin, stdout, stderr):
     return code, False
 
 
-def _menu_history_rollback(stdin, stdout, stderr, factory):
+def _menu_history_view(stdin, stdout, stderr, factory):
+    user = _menu_user_id(stdin, stdout, stderr)
+    if user is None:
+        return 0, False
+    try:
+        history = factory().history(user)
+    except Exception:
+        return _error(stderr, "service_unavailable", 1), False
+    _write_history(stdout, user, history)
+    return 0, False
+
+
+def _menu_rollback(stdin, stdout, stderr, factory):
     user = _menu_user_id(stdin, stdout, stderr)
     if user is None:
         return 0, False
@@ -395,7 +605,7 @@ def _run_command(parsed, stdout, stderr, factory):
     return _error(stderr, "invalid_command", 2)
 
 
-def _call(operation, value, stdout, stderr, factory, *, include_history=False):
+def _call(operation, value, stdout, stderr, factory):
     try:
         service = factory()
         if operation == "airport":
@@ -426,8 +636,6 @@ def _call(operation, value, stdout, stderr, factory, *, include_history=False):
                 stdout.write("nginx：%s；x-ui：%s\n" % (report["units"]["nginx"], report["units"]["x-ui"]))
                 days = report["certificate"]["days_left"]
                 stdout.write("证书：%s（剩余 %s 天）\n" % (report["certificate"]["not_after"], days if days is not None else "未知"))
-            if include_history:
-                _write_all_history(stdout, service, status)
         elif operation == "history":
             _write_history(stdout, value, service.history(value))
         elif operation == "rollback":
@@ -486,12 +694,6 @@ def _format_timestamp(value):
     if not isinstance(value, (int, float)):
         return "无"
     return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-
-
-def _write_all_history(stdout, service, status):
-    stdout.write("历史版本：\n")
-    for user in sorted(status["users"], key=lambda item: item["client_id"]):
-        _write_history(stdout, user["client_id"], service.history(user["client_id"]))
 
 
 def _write_history(stdout, user, history):

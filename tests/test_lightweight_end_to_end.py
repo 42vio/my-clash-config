@@ -471,7 +471,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         with patch("clash_sub.cli.getpass", return_value=airport_url):
             code = cli_main(
                 [],
-                stdin=io.StringIO("1\n"),
+                stdin=io.StringIO("1\n" + airport_url + "\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: harness.service,
@@ -500,7 +500,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         with patch("clash_sub.cli.getpass", return_value=airport_url):
             failed = cli_main(
                 [],
-                stdin=io.StringIO("1\n"),
+                stdin=io.StringIO("1\n" + airport_url + "\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: harness.service,
