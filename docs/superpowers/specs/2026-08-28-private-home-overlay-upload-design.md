@@ -10,15 +10,16 @@ private/home.yaml
 ```
 
 该文件由本地 `template-sync` 从完整、实测可用的
-`private/workbench/balanced.yaml` 中安全提取，再通过唯一受支持的上传入口：
+`private/workbench/balanced.yaml` 中安全提取。维护者使用 SFTP 直接覆盖服务器
+正式文件 `/var/lib/clash-sub/private/home.yaml`，再在服务器执行：
 
 ```bash
-./scripts/upload-home.sh root@<server>
+clash-sub sync
 ```
 
-发送到服务器。服务器必须先验证候选家庭覆盖层和最终 owner 配置，全部通过
-后才把家庭源文件与新 release 一起激活。用户不需要全局安装 `clash-sub`，
-不需要知道服务器私有目录，也不需要执行第二条远程命令。
+服务器读取已经被替换的家庭源文件，用服务器现有 Mihomo 验证最终 owner
+配置，验证通过后才发布新 release。本机不需要安装 Mihomo，也不需要全局
+安装 `clash-sub`。
 
 家庭覆盖层只进入 owner 的 `balanced` 和 `privacy`。owner `standard` 与
 所有 member 配置不得包含家庭节点、家庭组、家庭规则、家庭组扩展或相关
@@ -26,11 +27,14 @@ private/home.yaml
 
 ## Non-goals
 
-- 不提供 `scp`、SFTP、FTP、inbox 或直接覆盖服务器目标文件的用户流程。
+- 不提供上传脚本、`scp`、FTP、inbox、候选文件或自定义远程路径；唯一文档化
+  的传输方式是 SFTP 直接覆盖固定正式路径。
 - 不把家庭配置、加密后的家庭配置或完整工作稿提交 Git。
 - 不增加家庭配置定时刷新、文件监听器、常驻服务或 Web 上传界面。
-- 不让 `template-sync` 下载 Mihomo；继续要求 `MIHOMO_BIN` 指向维护者选择的
-  固定本地二进制。
+- 不在本机安装、下载或调用 Mihomo；本机 `template-sync` 只负责结构、隔离和
+  私密泄漏校验，最终 Mihomo 校验固定由服务器 `clash-sub sync` 执行。
+- 不承诺 SFTP 覆盖与 release 发布构成一个源文件事务。正式 `home.yaml` 一经
+  覆盖，校验失败时不会自动恢复旧源文件。
 - 本次不修改 YAML 注释或排版处理；`template-sync` 与运行时生成继续允许
   解析/导出过程丢弃注释并规范化格式。
 - 不改变机场的 `AmyTelecom.yaml` 稳定 provider 设计、3x-ui 节点来源、用户
@@ -94,7 +98,9 @@ rules:
   但所有引用在最终配置中必须唯一可解析。
 - 家庭规则的策略目标必须在最终 owner 配置中存在。
 - 拒绝未知顶层字段、Jinja 标记、坏 UTF-8/YAML、重复名称、悬空引用、
-  symlink、硬链接、错误 owner、非 `0600` 权限和超过 5 MiB 的文件。
+  symlink、硬链接、错误 owner 和超过 5 MiB 的文件。本机源必须已是 `0600`；
+  服务器 `sync` 对 root 所有且位于 `0700` 私有根中的安全普通文件先规范为
+  `0600` 再解析。
 
 服务器副本固定为 `<private-root>/home.yaml`，权限 `0600 root:root`；开发机
 副本权限为 `0600` 且归当前用户所有。两者都不得被 Git 跟踪。
@@ -161,10 +167,11 @@ manifest 中 balanced/privacy 的 `home` feature 声明随之删除；家庭覆�
 
 1. 验证 home overlay 的独立 schema 和引用图。
 2. 使用合成 3x-ui、`AmyTelecom` provider 和 home sources 渲染 owner
-   `balanced`、`standard`、`privacy` 以及 member `standard`。
+   `balanced`、`standard`、`privacy` 以及 member `standard`，并运行内建
+   Clash 结构检查。
 3. 验证 owner balanced/privacy 含家庭覆盖层，而两个 standard 输出均不含
    任何家庭对象或名称。
-4. 对所有候选运行结构校验、固定 `MIHOMO_BIN` 校验和 tracked secret scan。
+4. 对所有候选运行结构校验和 tracked secret scan；本地不运行 Mihomo。
 5. 把工作稿与新 `private/home.yaml` 中的私密 proxy 标量、家庭 proxy/group
    名称和完整家庭规则加入禁止泄漏集合；扫描器只能输出类别和 tracked
    路径，不能输出命中值。公共组扩展的目标名称本来就存在于公共模板，不
@@ -205,45 +212,50 @@ manifest 中 balanced/privacy 的 `home` feature 声明随之删除；家庭覆�
 继续服务。member 同步沿用现有隔离语义，不得因为 owner 家庭源失败而获得
 任何家庭内容。
 
-## Upload command and server transaction
+## Manual SFTP overwrite and server validation
 
-新增 tracked executable `scripts/upload-home.sh`。唯一公开用法是：
+唯一文档化的上传方式是使用支持 SFTP 的客户端，把本机固定文件：
 
-```bash
-./scripts/upload-home.sh root@<server>
+```text
+private/home.yaml
 ```
 
-脚本必须：
+直接覆盖服务器固定正式文件：
 
-- 从脚本位置解析仓库根目录，因此可从仓库内任意当前目录调用。
-- 只读固定的 `private/home.yaml`；不接受自定义源路径或远程目标路径。
-- 要求一个严格验证的 `root@host` SSH 目标，拒绝选项注入、空白、shell
-  元字符和额外参数。
-- 在发送前拒绝非普通文件、symlink、硬链接、非当前用户、非 `0600` 和
-  超过 5 MiB 的本地源。
-- 通过 SSH stdin 把字节发送给服务器绝对路径命令
-  `/usr/local/bin/clash-sub home-import`；不得把私密内容放进 argv、环境
-  变量、日志或远程临时文件。SSH 密码提示继续由 SSH 自己通过控制终端
-  处理，不得占用传输 stdin。
-- 透传安全错误代码并保留远程退出码；成功只打印家庭配置已上传并同步。
+```text
+/var/lib/clash-sub/private/home.yaml
+```
 
-服务器增加 `clash-sub home-import`：这是非菜单、非用户文档直用的
-root-only stdin 导入命令，不接受文件路径、URL 或其他参数。它必须在现有
-operation lock 和 recovery 之后：
+不得建议普通明文 FTP、`scp`、上传脚本、inbox、候选文件或其他远程路径。
+SFTP 连接、认证和覆盖动作由维护者自行完成，程序不管理 SFTP 凭据。
 
-1. 有上限地读取 stdin，拒绝 TTY、空输入和超限输入。
-2. 在内存中解析候选 home overlay，不写 live `home.yaml`。
-3. 读取当前 3x-ui snapshot、state 和当前 owner release 中已验证的
-   `AmyTelecom.yaml`。
-4. 用候选 home 生成并验证新的 owner release。
-5. 把候选 `<private-root>/home.yaml` 作为 `0600 root:root` 私有工件加入现有
-   activation transaction，与 owner release、state/current marker 和 Nginx
-   routes 一起切换。
-6. 激活成功后写安全状态日志并执行正常 pruning；失败时恢复旧 home、旧
-   release、旧 state/current 和旧 routes，并清理候选。
+覆盖后维护者在服务器执行现有命令：
 
-服务器不存在可验证的当前 owner/airport release 时，导入返回
-`home_owner_not_ready`，不单独保存未经完整组合验证的 home 文件。
+```bash
+clash-sub sync
+```
+
+`sync` 在 operation lock 和 recovery 后处理正式 `home.yaml`：
+
+1. 先以 `lstat` 检查私有根和路径，再用 `O_NOFOLLOW` 打开并以 `fstat` 确认
+   同一个文件描述符是 root 所有的普通单链接文件，大小非零且不超过
+   5 MiB；不安全文件立即失败。
+2. 在私有根目录仍为 `0700 root:root` 的前提下，通过 `fchmod` 把已经打开的
+   安全文件规范为 `0600`，避免 SFTP 客户端使用默认 `0644`。
+3. 严格解析六字段 home overlay；不把内容或私密名称写入输出和状态日志。
+4. owner balanced/privacy 使用新的 home；owner standard 与所有 member
+   standard 不使用 home。读取当前 release 中已验证的 `AmyTelecom.yaml`，
+   配合当前 3x-ui snapshot 生成候选 release。
+5. 用服务器已有 Mihomo 验证候选 owner 完整配置；通过后沿用正常 activation
+   transaction 发布 release、state/current 和 Nginx routes。
+6. Mihomo、生成或 activation 失败时不发布新的 owner release，旧订阅继续
+   服务；member 仍按现有逐用户隔离语义处理。
+
+这个流程有意不回滚源文件：SFTP 已经在命令执行前覆盖正式 `home.yaml`。
+若新文件坏 YAML、截断或语义无效，`sync` 返回脱敏错误，旧 owner release
+继续服务，但服务器上的正式 `home.yaml` 保持错误版本，后续 owner 同步也会
+继续失败，直到维护者修复本机文件并重新 SFTP 覆盖。旧 `home.yaml` 只能从
+执行 SFTP 前制作的备份或既有外部备份恢复；运行时 release 不是源文件备份。
 
 ## Error contract
 
@@ -258,14 +270,17 @@ home_group_invalid
 home_group_reference_invalid
 home_rule_invalid
 home_extension_invalid
-home_owner_not_ready
 home_mihomo_validation_failed
-home_activation_failed
 ```
 
+Nginx/routes/current 切换失败继续使用现有全局 `sync_activation_failed`，因为
+正式 source 已在 transaction 外由 SFTP 替换，不创建虚假的 home source
+原子激活错误。
+
 错误输出不包含 YAML 内容、proxy/group 名称、服务器地址、UUID、密码、密钥、
-token 或工作稿标量。上传中断或 SSH 失败不改变服务器任何文件。所有失败均
-返回非零码；脚本不得把失败包装成成功。
+token 或工作稿标量。SFTP 中断可能留下缺失或截断的正式源文件；随后 `sync`
+必须失败关闭并保留旧 release。所有命令失败均返回非零码，不得把失败包装
+成成功。
 
 ## Migration and cleanup
 
@@ -294,36 +309,41 @@ token 或工作稿标量。上传中断或 SSH 失败不改变服务器任何文
 - 把本地工作流说明改为最新服务器 balanced 下载形成的滚动 workbench +
   生成的私有 home overlay；不得再称 workbench 为永久原稿。
 - 把 `template-sync` 输出改为公共模板与 `private/home.yaml` 双输出。
-- 删除 public home feature、手动 SFTP/scp、服务器目录直传和 inbox 说明。
-- 只展示两条本地日常命令：
+- 删除 public home feature、上传脚本、`scp`、FTP、inbox 和候选文件说明。
+- 展示以下本地命令、固定 SFTP 路径和服务器命令：
 
   ```bash
-  MIHOMO_BIN="<absolute-path>" ./bin/clash-sub template-sync
-  ./scripts/upload-home.sh root@<server>
+  ./bin/clash-sub template-sync
+  # 使用 SFTP：private/home.yaml → /var/lib/clash-sub/private/home.yaml
+  clash-sub sync
   ```
 
-- 明确上传成功已经完成服务器同步，不需要再进入服务器菜单刷新。
+- 明确 SFTP 只覆盖源文件，必须另外执行服务器 `clash-sub sync` 才会校验并
+  发布；失败只保护当前 release，不恢复已覆盖的正式源文件。
+- 若 `template-sync` 改动 tracked public templates，先提交/push，再在服务器
+  只执行 `clash-sub update` 拉取代码；不要提前运行组合的 update+sync。随后
+  SFTP 覆盖 home，最后执行一次 `clash-sub sync`，使 public/home 同批验证。
 - 备份边界继续包含服务器 `<private-root>/home.yaml`；开发机副本由用户的
   本机加密备份策略负责，永不进入 Git。
 - 说明 owner standard/member standard 的家庭隔离保证和安全错误行为。
 
-文档不得把服务器 private-root 路径描述成用户上传接口。现有未提交文档
-修改必须保留并进行最小范围合并，尤其不得覆盖与本设计无关的
-`DEPLOYMENT.md` 用户改动。
+固定 `/var/lib/clash-sub/private/home.yaml` 是唯一允许写入文档的 SFTP 目标；
+不得把其他 private-root 路径描述成上传接口。现有未提交文档修改必须保留并
+进行最小范围合并，尤其不得覆盖与本设计无关的 `DEPLOYMENT.md` 用户改动。
 
 ## Required code boundaries
 
-- `clash_sub/template_sync.py`：实现 home scope 提取、双输出、候选组合校验、
-  私密泄漏校验和失败恢复。
+- `clash_sub/template_sync.py`：实现 home scope 提取、双输出、本地结构/隔离
+  校验、私密泄漏校验和失败恢复；移除本地 Mihomo 要求。
 - `clash_sub/sources.py`：把 home loader 从 proxy 列表升级为严格的六字段
   overlay loader，并提供 bytes/path 两种安全入口。
 - `clash_sub/generator.py`：实现 owner-only home overlay 的 groups、extensions
   与 prepended rules 组合；移除 tracked home feature 依赖。
-- `clash_sub/service.py`、`clash_sub/runtime.py` 与 activation/release 边界：实现
-  stdin home 导入、候选 owner 生成及 home + release 原子激活。
-- `clash_sub/cli.py`：增加脚本调用的非菜单 root-only `home-import` stdin
-  命令，保持普通菜单不新增家庭上传选项。
-- `scripts/upload-home.sh`：实现唯一用户上传入口。
+- `clash_sub/service.py` 与运行时 source/release 边界：让现有 `sync` 安全读取
+  已被 SFTP 覆盖的正式 home source，规范 mode，生成并验证 owner 候选；
+  校验失败保留旧 release 但不恢复源文件。
+- `clash_sub/cli.py`：保持现有 `sync` 命令和菜单结构，不增加 `home-import`
+  或家庭上传入口。
 - `scripts/scan_tracked_secrets.py`：把根级 `private/home.yaml` 标量纳入内存
   泄漏比对，但永不输出命中值。
 - `templates/variants/manifest.yaml`：移除 home feature 声明。
@@ -346,31 +366,39 @@ token 或工作稿标量。上传中断或 SSH 失败不改变服务器任何文
 5. 跨来源 proxy 重名后，家庭组引用同步指向最终名称。
 6. 未知字段、坏 YAML、重复名称、无效 proxy/group/rule/extension/injection、
    终结规则、不安全本地文件和超限文件均返回对应脱敏代码。
-7. 上传脚本只接受一个安全 `root@host`，固定读取 `private/home.yaml`，通过
-   stdin 发送，不泄漏内容，并准确传播 SSH/服务器退出码。
-8. 上传候选解析、Mihomo、Nginx、activation 或写入任一步失败时，旧 home、
-   owner release、state/current、routes 和状态时间保持一致，候选不可达。
-9. 上传成功同时切换 home 与 owner release；随后普通 `sync` 使用已安装的
-   home overlay，机场更新和 owner token rotation 继续正常工作。
+7. `template-sync` 在没有本机 Mihomo 和 `MIHOMO_BIN` 时正常运行，仍原子执行
+   结构、variant 隔离和私密泄漏校验。
+8. SFTP 后的正式 home 是安全普通文件时，`sync` 自动规范为 `0600`；symlink、
+   hard link、错误 owner、空文件和超限文件均失败且不输出内容。
+9. 新 home 解析、Mihomo、Nginx 或 activation 任一步失败时，正式 home 保持
+   新上传字节，旧 owner release/state/current/routes 保持服务；修复并再次
+   `sync` 后才发布。成功后普通同步、机场更新和 owner token rotation 继续
+   使用已验证的 home overlay。
 10. 迁移测试证明旧 fragments 被正确合并后才删除，reference configs 和其他
     保留数据不受影响。
-11. README/operations/private-data 的命令与文件布局断言更新；不再出现支持
-    手动上传或 tracked home feature 的现行说明。
-12. 完整 unittest、Mihomo 候选验证、repository safety 和两种 secret scan
-    全部通过。若基线存在无关失败，必须单独复现并报告，不得以本设计为由
-    修改无关代码。
+11. README/operations/private-data 的命令与文件布局断言更新；只描述 SFTP
+    直覆固定正式 home 路径，不再出现上传脚本、inbox 或 tracked home feature。
+12. 完整 unittest、服务器 Mihomo 路径的合成/可选真实验证、repository safety
+    和两种 secret scan 全部通过。若基线存在无关失败，必须单独复现并报告，
+    不得以本设计为由修改无关代码。
 
 ## Acceptance criteria
 
-维护者在 Mac 仓库内只需运行：
+维护者在 Mac 仓库内运行：
 
 ```bash
-MIHOMO_BIN="<absolute-path>" ./bin/clash-sub template-sync
-./scripts/upload-home.sh root@<server>
+./bin/clash-sub template-sync
 ```
 
-第一条从一份实测 balanced 工作稿安全产生 public templates 与私有 home
-overlay；第二条在不暴露远程目录、不保存传输临时文件的情况下验证并发布
-家庭配置。成功后 owner balanced/privacy 使用家庭节点、策略组、扩展和家庭
-网段规则，owner/member standard 保持完全隔离；任何失败都不改变当前线上
-结果。
+随后用 SFTP 把 `private/home.yaml` 直接覆盖到服务器
+`/var/lib/clash-sub/private/home.yaml`，再在服务器执行：
+
+```bash
+clash-sub sync
+```
+
+本地命令在没有 Mihomo 时从实测 balanced 工作稿产生 public templates 与私有
+home overlay；服务器命令用真实 Mihomo 校验并发布。成功后 owner
+balanced/privacy 使用家庭节点、策略组、扩展和家庭网段规则，owner/member
+standard 保持完全隔离。失败不改变当前线上 release，但不会撤销 SFTP 已经
+完成的正式 `home.yaml` 覆盖。
