@@ -142,6 +142,21 @@ class SourceFetchingTests(unittest.TestCase):
                         "http://127.0.0.1:2096/clash/member", 1024, opener=self.opener_for(response)
                     )
 
+    def test_proxy_source_repairs_utf16_surrogate_pairs_before_rendering(self):
+        response = FakeResponse(
+            (
+                'proxies:\n- name: "\\uD83C\\uDDED\\uD83C\\uDDF0 香港 01"\n'
+                "  type: ss\n"
+            ).encode("utf-8"),
+            "http://127.0.0.1:2096/clash/member",
+        )
+
+        result = fetch_xui_proxies(
+            "http://127.0.0.1:2096/clash/member", 1024, opener=self.opener_for(response)
+        )
+
+        self.assertEqual(result[0]["name"], chr(0x1F1ED) + chr(0x1F1F0) + " 香港 01")
+
     def test_airport_error_never_echoes_url_or_prints_it(self):
         secret = "https://airport.example/private-five-minute-token"
         stdout = io.StringIO()

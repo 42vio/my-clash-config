@@ -245,14 +245,32 @@ def _normalize_proxies(document):
         _source_fail()
     normalized = []
     for proxy in proxies:
+        if isinstance(proxy, Mapping):
+            proxy = _repair_unicode(copy.deepcopy(dict(proxy)))
         if (
             not isinstance(proxy, Mapping)
             or not isinstance(proxy.get("name"), str)
             or not proxy["name"].strip()
         ):
             _source_fail()
-        normalized.append(copy.deepcopy(dict(proxy)))
+        normalized.append(proxy)
     return normalized
+
+
+def _repair_unicode(value):
+    if isinstance(value, str):
+        try:
+            return value.encode("utf-16", "surrogatepass").decode("utf-16")
+        except UnicodeError:
+            _source_fail()
+    if isinstance(value, list):
+        return [_repair_unicode(item) for item in value]
+    if isinstance(value, Mapping):
+        return {
+            _repair_unicode(key): _repair_unicode(item)
+            for key, item in value.items()
+        }
+    return value
 
 
 def _parse_public_endpoint(endpoint):
