@@ -315,8 +315,6 @@ class Installer:
         self._require_xui()
         self._require_panel_base_path()
         self._require_free_tcp_port(443)
-        self._require_host_resolves_locally("sub." + domain)
-        self._require_host_resolves_locally(node_host or ("node." + domain))
         self._phase_done("preflight")
         return True
 
@@ -346,12 +344,6 @@ class Installer:
 
     def _require_free_tcp_port(self, port):
         _require_free_tcp_port(self, port)
-
-    def _require_host_resolves_locally(self, host):
-        resolved = _resolve_host(host)
-        local = _local_ipv4(self.runner)
-        if not any(address in local for address in resolved):
-            raise InstallerError("dns_mismatch")
 
     # -- phase 1 ---------------------------------------------------------
     def optimize_low_memory(self, swap_mb):
@@ -1067,27 +1059,3 @@ def _swap_active(swap_file):
             )
     except OSError:
         return False
-
-
-def _resolve_host(hostname):
-    try:
-        return sorted(
-            {info[4][0] for info in socket.getaddrinfo(hostname, None, socket.AF_INET)}
-        )
-    except OSError:
-        raise InstallerError("dns_mismatch") from None
-
-
-def _local_ipv4(runner):
-    try:
-        result = runner(
-            ["hostname", "-I"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        )
-        return result.stdout.decode("ascii", "replace").split()
-    except Exception:
-        raise InstallerError("dns_mismatch") from None

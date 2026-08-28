@@ -230,15 +230,27 @@ class PreflightTests(unittest.TestCase):
             lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
-        ), patch(
-            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
-        ), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
         ):
             self._installer().preflight("example.com")
 
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("preflight", state.phases_done)
+
+    def test_preflight_skips_dns_matching(self):
+        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
+            "clash_sub.installer.read_xui_snapshot", lambda path: object()
+        ), patch(
+            "clash_sub.installer.read_panel_settings",
+            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
+        ), patch(
+            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
+        ), patch(
+            "clash_sub.installer.socket.getaddrinfo",
+            side_effect=OSError("DNS unavailable"),
+        ) as getaddrinfo:
+            self._installer().preflight("example.com")
+
+        getaddrinfo.assert_not_called()
 
     def test_rejects_default_panel_base_path(self):
         with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
@@ -248,10 +260,6 @@ class PreflightTests(unittest.TestCase):
             lambda path: (2053, "/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
-        ), patch(
-            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
-        ), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
         ):
             with self.assertRaisesRegex(InstallerError, "panel_base_path_required"):
                 self._installer().preflight("example.com")
@@ -264,10 +272,6 @@ class PreflightTests(unittest.TestCase):
             lambda path: (2053, "/bad path/", "127.0.0.1"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
-        ), patch(
-            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
-        ), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
         ):
             with self.assertRaisesRegex(InstallerError, "panel_base_path_required"):
                 self._installer().preflight("example.com")
@@ -282,10 +286,6 @@ class PreflightTests(unittest.TestCase):
             lambda path: (2053, "/xui7k2m/", "0.0.0.0"),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
-        ), patch(
-            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
-        ), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
         ):
             with self.assertRaisesRegex(InstallerError, "panel_listen_unsafe"):
                 installer.preflight("example.com")
@@ -300,10 +300,6 @@ class PreflightTests(unittest.TestCase):
             lambda path: (2053, "/xui7k2m/", ""),
         ), patch(
             "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
-        ), patch(
-            "clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]
-        ), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
         ):
             with self.assertRaisesRegex(InstallerError, "panel_listen_unsafe"):
                 installer.preflight("example.com")
@@ -350,24 +346,6 @@ class PreflightTests(unittest.TestCase):
         installer = self._installer()
 
         installer._require_free_tcp_port(port)
-
-    def test_rejects_dns_mismatch(self):
-        installer = self._installer()
-
-        with patch("clash_sub.installer._resolve_host", lambda host: ["203.0.113.99"]), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
-        ):
-            with self.assertRaisesRegex(InstallerError, "dns_mismatch"):
-                installer._require_host_resolves_locally("sub.example.com")
-
-    def test_accepts_matching_dns(self):
-        installer = self._installer()
-
-        with patch("clash_sub.installer._resolve_host", lambda host: ["192.0.2.1"]), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1", "10.0.0.5"]
-        ):
-            installer._require_host_resolves_locally("sub.example.com")
-
 
 class LowMemoryPhaseTests(unittest.TestCase):
     def setUp(self):
@@ -1297,45 +1275,6 @@ class NodeHostTests(unittest.TestCase):
 
         content = (self.root / "private" / "config" / "service.yaml").read_text(encoding="utf-8")
         self.assertIn("xui-public-endpoint: proxy.42io.cc:443", content)
-
-    def test_preflight_checks_both_hosts_resolve_locally(self):
-        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
-        resolved = {"sub.42io.cc": ["192.0.2.1"], "node.42io.cc": ["192.0.2.1"]}
-
-        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer.read_xui_snapshot", lambda path: object()
-        ), patch(
-            "clash_sub.installer.read_panel_settings",
-            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
-        ), patch(
-            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
-        ), patch(
-            "clash_sub.installer._resolve_host",
-            lambda host: resolved.get(host, ["203.0.113.9"]),
-        ), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
-        ):
-            installer.preflight("42io.cc")
-
-    def test_preflight_rejects_node_host_not_pointing_here(self):
-        installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)
-        resolved = {"sub.42io.cc": ["192.0.2.1"], "node.42io.cc": ["203.0.113.9"]}
-
-        with patch("clash_sub.installer.os.geteuid", return_value=0), patch(
-            "clash_sub.installer.read_xui_snapshot", lambda path: object()
-        ), patch(
-            "clash_sub.installer.read_panel_settings",
-            lambda path: (2053, "/xui7k2m/", "127.0.0.1"),
-        ), patch(
-            "clash_sub.installer._require_free_tcp_port", lambda installer_self, port: None
-        ), patch(
-            "clash_sub.installer._resolve_host",
-            lambda host: resolved.get(host, ["203.0.113.9"]),
-        ), patch(
-            "clash_sub.installer._local_ipv4", lambda runner: ["192.0.2.1"]
-        ):
-            with self.assertRaisesRegex(InstallerError, "dns_mismatch"):
-                installer.preflight("42io.cc")
 
 class OwnerValidationTests(unittest.TestCase):
     def setUp(self):
