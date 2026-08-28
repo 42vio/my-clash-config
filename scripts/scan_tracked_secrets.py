@@ -15,8 +15,10 @@ private data?  It checks three things:
    stay allowed.
 3. With ``--private-root``: credential-like scalar values extracted in
    memory from the ignored ``private/config``, ``private/sources``, and
-   ``private/workbench`` trees must not occur, byte for byte, in any
-   tracked file.
+   ``private/workbench`` trees -- and from the exact root
+   ``private/home.yaml`` overlay, whose complete rules also join the
+   comparison unless tracked documentation already publishes them --
+   must not occur, byte for byte, in any tracked file.
 
 Output is always a category and a tracked path.  A matched value is
 never printed, logged, or embedded in an error message; malformed
@@ -141,6 +143,13 @@ _CREDENTIAL_KEY_FRAGMENTS = (
     "credential",
 )
 _PRIVATE_SCAN_DIRECTORIES = ("config", "sources", "workbench")
+# The ignored root home overlay joins the private-value comparison as
+# one exact filename, never a recursed directory.
+_HOME_OVERLAY_FILENAME = "home.yaml"
+# Tracked documentation legitimately publishes overlay references (the
+# documented group names and example rules); suffixes listed here are
+# that published baseline.
+_DOCUMENTATION_SUFFIXES = (".md",)
 
 
 class Finding:
@@ -368,6 +377,9 @@ def _collect_scalars(node, key: str, out: List[Tuple[str, str]]) -> None:
 
 
 def _iter_private_yaml_files(private_root: Path) -> Iterable[Path]:
+    home = private_root / _HOME_OVERLAY_FILENAME
+    if not home.is_symlink() and home.is_file():
+        yield home
     for directory in _PRIVATE_SCAN_DIRECTORIES:
         base = private_root / directory
         if not base.is_dir() or base.is_symlink():
@@ -378,16 +390,20 @@ def _iter_private_yaml_files(private_root: Path) -> Iterable[Path]:
             yield path
 
 
-def extract_private_values(private_root: Path) -> Set[bytes]:
-    """Extract credential-like scalar bytes from ignored private YAML.
+def extract_private_values(
+    private_root: Path, documentation_payloads: Optional[List[bytes]] = None
+) -> Set[bytes]:
+    """Extract private scalar bytes from ignored private YAML.
 
-    Only ``private/config``, ``private/sources``, and ``private/workbench``
-    are read, entirely in memory; nothing is written and no value is ever
-    printed.  Malformed YAML is skipped silently: a parser error message
-    would embed the offending source line, which may itself carry a
-    private value.
+    The ``private/config``, ``private/sources``, and ``private/workbench``
+    trees and the exact root ``private/home.yaml`` overlay file are read,
+    entirely in memory; nothing is written and no value is ever printed.
+    Malformed YAML is skipped silently: a parser error message would
+    embed the offending source line, which may itself carry a private
+    value.
     """
     values: Set[bytes] = set()
+    home_path = private_root / _HOME_OVERLAY_FILENAME
     for path in _iter_private_yaml_files(private_root):
         try:
             if path.stat().st_size > MAX_FILE_BYTES:
@@ -403,7 +419,48 @@ def extract_private_values(private_root: Path) -> Set[bytes]:
             if "://" in value:
                 for segment in _url_segment_candidates(value):
                     values.add(segment.encode("utf-8"))
+        if path == home_path:
+            _add_home_rule_values(document, values, documentation_payloads or [])
     return values
+
+
+def _add_home_rule_values(
+    document, values: Set[bytes], documentation_payloads: List[bytes]
+) -> None:
+    """Add complete home rules that tracked documentation has not published.
+
+    A whole rule string is a leak needle only while it is unpublished:
+    the tracked design notes legitimately quote the documented overlay
+    rules, so a rule already occurring byte for byte in tracked
+    documentation is a public reference rather than a private value.
+    Rule text is never printed.
+    """
+    if not isinstance(document, dict):
+        return
+    rules = document.get("rules")
+    if not isinstance(rules, list):
+        return
+    for rule in rules:
+        if not isinstance(rule, str) or len(rule) < MIN_PRIVATE_VALUE_CHARS:
+            continue
+        encoded = rule.encode("utf-8")
+        if any(encoded in payload for payload in documentation_payloads):
+            continue
+        values.add(encoded)
+
+
+def _tracked_documentation_payloads(
+    root: Path, tracked_paths: List[str]
+) -> List[bytes]:
+    """Return tracked documentation payloads, the published-value baseline."""
+    payloads: List[bytes] = []
+    for relative_path in tracked_paths:
+        if not relative_path.endswith(_DOCUMENTATION_SUFFIXES):
+            continue
+        payload = _read_scannable_bytes(root / relative_path)
+        if payload is not None:
+            payloads.append(payload)
+    return payloads
 
 
 def _read_scannable_bytes(path: Path) -> Optional[bytes]:
@@ -432,7 +489,9 @@ def scan_repository(
         )
     private_values: Set[bytes] = set()
     if private_root is not None:
-        private_values = extract_private_values(private_root)
+        private_values = extract_private_values(
+            private_root, _tracked_documentation_payloads(root, tracked_paths)
+        )
     for relative_path in tracked_paths:
         category = forbidden_path_category(relative_path)
         if category is not None:
@@ -459,7 +518,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--private-root",
         type=Path,
         default=None,
-        help="ignored private root whose config/sources/workbench values must not appear tracked",
+        help="ignored private root whose config/sources/workbench and root home.yaml values must not appear tracked",
     )
     return parser.parse_args(argv)
 

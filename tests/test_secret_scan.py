@@ -32,6 +32,17 @@ SUBSCRIPTION_TOKEN = (
     + "-ABC234"
 )
 
+# Synthetic root home-overlay values: a credential, long random-looking
+# proxy/group names, one private rule, and one rule that tracked
+# documentation legitimately publishes.  None of these form proxy URIs,
+# UUIDs, or bare 32-hex runs, so this tracked test file never flags
+# itself.
+HOME_PASSWORD = "home-private-password-0123456789"
+HOME_PROXY_NAME = "home-node-2468ace0b13579df"
+HOME_GROUP_NAME = "home-group-13579bdf2468ace0"
+HOME_RULE = "DOMAIN-SUFFIX,home-private-7f3a91b2.example,HomeGroup"
+HOME_DOCUMENTED_RULE = "IP-CIDR,192.0.2.0/24,HomeGroup,no-resolve"
+
 
 def load_scanner():
     spec = importlib.util.spec_from_file_location("scan_tracked_secrets", SCANNER_PATH)
@@ -49,6 +60,40 @@ def run_git(repository: Path, *arguments: str) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def write_home(
+    private_root: Path,
+    *,
+    password: str = HOME_PASSWORD,
+    proxy_name: str = HOME_PROXY_NAME,
+    group_name: str = HOME_GROUP_NAME,
+    rules=None,
+) -> None:
+    """Write one synthetic six-field root home overlay (never real data)."""
+    if rules is None:
+        rules = (HOME_RULE,)
+    private_root.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "proxies:",
+        "  - name: %s" % proxy_name,
+        "    type: trojan",
+        "    server: home-gw.internal",
+        "    password: %s" % password,
+        "proxy-groups:",
+        "  - name: %s" % group_name,
+        "    proxies:",
+        "      - %s" % proxy_name,
+        "extend-proxy-groups:",
+        "  BiliBili:",
+        "    - %s" % group_name,
+        "inject-node-groups:",
+        "  - %s" % group_name,
+        "inject-home-node-groups: []",
+        "rules:",
+    ]
+    lines.extend("  - %s" % rule for rule in rules)
+    (private_root / "home.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class ScannerTestCase(unittest.TestCase):
@@ -636,9 +681,173 @@ class PrivateValueComparisonTests(ScannerTestCase):
             self.assertNotIn("Traceback", self.captured_report)
 
 
+class RootHomeOverlayValueTests(ScannerTestCase):
+    """The ignored root ``private/home.yaml`` joins the leak comparison.
+
+    Home credentials, home proxy/group names, and complete private
+    rules must hit when they leak into tracked files, while public
+    extension targets and rules already published in tracked
+    documentation must stay unreported.  No test may let the report
+    echo a matched value.
+    """
+
+    def test_root_home_values_are_compared_without_echoing_them(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            write_home(private_root)
+            self.stage(repository, "tracked.txt", HOME_PASSWORD + "\n")
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("tracked-private-value: tracked.txt", self.captured_report)
+            self.assertNotIn(HOME_PASSWORD, self.captured_report)
+
+    def test_root_home_proxy_and_group_names_are_compared_without_echo(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            write_home(private_root)
+            self.stage(
+                repository,
+                "names.txt",
+                "%s\n%s\n" % (HOME_PROXY_NAME, HOME_GROUP_NAME),
+            )
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("tracked-private-value: names.txt", self.captured_report)
+            self.assertNotIn(HOME_PROXY_NAME, self.captured_report)
+            self.assertNotIn(HOME_GROUP_NAME, self.captured_report)
+
+    def test_root_home_rule_is_compared_as_a_whole_string(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            write_home(private_root)
+            self.stage(repository, "rules.txt", "copied rule: %s\n" % HOME_RULE)
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("tracked-private-value: rules.txt", self.captured_report)
+            self.assertNotIn(HOME_RULE, self.captured_report)
+
+    def test_documented_home_rule_stays_public_while_unique_rules_hit(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            write_home(private_root, rules=(HOME_DOCUMENTED_RULE, HOME_RULE))
+            self.stage(
+                repository,
+                "docs/design.md",
+                "overlay rule: %s\n" % HOME_DOCUMENTED_RULE,
+            )
+            self.stage(repository, "notes.txt", "copied rule: %s\n" % HOME_RULE)
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("tracked-private-value: notes.txt", self.captured_report)
+            self.assertNotIn(
+                "tracked-private-value: docs/design.md", self.captured_report
+            )
+            self.assertNotIn(HOME_DOCUMENTED_RULE, self.captured_report)
+            self.assertNotIn(HOME_RULE, self.captured_report)
+
+    def test_public_extension_targets_do_not_flag_tracked_references(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            write_home(
+                private_root,
+                proxy_name="ProxyServer",
+                group_name="HomeServer",
+                rules=(HOME_DOCUMENTED_RULE,),
+            )
+            self.stage(
+                repository,
+                "README.md",
+                "extend BiliBili and 国内流媒体 with ProxyServer and HomeServer members\n",
+            )
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
+
+    def test_malformed_root_home_is_skipped_secret_safely(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            private_root.mkdir(parents=True)
+            (private_root / "home.yaml").write_text(
+                "proxies: [unclosed\n  password: %s\n" % HOME_PASSWORD,
+                encoding="utf-8",
+            )
+            self.stage(repository, "README.md", "safe\n")
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
+            self.assertNotIn("Traceback", self.captured_report)
+            self.assertNotIn(HOME_PASSWORD, self.captured_report)
+
+    def test_missing_root_home_stays_secret_safe(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            self.write_private_files(private_root)
+            self.stage(repository, "README.md", "safe\n")
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
+
+    def test_root_home_symlink_is_not_followed(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            private_root = repository / "private"
+            private_root.mkdir(parents=True)
+            outside = repository / "outside-home.yaml"
+            outside.write_text(
+                "proxies:\n  - name: x\n    password: %s\n" % HOME_PASSWORD,
+                encoding="utf-8",
+            )
+            (private_root / "home.yaml").symlink_to(outside)
+            self.stage(repository, "leaked.md", "contains %s\n" % HOME_PASSWORD)
+
+            exit_code = self.scan(repository, private_root=private_root)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
+
+
 class RepositoryScanTests(ScannerTestCase):
     def test_real_repository_scans_clean(self):
         exit_code = self.scan(ROOT)
+
+        self.assertEqual(exit_code, 0, self.captured_report)
+
+    def test_real_repository_stays_clean_with_documented_home_overlay(self):
+        # The overlay shape the tracked design notes publish (short
+        # public-style group names plus the documented rule text, which
+        # tracked non-markdown files also quote) must keep the real
+        # repository scan clean once private/home.yaml materializes.
+        # The rule is assembled from adjacent literals so this tracked
+        # test file never contains the contiguous rule string itself.
+        documented_rule = "IP-CIDR,192.168.2.0/24,HomeServer,no-" "resolve"
+        with TemporaryDirectory() as directory:
+            private_root = Path(directory) / "private"
+            write_home(
+                private_root,
+                password="scanprobe",
+                proxy_name="ProxyServer",
+                group_name="HomeServer",
+                rules=(documented_rule,),
+            )
+
+            exit_code = self.scan(ROOT, private_root=private_root)
 
         self.assertEqual(exit_code, 0, self.captured_report)
 

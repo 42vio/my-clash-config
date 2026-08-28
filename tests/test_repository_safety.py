@@ -225,6 +225,7 @@ class RepositorySafetyTests(unittest.TestCase):
 
     def test_every_runtime_private_path_is_ignored(self):
         paths = (
+            "private/home.yaml",
             "private/config/service.yaml",
             "private/config/users.yaml",
             "private/reference-configs/2026-08-21/My-Clash_Balanced.yaml",
@@ -245,6 +246,15 @@ class RepositorySafetyTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, path)
+
+    def test_secret_scanner_pins_the_root_home_overlay(self):
+        # The private-value comparison must keep covering the ignored
+        # root home overlay; dropping the file from the scanner would
+        # silently stop catching home credential leaks.
+        source = (ROOT / "scripts" / "scan_tracked_secrets.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"home.yaml"', source)
 
     def test_reference_sources_are_not_tracked(self):
         for name in (
