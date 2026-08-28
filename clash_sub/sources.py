@@ -447,6 +447,91 @@ def load_home_overlay(path, max_bytes):
     return parse_home_overlay(payload, max_bytes)
 
 
+def normalize_server_home(path, max_bytes, expected_uid=0):
+    """Safely open one directly uploaded server home file.
+
+    The maintainer overwrites ``home.yaml`` over SFTP outside any program
+    transaction.  This server-side boundary accepts only a regular
+    single-link file owned by the expected (root) user inside the ``0700``
+    expected-owner private root, tightens a safe file's mode to ``0600``,
+    and rechecks the descriptor identity before parsing.  Uploaded source
+    bytes are never rewritten, moved, or journaled here; only the mode of
+    an already-safe file changes.  ``load_home_overlay`` remains the strict
+    non-mutating boundary for the Mac workbench.
+    """
+    if (
+        type(max_bytes) is not int
+        or max_bytes <= 0
+        or type(expected_uid) is not int
+        or expected_uid < 0
+    ):
+        _home_fail("home_source_invalid")
+    home_path = Path(path)
+    descriptor = None
+    failure = None
+    try:
+        parent = home_path.parent.lstat()
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or stat.S_ISLNK(parent.st_mode)
+            or stat.S_IMODE(parent.st_mode) != 0o700
+            or parent.st_uid != expected_uid
+        ):
+            _home_fail("home_source_invalid")
+        linked = home_path.lstat()
+        if not stat.S_ISREG(linked.st_mode) or stat.S_ISLNK(linked.st_mode):
+            _home_fail("home_source_invalid")
+        descriptor = os.open(home_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != expected_uid
+            or opened.st_size > max_bytes
+        ):
+            _home_fail("home_source_invalid")
+        if opened.st_size == 0:
+            _home_fail("home_yaml_invalid")
+        os.fchmod(descriptor, 0o600)
+        verified = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(verified.st_mode)
+            or stat.S_IMODE(verified.st_mode) != 0o600
+            or verified.st_nlink != 1
+            or verified.st_uid != expected_uid
+            or (verified.st_dev, verified.st_ino) != (linked.st_dev, linked.st_ino)
+        ):
+            _home_fail("home_source_invalid")
+        payload = _read_home_bytes(descriptor, max_bytes)
+        return parse_home_overlay(payload, max_bytes)
+    except HomeSourceError as error:
+        failure = error
+    except (OSError, TypeError, ValueError):
+        failure = HomeSourceError("home_source_invalid")
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+    raise failure
+
+
+def _read_home_bytes(descriptor, max_bytes):
+    chunks = []
+    remaining = max_bytes + 1
+    while remaining > 0:
+        chunk = os.read(descriptor, min(remaining, 64 * 1024))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    payload = b"".join(chunks)
+    if len(payload) > max_bytes:
+        _home_fail("home_source_invalid")
+    return payload
+
+
 def dump_home_overlay(home):
     """Serialize one home overlay back to canonical overlay bytes."""
     document = {

@@ -9,7 +9,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from clash_sub.domain import HomeOverlay, PreparedRelease, RuntimeState, ServiceConfig, UserState, XuiClient, XuiSnapshot
+from clash_sub.sources import HomeSourceError, dump_home_overlay, normalize_server_home
 from clash_sub.state import StateError
 
 try:
@@ -54,6 +57,23 @@ def token(byte, code):
 
 def client(client_id, email, enabled=True, upload=1):
     return XuiClient(client_id, email, "sub-%s" % client_id, enabled, upload, 2, 3, 4000)
+
+
+def home_document_bytes(node_name="Home"):
+    """Synthetic six-field overlay bytes exactly as SFTP would upload them."""
+    return yaml.safe_dump(
+        {
+            "proxies": [{"name": node_name, "type": "ss"}],
+            "proxy-groups": [
+                {"name": "HomeServer", "type": "select", "proxies": [node_name]}
+            ],
+            "extend-proxy-groups": {},
+            "inject-node-groups": [],
+            "inject-home-node-groups": ["HomeServer"],
+            "rules": [],
+        },
+        sort_keys=False,
+    ).encode("utf-8")
 
 
 class FakeStore:
@@ -146,6 +166,12 @@ class ServiceTests(unittest.TestCase):
             inject_home_node_groups=("HomeServer",),
             rules=(),
         )
+        # The official server home file, planted exactly as the workbench
+        # template-sync boundary would leave it behind.
+        self.home_path = Path(self.config.private_root) / "home.yaml"
+        self.home_path.write_bytes(dump_home_overlay(self.home))
+        os.chmod(self.home_path, 0o600)
+        self.member_render_text = "member standard"
         self.fail_client = None
         self.fail_owner_render = False
         self.service = ClashSubService(
@@ -156,7 +182,10 @@ class ServiceTests(unittest.TestCase):
             rotate_user_token=self._rotate,
             fetch_xui_proxies=self._fetch,
             download_airport_document=self._download,
-            load_home_overlay=lambda path, max_bytes: self.home,
+            # The local test user stands in for the root service account.
+            load_home_overlay=lambda path, max_bytes: normalize_server_home(
+                path, max_bytes, expected_uid=os.geteuid()
+            ),
             render_user_bundle=self._render,
             validate_clash=self._validate,
             mihomo_validator=type("Validator", (), {"validate": lambda _, path: self.mihomo_calls.append(path)})(),
@@ -172,6 +201,39 @@ class ServiceTests(unittest.TestCase):
     def bootstrap(self):
         """Mirror the operational order: import the airport before syncing."""
         return self.service.update_airport("https://airport.example/bootstrap")
+
+    def current_owner_release(self):
+        return self.state.users[7].current_release
+
+    def active_owner_view(self):
+        """The whole live owner view: identity, release, bytes, airport."""
+        release = self.store.verify_release(7, self.current_owner_release())
+        return (
+            self.state.users[7],
+            release.release_id,
+            tuple(sorted(release.bundle.items())),
+            getattr(release, "airport", None),
+        )
+
+    def _upload_home_bytes(self, payload):
+        self.home_path.write_bytes(payload)
+        return payload
+
+    def _assert_bad_home_is_isolated(self, plant, code):
+        """One bad upload keeps the old owner view live while members sync."""
+        self.bootstrap()
+        self.service.sync_all()
+        before = self.active_owner_view()
+        uploaded = plant()
+        self.member_render_text = "member still syncing"
+
+        result = self.service.sync_all()
+
+        self.assertEqual(result["errors"], ({"client_id": 7, "code": code},))
+        self.assertEqual(self.active_owner_view(), before)
+        self.assertIn(8, [item["client_id"] for item in result["updated"]])
+        self.assertEqual(len(self.activator.calls), 3)
+        return uploaded
 
     def _reconcile(self, previous, clients, owner_email):
         users = {} if previous is None else dict(previous.users)
@@ -204,19 +266,32 @@ class ServiceTests(unittest.TestCase):
         self.validation_calls.append((forbidden, allowed_provider_url))
 
     def _render(self, is_owner, xui, airport, home, template_root):
-        self.generator_calls.append((is_owner, airport))
+        self.generator_calls.append((is_owner, airport, home))
         if is_owner and self.fail_owner_render:
             raise RuntimeError("owner private failure")
         if is_owner:
+            # Mirror the generator contract: the private home nodes are
+            # composed into the balanced and privacy variants only.
+            home_nodes = (
+                ""
+                if home is None
+                else "".join("- name: %s\n" % proxy["name"] for proxy in home.proxies)
+            )
             return {
                 variant: (
                     "proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\n"
                     "    path: ./proxy_providers/AmyTelecom-%s.yaml\n    interval: 0\n"
-                    "proxies:\n- name: Owner %s\n" % (airport.url, airport.digest[:8], variant)
+                    "proxies:\n- name: Owner %s\n%s"
+                    % (
+                        airport.url,
+                        airport.digest[:8],
+                        variant,
+                        home_nodes if variant in ("balanced", "privacy") else "",
+                    )
                 )
                 for variant in ("balanced", "standard", "privacy")
             }
-        return {"standard": "member standard"}
+        return {"standard": self.member_render_text}
 
     def _routes(self, config, state, clients):
         if any(user.active and user.current_release is None for user in state.users.values()):
@@ -576,7 +651,10 @@ class ServiceTests(unittest.TestCase):
             self.service._journal(success=self.clock_value)
 
         self.assertFalse(journal.exists())
-        self.assertEqual(tuple(Path(self.config.private_root).iterdir()), ())
+        # Only the fixture's own home upload remains; no journal or temp file.
+        self.assertEqual(
+            tuple(Path(self.config.private_root).iterdir()), (self.home_path,)
+        )
 
     def test_render_validation_receives_tokens_loopback_subid_and_airport_url(self):
         seen = []
@@ -588,6 +666,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_first_airport_update_allows_missing_home_snapshot(self):
         home = Path(self.config.private_root) / "home.yaml"
+        home.unlink()
         self.assertFalse(home.exists())
         loaded = []
         self.service._load_home = lambda path, max_bytes: loaded.append(path) or self.home
@@ -801,6 +880,112 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(verified, [])
                 self.assertEqual(self.state, state)
                 self.assertEqual(len(self.activator.calls), calls)
+
+    def test_sync_publishes_directly_overwritten_home_after_server_validation(self):
+        self.bootstrap()
+        self.service.sync_all()
+        previous = self.current_owner_release()
+        uploaded = home_document_bytes(node_name="Home New")
+        self.home_path.write_bytes(uploaded)
+        self.home_path.chmod(0o644)
+
+        result = self.service.sync_all()
+
+        self.assertFalse(result["errors"])
+        self.assertNotEqual(self.current_owner_release(), previous)
+        self.assertEqual(self.home_path.read_bytes(), uploaded)
+        self.assertEqual(stat.S_IMODE(self.home_path.stat().st_mode), 0o600)
+        release = self.store.verify_release(7, self.current_owner_release())
+        for variant in ("balanced", "privacy"):
+            self.assertIn("- name: Home New\n", release.bundle[variant])
+            self.assertNotIn("- name: Home\n", release.bundle[variant])
+        self.assertNotIn("Home New", release.bundle["standard"])
+        member = self.store.verify_release(8, self.state.users[8].current_release)
+        self.assertNotIn("Home New", member.bundle["standard"])
+
+    def test_sync_without_any_home_file_omits_the_overlay_without_error(self):
+        self.bootstrap()
+        self.service.sync_all()
+        self.home_path.unlink()
+
+        result = self.service.sync_all()
+
+        self.assertFalse(result["errors"])
+        release = self.store.verify_release(7, self.current_owner_release())
+        for variant in ("balanced", "privacy"):
+            self.assertNotIn("- name: Home\n", release.bundle[variant])
+
+    def test_bad_overwritten_home_stays_for_debug_while_old_release_stays_live(self):
+        self.bootstrap()
+        self.service.sync_all()
+        before = self.active_owner_view()
+        uploaded = b"proxy-groups: ["
+        self.home_path.write_bytes(uploaded)
+        self.member_render_text = "member still syncing"
+
+        result = self.service.sync_all()
+
+        self.assertEqual(self.home_path.read_bytes(), uploaded)
+        self.assertEqual(self.active_owner_view(), before)
+        self.assertEqual(result["errors"], ({"client_id": 7, "code": "home_yaml_invalid"},))
+        self.assertIn(8, [item["client_id"] for item in result["updated"]])
+        self.assertEqual(self.service.status()["last_errors"], ("home_yaml_invalid",))
+
+    def test_overwritten_home_with_invalid_schema_is_reported_and_isolated(self):
+        uploaded = yaml.safe_dump(
+            {"proxies": [{"name": "Home", "type": "ss"}]}, sort_keys=False
+        ).encode("utf-8")
+
+        kept = self._assert_bad_home_is_isolated(
+            lambda: self._upload_home_bytes(uploaded), "home_schema_invalid"
+        )
+
+        self.assertEqual(kept, uploaded)
+        self.assertEqual(self.home_path.read_bytes(), uploaded)
+
+    def test_unsafe_overwritten_home_metadata_is_reported_and_isolated(self):
+        target = self.home_path.with_name("uploaded-home.yaml")
+
+        def plant():
+            self.home_path.rename(target)
+            self.home_path.symlink_to(target)
+            return None
+
+        self._assert_bad_home_is_isolated(plant, "home_source_invalid")
+
+        # The program never rolled the unsafe link back or touched it.
+        self.assertTrue(self.home_path.is_symlink())
+        self.assertEqual(target.read_bytes(), dump_home_overlay(self.home))
+
+    def test_overwritten_home_with_invalid_reference_is_reported_and_isolated(self):
+        document = yaml.safe_load(home_document_bytes())
+        document["inject-home-node-groups"] = ["MissingGroup"]
+        uploaded = yaml.safe_dump(document, sort_keys=False).encode("utf-8")
+
+        kept = self._assert_bad_home_is_isolated(
+            lambda: self._upload_home_bytes(uploaded), "home_group_reference_invalid"
+        )
+
+        self.assertEqual(kept, uploaded)
+
+    def test_home_composition_failure_reports_the_stable_home_code(self):
+        self.bootstrap()
+        self.service.sync_all()
+        before = self.active_owner_view()
+
+        def render(is_owner, xui, airport, home, template_root):
+            if not is_owner:
+                return {"standard": "member still syncing"}
+            raise HomeSourceError("home_group_invalid")
+
+        self.service._render = render
+        self.member_render_text = "member still syncing"
+
+        result = self.service.sync_all()
+
+        self.assertEqual(result["errors"], ({"client_id": 7, "code": "home_group_invalid"},))
+        self.assertEqual(self.active_owner_view(), before)
+        self.assertIn(8, [item["client_id"] for item in result["updated"]])
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, AirportProvider, HomeOverlay, RuntimeState
-from clash_sub.sources import home_overlay_digest, normalize_xui_endpoints
+from clash_sub.sources import HomeSourceError, home_overlay_digest, normalize_xui_endpoints
 from clash_sub.state import StateError
 
 class ServiceError(RuntimeError):
@@ -72,14 +72,18 @@ class ClashSubService:
     def sync_all(self):
         with self._lock():
             self._recover()
-            snapshot,state=self._reconciled(); airport,home,bad_owner=self._owner_sources(state); next_state=state; candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in state.users.values())
+            snapshot,state=self._reconciled(); airport,home,owner_error=self._owner_sources(state); next_state=state; candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in state.users.values())
             for client in snapshot.clients:
                 user=state.users.get(client.client_id); owner=client.client_id==state.owner_client_id
                 if not user or not client.enabled: continue
-                if owner and bad_owner: errors.append(_error(client,"owner_update_failed")); continue
+                if owner and owner_error: errors.append(_error(client,owner_error)); continue
                 try:
                     release=self._prepare(client,owner,snapshot.source_url(client),airport if owner else None,home if owner else None,user,tokens,candidates=candidates)
                     if release: next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
+                except HomeSourceError as error:
+                    # A home overlay failure keeps its stable sanitized code;
+                    # the owner candidate is discarded while members continue.
+                    owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,error.code if owner else "member_update_failed"))
                 except Exception:
                     owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
             try: self._activate(snapshot.clients,next_state,candidates)
@@ -122,8 +126,8 @@ class ClashSubService:
             try:
                 next_state=self._rotate(state,client_id)
                 if client_id==state.owner_client_id:
-                    airport,home,bad_owner=self._owner_sources(state)
-                    if bad_owner: raise ValueError
+                    airport,home,owner_error=self._owner_sources(state)
+                    if owner_error: raise ValueError
                     release=self._prepare(client,True,snapshot.source_url(client),airport,home,next_state.users[client_id],tuple(u.token for u in next_state.users.values()),candidates=candidates)
                     if release: next_state=_with_release(next_state,client_id,release.release_id)
                 self._activate(snapshot.clients,next_state,candidates)
@@ -214,15 +218,24 @@ class ClashSubService:
         except Exception:raise ServiceError("runtime_recovery_failed") from None
     def _owner_sources(self,state):
         # The airport supply lives inside the current verified owner release;
-        # the expired upstream URL is never contacted again.
+        # the expired upstream URL is never contacted again.  The home file is
+        # loaded once through the server-side boundary; its stable code
+        # survives, while missing airport or current-release data keeps the
+        # generic owner code.
         try:
-            identity=state.users.get(state.owner_client_id)
-            if not identity or not identity.current_release: return None,self._optional_home(),True
-            airport=self._releases.read_airport_document(state.owner_client_id,identity.current_release)
-            if airport is None: return None,self._optional_home(),True
-            return airport,self._optional_home(),False
+            home=self._optional_home()
+        except HomeSourceError as error:
+            return None,None,error.code
         except Exception:
-            return None,self._optional_home(),True
+            return None,None,"owner_update_failed"
+        identity=state.users.get(state.owner_client_id)
+        if not identity or not identity.current_release: return None,home,"owner_update_failed"
+        try:
+            airport=self._releases.read_airport_document(state.owner_client_id,identity.current_release)
+        except Exception:
+            return None,home,"owner_update_failed"
+        if airport is None: return None,home,"owner_update_failed"
+        return airport,home,None
     def _optional_home(self):
         path=_home_path(self.config)
         # Only genuine absence is optional; a dangling symlink, insecure

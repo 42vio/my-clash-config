@@ -12,7 +12,7 @@ from clash_sub.service import ClashSubService
 from clash_sub.sources import (
     download_airport_document,
     fetch_xui_proxies,
-    load_home_overlay,
+    normalize_server_home,
 )
 from clash_sub.state import (
     load_state,
@@ -45,7 +45,7 @@ def build_service(root=None, runner=None):
         reinitialize_owner=reinitialize_owner,
         fetch_xui_proxies=fetch_xui_proxies,
         download_airport_document=download_airport_document,
-        load_home_overlay=load_home_overlay,
+        load_home_overlay=normalize_server_home,
         render_user_bundle=render_user_bundle,
         validate_clash=validate_clash,
         mihomo_validator=MihomoValidator(config.mihomo_binary, runner=runner),

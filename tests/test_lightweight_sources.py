@@ -28,6 +28,7 @@ from clash_sub.sources import (
     load_proxy_snapshot,
     merge_proxy_sources,
     merge_proxy_sources_with_aliases,
+    normalize_server_home,
     normalize_xui_endpoints,
     parse_home_overlay,
     parse_subscription_userinfo,
@@ -897,6 +898,197 @@ class HomeOverlaySourceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(HomeSourceError) as caught:
                 load_home_overlay(Path(directory) / "absent.yaml", self.max_bytes)
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+            self.assertIsNone(caught.exception.__context__)
+            self.assertIsNone(caught.exception.__cause__)
+
+    def _server_root(self, directory):
+        root = Path(directory) / "server-private"
+        root.mkdir(mode=0o700)
+        os.chmod(root, 0o700)
+        return root
+
+    def _write_server_home(self, root, payload=None, mode=0o644):
+        path = root / "home.yaml"
+        path.write_bytes(home_document_bytes() if payload is None else payload)
+        os.chmod(path, mode)
+        return path
+
+    def test_server_home_normalizes_a_safe_directly_uploaded_file_before_parsing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            path = self._write_server_home(root, mode=0o644)
+            payload = path.read_bytes()
+
+            home = normalize_server_home(path, 5 * 1024 * 1024, expected_uid=os.geteuid())
+
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(home.inject_node_groups, ("ProxyServer",))
+
+    def test_server_home_ownership_defaults_to_the_server_root_user(self):
+        # The deployed service runs as root, so the unparametrized boundary
+        # expects a root-owned upload the way the server would see it.
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            path = self._write_server_home(root, mode=0o644)
+            if os.geteuid() == 0:
+                home = normalize_server_home(path, self.max_bytes)
+                self.assertEqual(home.inject_node_groups, ("ProxyServer",))
+            else:
+                with self.assertRaises(HomeSourceError) as caught:
+                    normalize_server_home(path, self.max_bytes)
+                self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_server_home_rejects_a_symlink_without_touching_the_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            target = root / "uploaded.yaml"
+            target.write_bytes(home_document_bytes())
+            os.chmod(target, 0o600)
+            link = root / "home.yaml"
+            os.symlink(target, link)
+
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(link, self.max_bytes, expected_uid=os.geteuid())
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(target.read_bytes(), home_document_bytes())
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_server_home_rejects_a_hard_link_without_normalizing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            path = self._write_server_home(root, mode=0o644)
+            payload = path.read_bytes()
+            os.link(path, root / "hard-home.yaml")
+
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(path, self.max_bytes, expected_uid=os.geteuid())
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+
+    def test_server_home_rejects_an_upload_owned_by_another_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            path = self._write_server_home(root, mode=0o644)
+            payload = path.read_bytes()
+            if os.geteuid() == 0:
+                os.chown(path, 1, -1)
+                expected_uid = 0
+            else:
+                expected_uid = os.geteuid() + 1
+
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(path, self.max_bytes, expected_uid=expected_uid)
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+
+    def test_server_home_rejects_a_directory_at_the_home_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            (root / "home.yaml").mkdir()
+
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(
+                    root / "home.yaml", self.max_bytes, expected_uid=os.geteuid()
+                )
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_server_home_requires_a_0700_expected_owner_private_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            path = self._write_server_home(root, mode=0o644)
+            payload = path.read_bytes()
+            os.chmod(root, 0o755)
+            try:
+                with self.assertRaises(HomeSourceError) as caught:
+                    normalize_server_home(
+                        path, self.max_bytes, expected_uid=os.geteuid()
+                    )
+                self.assertEqual(caught.exception.code, "home_source_invalid")
+            finally:
+                os.chmod(root, 0o700)
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(
+                    path, self.max_bytes, expected_uid=os.geteuid() + 1
+                )
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+
+    def test_server_home_rejects_an_empty_upload_as_invalid_yaml(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            path = self._write_server_home(root, payload=b"", mode=0o644)
+
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(path, self.max_bytes, expected_uid=os.geteuid())
+
+            self.assertEqual(caught.exception.code, "home_yaml_invalid")
+            self.assertEqual(path.read_bytes(), b"")
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+
+    def test_server_home_rejects_an_oversized_upload_without_normalizing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+            path = self._write_server_home(root, mode=0o644)
+            payload = path.read_bytes()
+
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(path, 16, expected_uid=os.geteuid())
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+            self.assertEqual(path.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
+
+    def test_server_home_reports_stable_parse_codes_for_safe_bad_uploads(self):
+        reference = home_document()
+        reference["inject-home-node-groups"] = ["MissingGroup"]
+        cases = (
+            (b"proxy-groups: [", "home_yaml_invalid"),
+            (b"\xff\xfebroken", "home_yaml_invalid"),
+            (b"proxies:\n- name: Home\n  type: ss\n", "home_schema_invalid"),
+            (
+                yaml.safe_dump(
+                    reference, allow_unicode=True, sort_keys=False
+                ).encode("utf-8"),
+                "home_group_reference_invalid",
+            ),
+        )
+        for payload, code in cases:
+            with self.subTest(code=code):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = self._server_root(directory)
+                    path = self._write_server_home(root, payload=payload, mode=0o644)
+
+                    with self.assertRaises(HomeSourceError) as caught:
+                        normalize_server_home(
+                            path, self.max_bytes, expected_uid=os.geteuid()
+                        )
+
+                    self.assertEqual(caught.exception.code, code)
+                    # A safe file is normalized before parsing; its uploaded
+                    # bytes always survive verbatim for debugging.
+                    self.assertEqual(path.read_bytes(), payload)
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_server_home_rejects_a_missing_file_sanitized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._server_root(directory)
+
+            with self.assertRaises(HomeSourceError) as caught:
+                normalize_server_home(
+                    root / "home.yaml", self.max_bytes, expected_uid=os.geteuid()
+                )
 
             self.assertEqual(caught.exception.code, "home_source_invalid")
             self.assertIsNone(caught.exception.__context__)
