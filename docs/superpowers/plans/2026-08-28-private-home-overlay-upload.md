@@ -2,25 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move all owner-only home nodes, groups, injection controls, group extensions, and rules into a private six-field overlay that `template-sync` extracts locally and one upload script validates and activates transactionally on the server.
+**Goal:** Move all owner-only home nodes, groups, injection controls, group extensions, and rules into a private six-field overlay that `template-sync` extracts without local Mihomo, then publish it after a direct SFTP overwrite and server-side `clash-sub sync` validation.
 
-**Architecture:** Introduce an immutable `HomeOverlay` value and strict path/bytes loaders, then compose that overlay only into owner balanced/privacy renders. `template-sync` uses the current private overlay as the ownership scope while splitting the latest downloaded balanced workbench into public templates plus a new private overlay. A local wrapper streams the overlay to a root-only `home-import` command; the existing activation journal switches the source file and owner release together.
+**Architecture:** Introduce an immutable `HomeOverlay` value and strict path loader, then compose that overlay only into owner balanced/privacy renders. `template-sync` uses the current private overlay as the ownership scope while splitting the latest downloaded balanced workbench into public templates plus a new private overlay, using structural/variant/leak checks but no local Mihomo. The maintainer directly replaces `/var/lib/clash-sub/private/home.yaml` through SFTP; the existing `sync` command normalizes its mode, validates the resulting owner release with the server Mihomo, and preserves the old release on failure without rolling back the already-overwritten source file.
 
-**Tech Stack:** Python 3.9+, PyYAML, `unittest`, POSIX shell, OpenSSH, Mihomo validation, existing Nginx activation journal.
+**Tech Stack:** Python 3.9+, PyYAML, `unittest`, SFTP as an external manual operation, server Mihomo validation, existing Nginx activation journal.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md`
 
 ## Global Constraints
 
 - Read the spec completely before editing and preserve the approved six-field `HomeOverlay` schema exactly.
-- This work starts on a dirty tree containing overlapping AmyTelecom changes. Before Task 1, record `git status --short`; if any file in this plan is already dirty and its ownership is not established, stop and ask the user. Never reset, stash, overwrite, or absorb those changes into a task commit. If they are an uncommitted prerequisite owned by the executing Agent, finish and commit that prerequisite separately before starting this plan.
+- At this plan revision, `DEPLOYMENT.md` has a pre-existing user change and must remain untouched. Before Task 1, record `git status --short`; if any other file in this plan is already dirty and its ownership is not established, stop and ask the user. Never reset, stash, overwrite, or absorb those changes into a task commit. If a dirty file is an uncommitted prerequisite owned by the executing Agent, finish and commit that prerequisite separately before starting this plan.
 - Do not print or copy real contents from `private/`, generated subscriptions, tokens, proxy URLs, UUIDs, passwords, REALITY keys, or airport URLs into output, patches, tests, or commits.
 - Python remains 3.9+ and dependencies remain `Jinja2==3.1.6` plus `PyYAML==6.0.3`; comment/format round-trip preservation is explicitly out of scope.
 - `private/home.yaml` is ignored, current-user-owned `0600` on Mac, and `0600 root:root` on the server. It is never staged or committed.
 - Owner balanced/privacy receive home; owner standard and member standard receive no home objects, controls, rules, or names.
 - Preserve `BiliBili -> ProxyServer` and `国内流媒体 -> ProxyServer`; deliberately remove `PT站加速 -> ProxyServer`.
 - Preserve `inject-node-groups: [ProxyServer]` and `inject-home-node-groups: [HomeServer]`.
-- The only documented upload command is `./scripts/upload-home.sh root@<server>`; do not document SFTP, FTP, `scp`, inbox, or a server directory.
+- Local `template-sync` must run with neither Mihomo nor `MIHOMO_BIN`; real Mihomo validation occurs only inside server `clash-sub sync`.
+- The only documented transfer is SFTP from local `private/home.yaml` directly onto `/var/lib/clash-sub/private/home.yaml`, followed by server `clash-sub sync`. Do not add FTP, `scp`, an upload script, inbox, candidate path, or `home-import`.
+- Direct overwrite is an accepted risk: validation failure preserves the old published release but leaves the new invalid/truncated official `home.yaml` in place until the maintainer uploads a correction or restores an external backup.
 - Follow TDD for every behavior change. Run the named narrow test before and after implementation, then run each full affected module before committing.
 - Use `apply_patch` for repository edits. Clean only the legacy top-level private fragments authorized in Task 7 and leave `private/reference-configs/` and unrelated private data untouched.
 
@@ -28,24 +30,17 @@
 
 ## File Map
 
-**Create**
-
-- `clash_sub/home_upload.py` — local SSH upload orchestration without shell interpolation.
-- `scripts/upload-home.sh` — executable repository-relative entry point.
-- `tests/test_home_upload.py` — local target/file/SSH boundary tests.
-
 **Modify**
 
 - `clash_sub/domain.py` — immutable `HomeOverlay` value.
-- `clash_sub/sources.py` — strict six-field path/bytes parser, serializer, digest, and source alias map.
+- `clash_sub/sources.py` — strict six-field path parser, serializer, digest, source alias map, and safe server mode normalization boundary.
 - `clash_sub/generator.py` — owner-only overlay composition and runtime injection.
 - `clash_sub/template_sync.py` — home-scope extraction and mixed-mode atomic outputs.
-- `clash_sub/service.py` — home source loading and transactional `import_home(payload)`.
-- `clash_sub/runtime.py` — inject home parser and reserve home activation path.
-- `clash_sub/cli.py` — non-menu root-only `home-import` stdin command.
+- `clash_sub/service.py` — home source loading during existing sync and failure isolation.
+- `clash_sub/runtime.py` — inject the six-field home loader into the existing service.
 - `scripts/scan_tracked_secrets.py` — include root `private/home.yaml` in private-value comparison.
 - `templates/variants/manifest.yaml` — remove tracked home feature declarations.
-- `README.md`, `docs/operations.md`, `docs/private-data.md`, and only genuinely affected deployment/recovery text — final workflow and safety boundary.
+- `README.md`, `docs/operations.md`, `docs/private-data.md`, and only genuinely affected clean recovery text — direct SFTP workflow and asymmetric source/release failure boundary; preserve dirty `DEPLOYMENT.md` untouched.
 - Existing lightweight source, generator, template-sync, service, CLI, end-to-end, deployment, repository-safety, and secret-scan tests.
 
 **Delete**
@@ -141,7 +136,7 @@ class HomeOverlay:
         )
 ```
 
-In `sources.py`, require the exact key set and use separate validation helpers so every failure maps to one approved code. `dump_home_overlay` must use `yaml.safe_dump(..., allow_unicode=True, sort_keys=False)` and end with one newline. Existing airport/xui functions keep their current generic errors.
+In `sources.py`, require the exact key set and use separate validation helpers so every failure maps to one approved code. `dump_home_overlay` must use `yaml.safe_dump(document, allow_unicode=True, sort_keys=False)` and end with one newline. Existing airport/xui functions keep their current generic errors.
 
 - [ ] **Step 5: Run source tests**
 
@@ -179,7 +174,7 @@ git commit -m "feat: define private home overlay source"
 - Consumes: `HomeOverlay` from Task 1.
 - Produces: `merge_proxy_sources_with_aliases(labeled_sources) -> tuple[list[dict], dict[str, dict[str, str]]]`.
 - Preserves: `merge_proxy_sources(labeled_sources) -> list[dict]` as a compatibility wrapper for existing callers.
-- Produces: `render_user_bundle(is_owner, xui, airport, home: HomeOverlay | None, template_root) -> Mapping[str, str]`.
+- Produces: `render_user_bundle(is_owner, xui, airport, home: Optional[HomeOverlay], template_root) -> Mapping[str, str]`.
 - Produces internal `_apply_home_overlay(document, home, source_aliases, provider_name)`.
 
 - [ ] **Step 1: Add failing alias-map tests**
@@ -218,6 +213,7 @@ Create a `home_overlay()` fixture and update every render call to pass `HomeOver
 - `HomeServer` receives only renamed home nodes and never provider `use`;
 - both standard profiles contain no home names, rules, controls, or extensions;
 - invalid/overlapping injection controls, missing extension targets, duplicate group names, and final rules fail closed.
+- home-originated composition failures raise `HomeSourceError` with the exact applicable `home_group_reference_invalid`, `home_extension_invalid`, or `home_rule_invalid` code so server sync can report a useful sanitized error.
 
 ```python
 def test_private_home_overlay_has_fixed_variant_authorization(self):
@@ -296,7 +292,7 @@ git commit -m "feat: compose private home overlay"
 **Interfaces:**
 
 - Consumes: `load_home_overlay`, `dump_home_overlay`, and new generator API.
-- Produces: `run_template_sync(...) -> {"changed": ("templates/clash.yaml", "templates/variants/manifest.yaml", "private/home.yaml")}`.
+- Produces: `run_template_sync(repo_root: Path) -> {"changed": ("templates/clash.yaml", "templates/variants/manifest.yaml", "private/home.yaml")}` with no Mihomo argument or environment lookup.
 - Produces internal `_split_workbench(root, workbench, home_scope) -> tuple[dict, dict, HomeOverlay]`.
 - Produces internal mixed-mode writer using `0644` for tracked outputs and `0600` for `private/home.yaml`.
 
@@ -320,7 +316,7 @@ Cover:
 
 ```python
 def test_template_sync_exports_home_without_xui_or_provider_members(self):
-    result = run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
+    result = run_template_sync(self.root)
     home = load_home_overlay(self.root / "private" / "home.yaml", 5 * 1024 * 1024)
 
     self.assertEqual(result["changed"], TEMPLATE_OUTPUT_PATHS)
@@ -355,11 +351,11 @@ TEMPLATE_OUTPUT_PATHS = tuple(OUTPUT_MODES)
 
 Use the existing home group/injection declarations as scope. Before building the private candidate, record all inline proxy names, collect only members of `inject-home-node-groups`, and strip every runtime inline member plus `use: AmyTelecom` from copied home groups. Derive extensions from remaining public groups, explicitly reject `PT站加速 -> ProxyServer`, and classify rules by parsed policy target.
 
-Update candidate validation to render all four authorization cases with synthetic sources. Expand forbidden-name/value checks to include the candidate home proxy/group names and complete private rules. The replacement loop snapshots bytes and modes for all three outputs and restores all attempted paths after any error.
+Update candidate validation to render all four authorization cases with synthetic sources and pass every rendered string through `validate_clash`. Remove `_resolve_mihomo`, `MihomoValidator`, `MIHOMO_BIN`, runner plumbing used only for Mihomo, temporary Mihomo files, and `mihomo_validation_failed` from this local command. Expand forbidden-name/value checks to include the candidate home proxy/group names and complete private rules. The replacement loop snapshots bytes and modes for all three outputs and restores all attempted paths after any error.
 
 - [ ] **Step 5: Update CLI template-sync output tests**
 
-Assert the command prints all three changed paths, never prints file contents, and retains the existing final prompt. Keep `template-sync` absent from the server menu.
+Assert the command succeeds when `MIHOMO_BIN` is absent, prints all three changed paths, never prints file contents, and retains the existing final prompt. Keep `template-sync` absent from the server menu.
 
 - [ ] **Step 6: Run template and CLI tests**
 
@@ -381,58 +377,71 @@ git commit -m "feat: export private home from template sync"
 
 ---
 
-### Task 4: Add transactional server-side home import
+### Task 4: Load the directly overwritten server home safely during sync
 
 **Files:**
 
+- Modify: `clash_sub/sources.py`
 - Modify: `clash_sub/service.py:69-300`
 - Modify: `clash_sub/runtime.py:1-76`
 - Modify: `tests/test_lightweight_service.py`
-- Modify: `tests/test_lightweight_end_to_end.py`
-- Modify only if a failing regression proves necessary: `clash_sub/nginx.py`, `tests/test_lightweight_nginx.py`, `clash_sub/release_store.py`, `tests/test_lightweight_release_store.py`
+- Modify: `tests/test_lightweight_sources.py`
 
 **Interfaces:**
 
-- Consumes: `parse_home_overlay`, `load_home_overlay`, `home_overlay_digest`, and generator API.
-- Produces: `ClashSubService.import_home(payload: bytes) -> dict`.
-- Changes: `_optional_home() -> HomeOverlay | None`.
-- Uses existing `activate_runtime(..., extra_replacements=((home_path, payload, 0o600), ...))` so the home file participates in the durable activation journal.
+- Consumes: `load_home_overlay`, `home_overlay_digest`, and the generator API.
+- Produces: `normalize_server_home(path: Path, max_bytes: int) -> HomeOverlay`, which accepts only a root-owned regular single-link file under the configured root, changes a safe file to `0600`, rechecks metadata, then parses it.
+- Changes: `ClashSubService._optional_home() -> Optional[HomeOverlay]` and `_owner_sources(state: RuntimeState) -> tuple[Optional[bytes], Optional[HomeOverlay], Optional[str]]` where the last item is a sanitized owner error code.
+- Preserves: `ClashSubService.sync_all() -> {"updated": tuple, "errors": tuple}` and the existing release activation transaction; the official source path is deliberately not an activation artifact.
 
-- [ ] **Step 1: Update service fixtures to inject the new parser and overlay**
+- [ ] **Step 1: Add failing server file-normalization tests**
 
-Replace proxy-list home fixtures with `HomeOverlay`. Add a `parse_home_overlay` dependency to `ClashSubService.__init__`, and make harnesses use the real parser while unit tests can inject a deterministic fake.
-
-- [ ] **Step 2: Add failing import success and readiness tests**
+In `HomeOverlaySourceTests`, create a root-owned synthetic file under a `0700` private root. Assert a safe `0644` regular single-link file becomes `0600` and parses. Assert symlink, hard link, non-root owner (mock metadata), directory, empty file, and oversized file fail without changing content or emitting a value.
 
 ```python
-def test_import_home_switches_source_and_owner_release_together(self):
-    self.bootstrap()
-    old_release = self.state.users[7].current_release
-    payload = home_document_bytes(node_name="Home New")
+def test_server_home_normalizes_safe_sftp_mode_before_parsing(self):
+    path = self.write_home(mode=0o644)
 
-    result = self.service.import_home(payload)
+    home = normalize_server_home(path, 5 * 1024 * 1024)
 
-    self.assertEqual((self.private_root / "home.yaml").read_bytes(), payload)
-    self.assertNotEqual(result["release_id"], old_release)
-    self.assertIn("Home New", self.owner_balanced_text())
+    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+    self.assertEqual(home.inject_node_groups, ("ProxyServer",))
 ```
 
-Also assert missing/disabled owner, missing current owner release, or missing verified airport artifact returns `home_owner_not_ready` without creating `home.yaml`.
+- [ ] **Step 2: Add failing sync success and source-persistence tests**
 
-- [ ] **Step 3: Add failing rollback tests at every boundary**
-
-Snapshot live home bytes, state, current marker, routes, current release, and status timestamp. Inject parser, xui fetch, render, Mihomo, release prepare, Nginx test/reload, `os.replace`, and journal failures. Every case must keep the snapshot equal, discard unreferenced release candidates, and journal only a safe `home_*` error.
+Replace proxy-list service fixtures with `HomeOverlay`. Bootstrap an existing owner release, overwrite the fixture's official `home.yaml` bytes exactly as SFTP would, then call `sync_all`. Assert the source bytes remain the uploaded bytes, its mode becomes `0600`, owner balanced/privacy publish the new home, and both standard profiles remain free of home names.
 
 ```python
-def test_home_import_nginx_failure_restores_source_and_release(self):
-    before = self.active_view_with_home()
-    self.runner.fail_nginx_test = True
+def test_sync_publishes_directly_overwritten_home_after_server_validation(self):
+    previous = self.current_owner_release()
+    uploaded = home_document_bytes(node_name="Home New")
+    self.home_path.write_bytes(uploaded)
+    self.home_path.chmod(0o644)
 
-    with self.assertRaisesRegex(ServiceError, "home_activation_failed"):
-        self.service.import_home(home_document_bytes(node_name="Rejected"))
+    result = self.service.sync_all()
 
-    self.assertEqual(self.active_view_with_home(), before)
-    self.assert_candidate_cleanup(self)
+    self.assertFalse(result["errors"])
+    self.assertNotEqual(self.current_owner_release(), previous)
+    self.assertEqual(self.home_path.read_bytes(), uploaded)
+    self.assertEqual(stat.S_IMODE(self.home_path.stat().st_mode), 0o600)
+```
+
+- [ ] **Step 3: Add failing invalid-source isolation tests**
+
+For truncated YAML, invalid schema, unsafe metadata, and an invalid home reference, record the uploaded source bytes plus the current owner release/state/current/routes. After `sync_all`, assert the source remains the bad uploaded version while the entire active owner view stays equal. Assert enabled members can still sync and the owner error contains only the stable `home_*` code.
+
+```python
+def test_bad_overwritten_home_stays_for_debug_while_old_release_stays_live(self):
+    before = self.active_owner_view()
+    uploaded = b"proxy-groups: ["
+    self.home_path.write_bytes(uploaded)
+
+    result = self.service.sync_all()
+
+    self.assertEqual(self.home_path.read_bytes(), uploaded)
+    self.assertEqual(self.active_owner_view(), before)
+    self.assertEqual(result["errors"], ({"client_id": 7, "code": "home_yaml_invalid"},))
 ```
 
 - [ ] **Step 4: Run focused tests and verify failure**
@@ -440,153 +449,151 @@ def test_home_import_nginx_failure_restores_source_and_release(self):
 Run:
 
 ```bash
+.venv/bin/python -m unittest tests.test_lightweight_sources.HomeOverlaySourceTests -v
 .venv/bin/python -m unittest tests.test_lightweight_service -v
-.venv/bin/python -m unittest tests.test_lightweight_end_to_end -v
 ```
 
-Expected: FAIL because service still loads a proxy list and has no import transaction.
+Expected: FAIL because the current home loader accepts only a proxy list, rejects `0644`, and collapses source errors into `owner_update_failed`.
 
-- [ ] **Step 5: Implement import_home using the existing activation journal**
+- [ ] **Step 5: Implement the minimal direct-source boundary**
 
-Within the operation lock: recover, parse bytes at `config.max_source_bytes`, reconcile, require an active/current owner and verified airport bytes, prepare only the owner with the candidate overlay, then activate with the home artifact included in `extra_replacements`. Map validation and activation failures to the approved `home_*` codes, discard candidate releases, and update the sanitized status journal.
+Implement `normalize_server_home` with `path.parent.lstat()`, `path.lstat()`, `os.open(path, os.O_RDONLY | os.O_NOFOLLOW)`, descriptor `fstat`, `fchmod(0o600)`, bounded descriptor read, and a final descriptor/path identity recheck before parsing. Require a `0700` expected-owner parent and a regular single-link file; close the descriptor on every path. Never rename, copy, delete, back up, or journal source bytes. Keep `load_home_overlay` strict and non-mutating for the Mac workbench boundary.
+
+Inject `normalize_server_home` into `ClashSubService`. `_optional_home` treats genuine absence as `None`; a present bad file raises `HomeSourceError`. `_owner_sources` preserves `HomeSourceError.code`, while missing airport/current owner data stays `owner_update_failed`. In the per-client preparation loop, catch `HomeSourceError` before the generic exception branch, record its code for the owner, discard that owner's candidate, and continue members. Successful owner generation continues through `_prepare`, server `MihomoValidator`, and the existing activation transaction.
 
 ```python
-def import_home(self, payload):
-    with self._lock():
-        self._recover()
-        home = self._parse_home(payload, self.config.max_source_bytes)
-        snapshot, state = self._reconciled()
-        owner = _client(snapshot.clients, state.owner_client_id)
-        identity = _identity(state, owner.client_id)
-        if not owner.enabled or not identity.current_release:
-            raise ServiceError("home_owner_not_ready")
-        airport = self._releases.read_airport_document(owner.client_id, identity.current_release)
-        if airport is None:
-            raise ServiceError("home_owner_not_ready")
-        # prepare owner, then activate home bytes + current marker atomically
+def _optional_home(self):
+    path = _home_path(self.config)
+    if not path.exists() and not path.is_symlink():
+        return None
+    return self._load_home(path, self.config.max_source_bytes)
+
+def _owner_sources(self, state):
+    try:
+        home = self._optional_home()
+    except HomeSourceError as error:
+        return None, None, error.code
+    identity = state.users.get(state.owner_client_id)
+    if not identity or not identity.current_release:
+        return None, home, "owner_update_failed"
+    airport = self._releases.read_airport_document(
+        state.owner_client_id, identity.current_release
+    )
+    if airport is None:
+        return None, home, "owner_update_failed"
+    return airport, home, None
 ```
 
-Change normal `sync_all`, airport update, and owner rotation to pass `HomeOverlay | None`. A malformed installed home must fail owner operations with a safe home-specific code while preserving the existing release.
+Update normal sync, airport update, and owner token rotation to pass `Optional[HomeOverlay]`; do not add the home path to `activation_paths` or `extra_replacements`, because SFTP already replaced it outside the transaction.
 
-In `runtime.build_service`, pass the real home parser/loader and include `config.private_root / "home.yaml"` in `ReleaseStore(..., activation_paths=...)` for space preflight. Existing Nginx extra-replacement support should need no production change; modify it only when a new regression test proves a missing guarantee.
-
-- [ ] **Step 6: Run runtime regression tests**
+- [ ] **Step 6: Run source and service regression tests**
 
 Run:
 
 ```bash
+.venv/bin/python -m unittest tests.test_lightweight_sources -v
 .venv/bin/python -m unittest tests.test_lightweight_service -v
-.venv/bin/python -m unittest tests.test_lightweight_end_to_end -v
-.venv/bin/python -m unittest tests.test_lightweight_nginx -v
-.venv/bin/python -m unittest tests.test_lightweight_release_store -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit transactional import**
-
-Stage only files actually required by the tests:
+- [ ] **Step 7: Commit server source loading**
 
 ```bash
-git add clash_sub/service.py clash_sub/runtime.py tests/test_lightweight_service.py tests/test_lightweight_end_to_end.py
-git add clash_sub/nginx.py tests/test_lightweight_nginx.py clash_sub/release_store.py tests/test_lightweight_release_store.py
-git commit -m "feat: activate uploaded home atomically"
+git add clash_sub/sources.py clash_sub/service.py clash_sub/runtime.py tests/test_lightweight_sources.py tests/test_lightweight_service.py
+git commit -m "feat: validate directly uploaded home during sync"
 ```
-
-Before committing, use `git diff --cached --name-only` and unstage any optional file with no necessary diff.
 
 ---
 
-### Task 5: Expose the internal stdin command and one public upload script
+### Task 5: Prove the direct-SFTP failure model end to end
 
 **Files:**
 
-- Create: `clash_sub/home_upload.py`
-- Create: `scripts/upload-home.sh`
-- Create: `tests/test_home_upload.py`
-- Modify: `clash_sub/cli.py:176-620`
 - Modify: `tests/test_lightweight_cli.py`
+- Modify: `tests/test_lightweight_end_to_end.py`
 - Modify: `tests/test_repository_safety.py`
+- Modify production only if a failing integration test proves Task 4 incomplete: `clash_sub/service.py`, `clash_sub/runtime.py`, `clash_sub/cli.py`
 
 **Interfaces:**
 
-- Consumes: `ClashSubService.import_home(payload)`.
-- Produces internal server command: `/usr/local/bin/clash-sub home-import` reading stdin only.
-- Produces local orchestration: `upload_home(repo_root: Path, target: str, runner=subprocess.run) -> int`.
-- Produces local Python entry: `clash_sub.home_upload.main(argv=None) -> int`.
-- Produces public user entry: `./scripts/upload-home.sh root@<server>`.
+- Consumes: existing `ClashSubService.sync_all()` and CLI `clash-sub sync`.
+- Preserves: CLI exit `0` only when `result["errors"]` is empty; any owner `home_*` error produces exit `1` and the existing sanitized client-id/error-code line.
+- Prohibits: `home-import`, upload-target arguments, stdin upload handling, `home_upload.py`, `upload-home.sh`, and any new menu item.
 
-- [ ] **Step 1: Add failing CLI stdin tests**
+- [ ] **Step 1: Add CLI regression tests for the existing sync command**
 
-Add `FakeService.import_home`, then assert root-only authorization, bounded binary/text stdin handling, empty/TTY rejection, no extra args, exact success output, stable error propagation, and absence from every menu rendering.
+Make `FakeService.sync_all` return one `home_yaml_invalid` owner error. Assert exit `1`, the existing partial-completion message, and one sanitized error line; assert no proxy/group/file contents appear. Also assert `home-import` remains `invalid_command` and no menu contains a home upload item.
 
 ```python
-def test_home_import_reads_stdin_and_never_enters_the_menu(self):
-    payload = b"proxies: []\n"
-    code, stdout, stderr = run_cli(["home-import"], self.service, stdin=io.BytesIO(payload))
+def test_sync_reports_home_error_without_source_details(self):
+    self.service.sync_result = {
+        "updated": (),
+        "errors": ({"client_id": 7, "code": "home_yaml_invalid"},),
+    }
 
-    self.assertEqual(code, 0)
-    self.assertEqual(self.service.calls, [("import_home", (payload,))])
-    self.assertEqual(stdout, "家庭配置已上传并同步。\n")
-    self.assertEqual(stderr, "")
+    code, stdout, stderr = run_cli(["sync"], self.service)
+
+    self.assertEqual(code, 1)
+    self.assertEqual(stdout, "同步部分完成。\n")
+    self.assertEqual(stderr, "客户端 ID 7（错误代码：home_yaml_invalid）\n")
 ```
 
-Patch `os.geteuid` to root for success tests and assert non-root yields `not_root` before reading stdin.
+- [ ] **Step 2: Add end-to-end SFTP-overwrite simulations**
 
-- [ ] **Step 2: Implement the non-menu command**
-
-Register `home-import` only in `_parser`. Add `_read_bounded_stdin(stdin, maximum)` that prefers `stdin.buffer` for real streams, accepts bytes in tests, encodes test strings as UTF-8, and reads at most `maximum + 1`. Call `factory().import_home(payload)` and print no paths or contents.
-
-- [ ] **Step 3: Add failing local uploader tests**
-
-Test a strict target validator, exactly one argument, fixed source path, symlink/hard-link/wrong-mode/oversize rejection, argv-list SSH invocation without `shell=True`, byte-identical stdin, SSH exit-code propagation, and secret-free stdout/stderr.
+Extend the existing harness to write bytes directly to `config.private_root / "home.yaml"` before invoking the real service. Cover success, malformed YAML, invalid reference, `0644` normalization, Mihomo rejection, Nginx rejection, and a truncated/empty file. On each failure compare release manifest, current symlink/marker, state, routes, and public bytes to the pre-upload snapshot while separately asserting the official home source still contains the uploaded bad bytes.
 
 ```python
-def test_upload_streams_fixed_home_to_absolute_remote_command(self):
-    completed = upload_home(self.root, "root@server.example", runner=self.runner)
+def test_mihomo_rejects_uploaded_home_but_source_is_not_rolled_back(self):
+    before = self.harness.active_owner_view()
+    uploaded = home_document_bytes(node_name="Mihomo Reject")
+    self.harness.home_path.write_bytes(uploaded)
+    self.harness.runner.fail_mihomo = True
 
-    self.assertEqual(completed, 0)
-    self.assertEqual(
-        self.runner.argv,
-        ["ssh", "--", "root@server.example", "/usr/local/bin/clash-sub", "home-import"],
-    )
-    self.assertEqual(self.runner.stdin_bytes, self.home_path.read_bytes())
+    result = self.harness.service.sync_all()
+
+    self.assertEqual(self.harness.home_path.read_bytes(), uploaded)
+    self.assertEqual(self.harness.active_owner_view(), before)
+    self.assertEqual(result["errors"][0]["code"], "home_mihomo_validation_failed")
 ```
 
-- [ ] **Step 4: Implement Python orchestration and thin shell wrapper**
-
-`home_upload.py` validates `root@` plus a hostname/IPv4/bracketed-IPv6 destination, uses `os.lstat` for regular/symlink/link-count/owner/mode/size checks, opens the fixed file as binary stdin, and calls `subprocess.run` with an argv list and no captured secret content.
-
-The shell wrapper contains only repository resolution and venv execution:
-
-```sh
-#!/bin/sh
-set -eu
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_dir=$(dirname -- "$script_dir")
-exec "$repo_dir/.venv/bin/python" -m clash_sub.home_upload "$@"
-```
-
-Set the tracked executable bit. Do not add a manual fallback.
-
-- [ ] **Step 5: Run CLI, uploader, and safety tests**
+- [ ] **Step 3: Run the focused integration tests and verify failure**
 
 Run:
 
 ```bash
 .venv/bin/python -m unittest tests.test_lightweight_cli -v
-.venv/bin/python -m unittest tests.test_home_upload -v
+.venv/bin/python -m unittest tests.test_lightweight_end_to_end -v
+.venv/bin/python -m unittest tests.test_repository_safety -v
+```
+
+Expected before completing the boundary: FAIL where home errors are generic or source bytes are incorrectly expected to roll back.
+
+- [ ] **Step 4: Make only integration-proven corrections**
+
+Keep CLI command registration unchanged. If Task 4 currently maps a home parse/reference failure or owner Mihomo failure to generic `owner_update_failed`, add only the narrow `HomeSourceError`/`CheckError` mapping needed to preserve the appropriate `home_*` code. Keep Nginx/routes/current switching failures on the existing global `sync_activation_failed` contract. Never include exception text. Do not add backup, rename, deletion, inbox, or source restoration logic.
+
+- [ ] **Step 5: Run CLI, end-to-end, Nginx, release, and safety tests**
+
+```bash
+.venv/bin/python -m unittest tests.test_lightweight_cli -v
+.venv/bin/python -m unittest tests.test_lightweight_end_to_end -v
+.venv/bin/python -m unittest tests.test_lightweight_nginx -v
+.venv/bin/python -m unittest tests.test_lightweight_release_store -v
 .venv/bin/python -m unittest tests.test_repository_safety -v
 ```
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the upload entry**
+- [ ] **Step 6: Commit direct-overwrite integration coverage**
 
 ```bash
-git add clash_sub/cli.py clash_sub/home_upload.py scripts/upload-home.sh tests/test_lightweight_cli.py tests/test_home_upload.py tests/test_repository_safety.py
-git commit -m "feat: add private home upload command"
+git add tests/test_lightweight_cli.py tests/test_lightweight_end_to_end.py tests/test_repository_safety.py
+git add clash_sub/service.py clash_sub/runtime.py clash_sub/cli.py
+git commit -m "test: prove direct home overwrite safety boundary"
 ```
+
+Stage a production file only if Step 4 required a tested correction; verify `git diff --cached --name-only` before committing.
 
 ---
 
@@ -668,7 +675,7 @@ git commit -m "test: scan private home values for leaks"
 
 - Consumes: the latest downloaded/tested workbench and the legacy ignored fragments.
 - Produces: one real six-field `private/home.yaml`, current-user-owned mode `0600`.
-- Consumed by: real `template-sync` smoke test and later upload.
+- Consumed by: the real `template-sync` smoke test and later manual SFTP overwrite.
 
 - [ ] **Step 1: Inventory names and modes without printing content**
 
@@ -698,12 +705,12 @@ Do not copy redundant public rules and do not add `ProxyServer` to `PT站加速`
 
 ```bash
 chmod 600 private/home.yaml
-MIHOMO_BIN="/absolute/path/to/the-maintainer-selected-mihomo" ./bin/clash-sub template-sync
+env -u MIHOMO_BIN ./bin/clash-sub template-sync
 .venv/bin/python scripts/scan_tracked_secrets.py --private-root private
 git status --short --ignored
 ```
 
-Expected: template sync lists only its three paths, scan exits 0, and `private/home.yaml` remains ignored. If the Mac Mihomo path is not known, stop and ask the user for its absolute path; do not download or guess a binary.
+Expected: template sync lists only its three paths without locating or running Mihomo, scan exits 0, and `private/home.yaml` remains ignored.
 
 - [ ] **Step 4: Verify the generated private file structurally without echoing values**
 
@@ -731,24 +738,26 @@ Expected: no `private/` path is staged or tracked. This task has no Git commit b
 - Modify: `README.md`
 - Modify: `docs/operations.md`
 - Modify: `docs/private-data.md`
-- Modify only where relevant and preserve existing user edits: `DEPLOYMENT.md`, `docs/recovery.md`
+- Preserve untouched: `DEPLOYMENT.md`
+- Modify only if a design-required recovery sentence exists: `docs/recovery.md`
 - Modify: `tests/test_lightweight_deployment.py`
 
 **Interfaces:**
 
-- Documents the two-command local workflow and no manual alternative.
-- Keeps server menu structure unchanged and `home-import` undocumented as a direct user command.
+- Documents one local command, one manual SFTP overwrite, and one existing server command.
+- Keeps server menu/CLI structure unchanged and explicitly excludes `home-import`, upload scripts, inbox, FTP, and `scp`.
 
 - [ ] **Step 1: Add failing documentation assertions**
 
-Assert current docs contain:
+Assert current docs contain all three fixed workflow elements:
 
 ```text
-MIHOMO_BIN="<absolute-path>" ./bin/clash-sub template-sync
-./scripts/upload-home.sh root@<server>
+./bin/clash-sub template-sync
+private/home.yaml → /var/lib/clash-sub/private/home.yaml
+clash-sub sync
 ```
 
-Assert they describe the rolling latest balanced workbench, six private fields, owner variant isolation, automatic validation/activation, backup inclusion, and failure rollback. Assert current operational sections do not advertise SFTP, FTP, `scp`, inbox, direct private-root upload, or `templates/features/home.yaml`.
+Assert they describe the rolling latest balanced workbench, six private fields, owner variant isolation, server-only Mihomo validation, backup inclusion, and the asymmetric failure rule: old release stays live but overwritten source does not roll back. Assert current operational sections do not advertise local Mihomo, `MIHOMO_BIN`, FTP, `scp`, inbox, upload scripts, alternative remote paths, `home-import`, or `templates/features/home.yaml`.
 
 - [ ] **Step 2: Run documentation tests and verify failure**
 
@@ -766,11 +775,13 @@ Document this exact workflow:
 
 1. Directly download the latest server `clash-balanced.yaml` and save it as `private/workbench/balanced.yaml`.
 2. Modify and test that rolling local working copy.
-3. Run repository-local `template-sync` with an explicit Mihomo binary.
+3. Run repository-local `./bin/clash-sub template-sync` without local Mihomo.
 4. Review only tracked public diffs and run tests/scans.
-5. Run `./scripts/upload-home.sh root@<server>`; success already validates and publishes, so no second server-menu refresh is needed.
+5. If tracked templates changed, commit/push them and run server `clash-sub update` only; do not use the combined update+sync path before the matching home is present.
+6. Use SFTP to overwrite `private/home.yaml` onto `/var/lib/clash-sub/private/home.yaml`.
+7. Run `clash-sub sync` on the server; this is the separate validation/publication step.
 
-Do not change current YAML comment/format behavior or add a preservation claim. Keep the root-only server home path in private-data/backup internals, but never present it as an upload destination. Preserve unrelated dirty documentation text line-by-line.
+State that SFTP interruption or bad YAML can leave the formal source invalid while the old release remains online, and that recovery requires a corrected upload or external backup. Recommend SFTP, never plaintext FTP. Do not change current YAML comment/format behavior or add a preservation claim. Preserve unrelated dirty documentation text line-by-line.
 
 - [ ] **Step 4: Run documentation and safety tests**
 
@@ -791,7 +802,7 @@ git diff --cached --check
 git commit -m "docs: document private home workflow"
 ```
 
-If a design-required sentence must change in `DEPLOYMENT.md` or `docs/recovery.md`, first verify that the file was clean at the Task 1 boundary. Otherwise leave it untouched and report the pre-existing overlap; never broadly stage either file.
+Do not edit or stage `DEPLOYMENT.md`. If a design-required sentence must change in `docs/recovery.md`, first verify that file was clean at the Task 1 boundary and stage it only after reviewing its complete diff.
 
 ---
 
@@ -814,7 +825,6 @@ If a design-required sentence must change in `DEPLOYMENT.md` or `docs/recovery.m
 .venv/bin/python -m unittest tests.test_lightweight_template_sync -v
 .venv/bin/python -m unittest tests.test_lightweight_service -v
 .venv/bin/python -m unittest tests.test_lightweight_cli -v
-.venv/bin/python -m unittest tests.test_home_upload -v
 .venv/bin/python -m unittest tests.test_lightweight_end_to_end -v
 .venv/bin/python -m unittest tests.test_secret_scan -v
 .venv/bin/python -m unittest tests.test_repository_safety -v
@@ -842,26 +852,24 @@ git status --short
 
 Expected: both scans exit 0; no private path is tracked; remaining dirty files are either this plan's intentional changes or clearly identified pre-existing user/Agent changes.
 
-- [ ] **Step 4: Run real local template-sync smoke validation**
-
-With the user-supplied absolute Mihomo path:
+- [ ] **Step 4: Run the real local no-Mihomo template-sync smoke validation**
 
 ```bash
-MIHOMO_BIN="/absolute/path/to/the-maintainer-selected-mihomo" ./bin/clash-sub template-sync
+env -u MIHOMO_BIN ./bin/clash-sub template-sync
 ```
 
-Expected: exactly `templates/clash.yaml`, `templates/variants/manifest.yaml`, and `private/home.yaml`, followed by the existing review/test reminder. Re-run relevant tests if this modifies tracked template bytes.
+Expected: no Mihomo lookup or subprocess call; exactly `templates/clash.yaml`, `templates/variants/manifest.yaml`, and `private/home.yaml`, followed by the existing review/test reminder. Re-run relevant tests if this modifies tracked template bytes.
 
 - [ ] **Step 5: Review commits and request code review**
 
 ```bash
 git log --oneline --decorate -12
-git diff cb4162f...HEAD --stat -- . ':(exclude)docs/superpowers/plans/2026-08-28-private-home-overlay-upload.md'
-git diff cb4162f...HEAD --check -- . ':(exclude)docs/superpowers/plans/2026-08-28-private-home-overlay-upload.md'
+git diff 7270ad8...HEAD --stat -- . ':(exclude)docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md' ':(exclude)docs/superpowers/plans/2026-08-28-private-home-overlay-upload.md'
+git diff 7270ad8...HEAD --check -- . ':(exclude)docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md' ':(exclude)docs/superpowers/plans/2026-08-28-private-home-overlay-upload.md'
 ```
 
-Use the `superpowers:requesting-code-review` skill. The reviewer must compare the implementation against the spec, verify owner/member isolation, confirm the PT extension removal, and inspect activation rollback and secret-output boundaries.
+Use the `superpowers:requesting-code-review` skill. The reviewer must compare the implementation against the spec, verify owner/member isolation, confirm the PT extension removal, and inspect the deliberate boundary where activation rollback protects the published release but never restores the SFTP-overwritten source.
 
 - [ ] **Step 6: Final report**
 
-Report exact test totals, skips, any baseline-only failures, commit hashes, the ignored private migration result without values, and whether a live server upload was intentionally not performed. Do not upload to a real server unless the user separately authorizes that external mutation.
+Report exact test totals, skips, any baseline-only failures, commit hashes, and the ignored private migration result without values. State that no live SFTP overwrite or server sync was performed; do not mutate a real server unless the user separately authorizes it.
