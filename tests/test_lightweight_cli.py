@@ -1,5 +1,6 @@
 import inspect
 import io
+import os
 import subprocess
 import unittest
 from collections import namedtuple
@@ -1004,23 +1005,33 @@ class MenuColorTests(unittest.TestCase):
 
 
 class TemplateSyncCommandTests(unittest.TestCase):
-    def test_template_sync_dispatches_to_the_local_synchronizer(self):
+    def test_template_sync_succeeds_without_mihomo_and_lists_every_output(self):
         from clash_sub import template_sync
 
         root = Path(__file__).resolve().parents[1]
+        environment = {
+            key: value for key, value in os.environ.items() if key != "MIHOMO_BIN"
+        }
         with patch.object(
             template_sync,
             "run_template_sync",
-            return_value={"changed": ("templates/clash.yaml",)},
+            return_value={"changed": template_sync.TEMPLATE_OUTPUT_PATHS},
         ) as sync:
-            code, stdout, stderr = run_cli(["template-sync"], FakeService())
+            with patch.dict(os.environ, environment, clear=True):
+                code, stdout, stderr = run_cli(["template-sync"], FakeService())
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(sync.call_args.args, (root,))
-        self.assertIn("templates/clash.yaml", stdout)
-        self.assertIn("git diff", stdout)
-        self.assertNotIn("private/", stdout)
+        # Exactly the three changed paths and the final prompt: no file
+        # contents are ever printed, private or public.
+        self.assertEqual(
+            stdout,
+            "templates/clash.yaml\n"
+            "templates/variants/manifest.yaml\n"
+            "private/home.yaml\n"
+            "模板已同步。请查看 git diff，运行测试后再提交。\n",
+        )
 
     def test_template_sync_failure_reports_only_the_stable_code(self):
         from clash_sub import template_sync

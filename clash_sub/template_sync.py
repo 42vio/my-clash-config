@@ -1,12 +1,12 @@
-"""Promote a private local balanced workbench into the shared templates.
+"""Promote a private local balanced workbench into tracked and private outputs.
 
 ``clash-sub template-sync`` is a development-machine command: it reads the
-ignored ``private/workbench/balanced.yaml``, strips every dynamic node,
-re-validates the composed candidates with synthetic probes, and only then
-atomically replaces the tracked template files.  Private home content is
-composed at render time from the private overlay, so the shared templates
-carry public policy only.  The command performs no network access, no
-server actions, and no git operations.
+ignored ``private/workbench/balanced.yaml`` and the existing
+``private/home.yaml`` ownership scope, splits the composed workbench back
+into the public template candidates and the private home overlay candidate,
+re-validates every candidate with synthetic probes, and only then atomically
+replaces all three outputs.  The command performs no network access, no
+server actions, no git operations, and no external binary validation.
 
 Every failure raises :class:`TemplateSyncError` with one stable code and
 never echoes workbench content, node names, or credentials.
@@ -17,26 +17,36 @@ import importlib.util
 import os
 import re
 import stat
-import subprocess
 import tempfile
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 import yaml
 
-from clash_sub.checks import CheckError, MihomoValidator, validate_clash
-from clash_sub.domain import AirportProvider
+from clash_sub.checks import CheckError, validate_clash
+from clash_sub.domain import AirportProvider, HomeOverlay
 from clash_sub.generator import render_user_bundle
+from clash_sub.sources import (
+    HomeSourceError,
+    dump_home_overlay,
+    load_home_overlay,
+    parse_home_overlay,
+)
 
 
 WORKBENCH_RELATIVE_PATH = ("private", "workbench", "balanced.yaml")
+HOME_SCOPE_RELATIVE_PATH = "private/home.yaml"
 MAX_WORKBENCH_BYTES = 5 * 1024 * 1024
 
-TEMPLATE_RELATIVE_PATHS = (
-    "templates/clash.yaml",
-    "templates/variants/manifest.yaml",
-)
-TEMPLATE_FILE_MODE = 0o644
+OUTPUT_MODES = {
+    "templates/clash.yaml": 0o644,
+    "templates/variants/manifest.yaml": 0o644,
+    "private/home.yaml": 0o600,
+}
+TEMPLATE_OUTPUT_PATHS = tuple(OUTPUT_MODES)
+# The tracked, world-readable template outputs; the private home overlay is
+# the remaining output and is always written 0600.
+_PUBLIC_TEMPLATE_OUTPUTS = TEMPLATE_OUTPUT_PATHS[:2]
 
 # Proxy fields whose values are protocol structure, not secrets: they may
 # legitimately appear in rendered output (e.g. the synthetic probe nodes)
@@ -109,6 +119,13 @@ _CREDENTIAL_QUERY_KEYS = {
 }
 _MIN_FORBIDDEN_CHARS = 4
 
+# The home extension is deliberately not exported for the PT group; any
+# attempt to sync such an extension is rejected before candidates exist.
+_DENIED_EXTENSION_TARGET = "PT站加速"
+
+# Clash rule options that may trail the policy target of a rule line.
+_RULE_OPTION_TOKENS = frozenset(("no-resolve", "src"))
+
 
 class TemplateSyncError(RuntimeError):
     def __init__(self, code):
@@ -120,38 +137,32 @@ def _os_replace(source, target):
     os.replace(source, target)
 
 
-def run_template_sync(repo_root, mihomo_binary=None, runner=subprocess.run):
-    """Synchronize the workbench into the templates; return changed paths."""
+def run_template_sync(repo_root):
+    """Synchronize the workbench into the outputs; return changed paths."""
     root = Path(repo_root)
     workbench = _load_workbench(root)
-    mihomo = _resolve_mihomo(mihomo_binary)
+    home_scope = _load_home_scope(root)
     scanner = _load_scanner(root)
-    candidate_public, candidate_manifest = _split_workbench(root, workbench)
+    candidate_public, candidate_manifest, candidate_home = _split_workbench(
+        root, workbench, home_scope
+    )
     forbidden_names, forbidden_values = _forbidden_values(workbench)
+    home_names, home_values = _forbidden_home_values(candidate_home)
+    forbidden_names |= home_names
+    forbidden_values |= home_values
 
     with tempfile.TemporaryDirectory(prefix="clash-sub-template-sync.") as scratch:
         candidate_root = Path(scratch)
-        _materialize_candidates(candidate_root, candidate_public, candidate_manifest, root)
+        _materialize_candidates(
+            candidate_root, candidate_public, candidate_manifest, candidate_home, root
+        )
         _validate_candidates(
-            candidate_root, mihomo, runner, forbidden_names, forbidden_values, scanner
+            candidate_root, forbidden_names, forbidden_values, scanner
         )
 
-    payloads = _candidate_bytes(candidate_public, candidate_manifest)
-    _atomic_replace_templates(root, payloads)
-    return {"changed": TEMPLATE_RELATIVE_PATHS}
-
-
-def _resolve_mihomo(mihomo_binary):
-    configured = mihomo_binary if mihomo_binary is not None else os.environ.get("MIHOMO_BIN", "")
-    if isinstance(configured, Path):
-        binary = configured
-    elif isinstance(configured, str) and configured.strip():
-        binary = Path(configured)
-    else:
-        raise TemplateSyncError("mihomo_binary_missing")
-    if not binary.is_file():
-        raise TemplateSyncError("mihomo_binary_missing")
-    return binary
+    payloads = _candidate_bytes(candidate_public, candidate_manifest, candidate_home)
+    _atomic_replace_outputs(root, payloads)
+    return {"changed": TEMPLATE_OUTPUT_PATHS}
 
 
 def _load_scanner(root):
@@ -200,6 +211,14 @@ def _load_workbench(root):
     return document
 
 
+def _load_home_scope(root):
+    """Load the ownership scope; it is also the private output target."""
+    try:
+        return load_home_overlay(root / HOME_SCOPE_RELATIVE_PATH, MAX_WORKBENCH_BYTES)
+    except HomeSourceError as error:
+        raise TemplateSyncError(error.code) from None
+
+
 def _workbench_provider_url(document):
     """Authorize the workbench's own airport provider mapping, if present.
 
@@ -215,33 +234,90 @@ def _workbench_provider_url(document):
     return url
 
 
-def _split_workbench(root, workbench):
+def _split_workbench(root, workbench, home_scope):
+    """Split one composed workbench into public, manifest, and home candidates.
+
+    The scope's declared group names own the workbench's home groups; every
+    undeclared group stays public.  The split is deterministic: home proxies
+    are collected only from ``inject-home-node-groups`` members, copied home
+    groups lose their runtime-injected members and provider ``use``, public
+    groups lose home group members (recorded as extensions) and dynamic
+    inline members, and rules follow their parsed policy target.
+    """
     candidate = copy.deepcopy(workbench)
-    dynamic_names = [proxy["name"] for proxy in candidate["proxies"]]
-    dynamic = set(dynamic_names)
+    inline_names = [proxy["name"] for proxy in candidate["proxies"]]
+    inline = set(inline_names)
+    groups = candidate["proxy-groups"]
+
+    declared_order = [
+        group.get("name")
+        for group in home_scope.proxy_groups
+        if isinstance(group, dict)
+    ]
+    declared = set(declared_order)
+    counts = {}
+    for group in groups:
+        if isinstance(group, dict):
+            name = group.get("name")
+            counts[name] = counts.get(name, 0) + 1
+    for name in declared_order:
+        if counts.get(name, 0) != 1:
+            # A declared home group that is missing (or was duplicated
+            # before validation tightened) may never be silently dropped.
+            raise TemplateSyncError("template_source_invalid")
+
+    home_injected = set(home_scope.inject_home_node_groups)
+    home_member_names = set()
+    for group in groups:
+        if (
+            isinstance(group, dict)
+            and group.get("name") in home_injected
+            and isinstance(group.get("proxies"), list)
+        ):
+            for member in group["proxies"]:
+                if isinstance(member, str) and member in inline:
+                    home_member_names.add(member)
+    home_proxies = [
+        copy.deepcopy(proxy)
+        for proxy in candidate["proxies"]
+        if proxy["name"] in home_member_names
+    ]
+    home_inline = {proxy["name"] for proxy in home_proxies}
+
+    all_injected = set(home_scope.inject_node_groups)
+    private_groups = []
+    public_groups = []
+    node_injected_names = []
+    extensions = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            raise TemplateSyncError("template_source_invalid")
+        name = group.get("name")
+        if name in declared:
+            private_groups.append(
+                _stripped_home_group(
+                    group, name, all_injected, home_injected, inline, home_inline
+                )
+            )
+            continue
+        public_groups.append(
+            _split_public_group(group, name, inline, declared, node_injected_names, extensions)
+        )
+    if _DENIED_EXTENSION_TARGET in extensions:
+        raise TemplateSyncError("template_candidate_invalid")
+
+    private_rules = []
+    public_rules = []
+    for rule in candidate["rules"]:
+        if _rule_targets_home_group(rule, declared):
+            private_rules.append(rule)
+        else:
+            public_rules.append(rule)
+    candidate["rules"] = public_rules
     candidate["proxies"] = []
     # The provider mapping and the injected provider use lists are composed
     # at render time; the shared templates must stay free of both.
     candidate.pop("proxy-providers", None)
-
-    public_groups = []
-    node_injected = []
-    for group in candidate["proxy-groups"]:
-        name = group.get("name")
-        proxies = group.get("proxies")
-        had_dynamic = isinstance(proxies, list) and any(
-            member in dynamic for member in proxies if isinstance(member, str)
-        )
-        if had_dynamic:
-            node_injected.append(name)
-        if not isinstance(proxies, list):
-            public_groups.append(_without_provider_use(group))
-            continue
-        stripped = [member for member in proxies if member not in dynamic]
-        if stripped != proxies:
-            group = dict(group, proxies=stripped)
-        public_groups.append(_without_provider_use(group))
-
     candidate["proxy-groups"] = public_groups
 
     manifest_path = root / "templates" / "variants" / "manifest.yaml"
@@ -253,9 +329,62 @@ def _split_workbench(root, workbench):
         raise TemplateSyncError("template_candidate_invalid")
     new_manifest = {
         "variants": manifest["variants"],
-        "inject-node-groups": node_injected,
+        "inject-node-groups": node_injected_names,
     }
-    return candidate, new_manifest
+    home = HomeOverlay(
+        proxies=tuple(home_proxies),
+        proxy_groups=tuple(private_groups),
+        extend_proxy_groups=extensions,
+        inject_node_groups=tuple(home_scope.inject_node_groups),
+        inject_home_node_groups=tuple(home_scope.inject_home_node_groups),
+        rules=tuple(private_rules),
+    )
+    return candidate, new_manifest, home
+
+
+def _stripped_home_group(group, name, all_injected, home_injected, inline, home_inline):
+    """Copy one home group without its runtime-injected members and use."""
+    copied = _without_provider_use(group)
+    members = copied.get("proxies")
+    if not isinstance(members, list):
+        return copied
+    if name in all_injected:
+        injected = inline
+    elif name in home_injected:
+        injected = home_inline
+    else:
+        # A declared home group outside both injection lists receives no
+        # runtime members at all, so none of its members are stripped.
+        injected = set()
+    stripped = [
+        member
+        for member in members
+        if not (isinstance(member, str) and member in injected)
+    ]
+    return dict(copied, proxies=stripped)
+
+
+def _split_public_group(group, name, inline, declared, node_injected_names, extensions):
+    """Copy one public group, recording home extensions and node injection."""
+    copied = _without_provider_use(group)
+    proxies = copied.get("proxies")
+    if not isinstance(proxies, list):
+        return copied
+    if any(isinstance(member, str) and member in inline for member in proxies):
+        node_injected_names.append(name)
+    kept = []
+    removed_home = []
+    for member in proxies:
+        if isinstance(member, str) and member in declared:
+            removed_home.append(member)
+        else:
+            kept.append(member)
+    if removed_home:
+        extensions[name] = removed_home
+    stripped = [member for member in kept if not (isinstance(member, str) and member in inline)]
+    if stripped != proxies:
+        copied = dict(copied, proxies=stripped)
+    return copied
 
 
 def _without_provider_use(group):
@@ -267,11 +396,25 @@ def _without_provider_use(group):
     return stripped
 
 
-def _materialize_candidates(candidate_root, candidate_public, candidate_manifest, root):
+def _rule_targets_home_group(rule, home_group_names):
+    if not isinstance(rule, str):
+        return False
+    parts = rule.strip().split(",")
+    if not parts:
+        return False
+    target = parts[-1]
+    if target in _RULE_OPTION_TOKENS and len(parts) >= 3:
+        target = parts[-2]
+    return target in home_group_names
+
+
+def _materialize_candidates(candidate_root, candidate_public, candidate_manifest, candidate_home, root):
     templates = candidate_root / "templates"
     (templates / "variants").mkdir(parents=True)
     _write_yaml(templates / "clash.yaml", candidate_public)
     _write_yaml(templates / "variants" / "manifest.yaml", candidate_manifest)
+    (candidate_root / "private").mkdir()
+    (candidate_root / "private" / "home.yaml").write_bytes(dump_home_overlay(candidate_home))
     try:
         source = root / "templates" / "variants" / "privacy-dns.yaml"
         (templates / "variants" / "privacy-dns.yaml").write_bytes(source.read_bytes())
@@ -289,87 +432,57 @@ def _write_yaml(path, document):
         raise TemplateSyncError("template_candidate_invalid") from None
 
 
-def _probe_proxies():
-    probes = []
-    for label in ("3xui", "airport"):
-        probe = dict(_PROBE_REALITY)
-        probe.update(
-            {
-                "name": _PROBE_PREFIX + label,
-                "server": "192.0.2.%d" % (10 + len(probes)),
-                "uuid": "55555555-5555-4555-8555-55555555555%d" % len(probes),
-            }
-        )
-        probes.append(probe)
-    return probes[0], probes[1]
+def _probe_proxy():
+    probe = dict(_PROBE_REALITY)
+    probe.update(
+        {
+            "name": _PROBE_PREFIX + "3xui",
+            "server": "192.0.2.10",
+            "uuid": "55555555-5555-4555-8555-555555555555",
+        }
+    )
+    return probe
 
 
-def _validate_candidates(candidate_root, mihomo, runner, forbidden_names, forbidden_values, scanner):
-    xui, airport = _probe_proxies()
+def _validate_candidates(candidate_root, forbidden_names, forbidden_values, scanner):
+    xui = _probe_proxy()
     provider = AirportProvider(_PROBE_PROVIDER_URL, _PROBE_PROVIDER_DIGEST)
     try:
-        # The tracked candidates are public templates; the private home
-        # overlay is composed at render time and is validated separately.
+        home = parse_home_overlay(
+            (candidate_root / "private" / "home.yaml").read_bytes(), MAX_WORKBENCH_BYTES
+        )
+        # All four authorization cases are composed from the candidates with
+        # synthetic node sources; the private overlay candidate proves the
+        # new public templates still accept the real home composition.
         owner = render_user_bundle(
-            True, [copy.deepcopy(xui)], provider, None,
-            candidate_root / "templates",
+            True, [copy.deepcopy(xui)], provider, home, candidate_root / "templates"
         )
         member = render_user_bundle(
             False, [copy.deepcopy(xui)], None, None, candidate_root / "templates"
         )
-    except ValueError:
+    except (ValueError, HomeSourceError, OSError, yaml.YAMLError, UnicodeError):
         raise TemplateSyncError("template_candidate_invalid") from None
 
     outputs = [owner["balanced"], owner["standard"], owner["privacy"], member["standard"]]
-    texts = [output for output in outputs]
-    texts.extend(
-        (candidate_root / relative).read_text(encoding="utf-8")
-        for relative in TEMPLATE_RELATIVE_PATHS
-    )
-    for text in outputs[:3]:
+    for index, text in enumerate(outputs):
         try:
-            validate_clash(text, (), allowed_provider_url=_PROBE_PROVIDER_URL)
+            if index < 3:
+                validate_clash(text, (), allowed_provider_url=_PROBE_PROVIDER_URL)
+            else:
+                validate_clash(text, ())
         except CheckError:
             raise TemplateSyncError("template_candidate_invalid") from None
-    try:
-        validate_clash(outputs[3], ())
-    except CheckError:
-        raise TemplateSyncError("template_candidate_invalid") from None
 
-    validator = MihomoValidator(mihomo, runner=runner)
-    with tempfile.TemporaryDirectory(prefix="clash-sub-template-sync-validate.") as scratch:
-        # Mihomo checks a local-file provider pointing at the synthetic
-        # airport probe; the published shape keeps the HTTP provider mapping.
-        airport_file = Path(scratch) / "AmyTelecom.yaml"
-        airport_file.write_text(
-            yaml.safe_dump({"proxies": [airport]}, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
-        for index, text in enumerate(outputs):
-            document = yaml.safe_load(text)
-            if index < 3:
-                document["proxy-providers"]["AmyTelecom"] = {
-                    "type": "file",
-                    "path": str(airport_file),
-                }
-            candidate = Path(scratch) / ("probe-%d.yaml" % index)
-            candidate.write_text(
-                yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
-                encoding="utf-8",
-            )
-            try:
-                validator.validate(candidate)
-            except CheckError:
-                raise TemplateSyncError("mihomo_validation_failed") from None
-
-    _scan_for_secrets(texts, forbidden_names, forbidden_values, scanner)
-    return outputs
+    public_candidates = [
+        (relative, (candidate_root / relative).read_text(encoding="utf-8"))
+        for relative in _PUBLIC_TEMPLATE_OUTPUTS
+    ]
+    _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scanner)
 
 
-def _scan_for_secrets(texts, forbidden_names, forbidden_values, scanner):
-    tracked_texts = texts[len(texts) - len(TEMPLATE_RELATIVE_PATHS):]
-    for index, text in enumerate(tracked_texts):
-        if scanner.find_content_findings(text, TEMPLATE_RELATIVE_PATHS[index]):
+def _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scanner):
+    for relative, text in public_candidates:
+        if scanner.find_content_findings(text, relative):
             raise TemplateSyncError("template_secret_leak")
 
     # Private field values (server/uuid/password/credential-like) are so
@@ -377,7 +490,7 @@ def _scan_for_secrets(texts, forbidden_names, forbidden_values, scanner):
     # deliberately excluded here: a similarly-named static group is legal,
     # and the real leak channel for names is exact list membership, which
     # the member check below covers.
-    for text in texts:
+    for _relative, text in public_candidates:
         for value in forbidden_values:
             if len(value) >= _MIN_FORBIDDEN_CHARS and value in text:
                 raise TemplateSyncError("template_secret_leak")
@@ -385,21 +498,17 @@ def _scan_for_secrets(texts, forbidden_names, forbidden_values, scanner):
     # Scalar-exact layer: a forbidden value appearing as a COMPLETE scalar
     # anywhere in a candidate document is a leak at any length, so short
     # credentials (secret: abc) cannot slip under the substring threshold.
-    for text in texts:
-        document = yaml.safe_load(text)
-        scalars = set()
-        _collect_string_scalars(document, scalars)
-        if scalars & forbidden_values:
-            raise TemplateSyncError("template_secret_leak")
-
-    # Exact member check: no dynamic proxy name may survive as a group
-    # member anywhere in the tracked candidates.
-    for text in tracked_texts:
+    for _relative, text in public_candidates:
         document = yaml.safe_load(text)
         if not isinstance(document, dict):
             continue
         scalars = set()
         _collect_string_scalars(document, scalars)
+        if scalars & forbidden_values:
+            raise TemplateSyncError("template_secret_leak")
+
+        # Exact member check: no dynamic proxy name may survive as a group
+        # member anywhere in the tracked candidates.
         for scalar in scalars:
             if scalar in forbidden_names or (
                 "://" in scalar
@@ -457,6 +566,17 @@ def _forbidden_values(workbench):
         ):
             values.add(value)
     return set(names), values
+
+
+def _forbidden_home_values(home):
+    """The candidate's own home names and rules may never surface publicly."""
+    names = {
+        entry["name"]
+        for entries in (home.proxies, home.proxy_groups)
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+    }
+    return names, set(home.rules)
 
 
 def _iter_scalar_paths(node, path=()):
@@ -530,10 +650,11 @@ def _url_has_credentials(value):
     return False
 
 
-def _candidate_bytes(candidate_public, candidate_manifest):
+def _candidate_bytes(candidate_public, candidate_manifest, candidate_home):
     return {
         "templates/clash.yaml": _dump_yaml(candidate_public),
         "templates/variants/manifest.yaml": _dump_yaml(candidate_manifest),
+        "private/home.yaml": dump_home_overlay(candidate_home),
     }
 
 
@@ -543,22 +664,22 @@ def _dump_yaml(document):
     ).encode("utf-8")
 
 
-def _atomic_replace_templates(root, payloads):
+def _atomic_replace_outputs(root, payloads):
     previous = []
     attempted = []
     try:
-        for relative in TEMPLATE_RELATIVE_PATHS:
+        for relative in TEMPLATE_OUTPUT_PATHS:
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 previous.append((relative, target.read_bytes(), stat.S_IMODE(target.stat().st_mode)))
             else:
                 previous.append((relative, None, None))
-        for relative in TEMPLATE_RELATIVE_PATHS:
+        for relative in TEMPLATE_OUTPUT_PATHS:
             # Record intent BEFORE writing: a target whose os.replace already
             # took effect when the failure lands must be restored as well.
             attempted.append(relative)
-            _write_file_atomically(root / relative, payloads[relative], TEMPLATE_FILE_MODE)
+            _write_file_atomically(root / relative, payloads[relative], OUTPUT_MODES[relative])
     except OSError:
         # Snapshot failures leave attempted empty (nothing written, nothing
         # to restore); write failures restore every attempted target.
@@ -594,7 +715,7 @@ def _restore_files(root, previous, attempted):
                 target.unlink(missing_ok=True)
             else:
                 _write_file_atomically(
-                    target, payload, mode if mode is not None else TEMPLATE_FILE_MODE
+                    target, payload, mode if mode is not None else OUTPUT_MODES[relative]
                 )
         except OSError:
             pass
