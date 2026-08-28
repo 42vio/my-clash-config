@@ -6,21 +6,29 @@ import stat
 import tempfile
 import traceback
 import unittest
+from dataclasses import FrozenInstanceError
 from unittest.mock import patch
 from pathlib import Path
 import urllib.request
 from urllib.request import Request
 
-from clash_sub.domain import Traffic
+import yaml
+
+from clash_sub.domain import HomeOverlay, Traffic
 from clash_sub.sources import (
+    HomeSourceError,
     SourceError,
     XUI_INBOUND_PORT,
     _HttpsRedirectHandler,
     download_airport_document,
+    dump_home_overlay,
     fetch_xui_proxies,
+    home_overlay_digest,
+    load_home_overlay,
     load_proxy_snapshot,
     merge_proxy_sources,
     normalize_xui_endpoints,
+    parse_home_overlay,
     parse_subscription_userinfo,
 )
 
@@ -61,6 +69,47 @@ def airport_document():
         "  server: b.example\n"
         "  port: 443\n"
         "# trailing comment kept verbatim\n"
+    ).encode("utf-8")
+
+
+def home_document():
+    """A synthetic six-field home overlay holding only fake values."""
+    return {
+        "proxies": [
+            {
+                "name": "HomeExit",
+                "type": "ss",
+                "server": "home.example.invalid",
+                "port": 8388,
+                "cipher": "aes-128-gcm",
+                "password": "synthetic-home-password",
+            },
+            {
+                "name": "HomeRelay",
+                "type": "ss",
+                "server": "relay.example.invalid",
+                "port": 8389,
+                "cipher": "aes-128-gcm",
+                "password": "synthetic-home-password",
+            },
+        ],
+        "proxy-groups": [
+            {"name": "ProxyServer", "type": "select", "proxies": ["HomeExit"]},
+            {"name": "HomeServer", "type": "select", "proxies": ["HomeRelay"]},
+        ],
+        "extend-proxy-groups": {
+            "BiliBili": ["ProxyServer"],
+            "国内流媒体": ["ProxyServer"],
+        },
+        "inject-node-groups": ["ProxyServer"],
+        "inject-home-node-groups": ["HomeServer"],
+        "rules": ["IP-CIDR,192.168.0.0/16,HomeServer,no-resolve"],
+    }
+
+
+def home_document_bytes():
+    return yaml.safe_dump(
+        home_document(), allow_unicode=True, sort_keys=False
     ).encode("utf-8")
 
 
@@ -451,3 +500,382 @@ class EndpointNormalizationTests(unittest.TestCase):
         from clash_sub import xui as xui_module
 
         self.assertEqual(XUI_INBOUND_PORT, xui_module._REALITY_INBOUND_PORT)
+
+
+class HomeOverlaySourceTests(unittest.TestCase):
+    max_bytes = 5 * 1024 * 1024
+
+    def assertHomeCode(self, payload, code):
+        with self.assertRaises(HomeSourceError) as caught:
+            parse_home_overlay(payload, self.max_bytes)
+        self.assertEqual(caught.exception.code, code)
+
+    def assertDocumentCode(self, mutation, code):
+        document = home_document()
+        mutation(document)
+        self.assertHomeCode(
+            yaml.safe_dump(document, allow_unicode=True, sort_keys=False).encode(
+                "utf-8"
+            ),
+            code,
+        )
+
+    def _write_home_file(self, directory):
+        path = Path(directory) / "home.yaml"
+        path.write_bytes(home_document_bytes())
+        os.chmod(path, 0o600)
+        return path
+
+    def test_six_field_home_overlay_round_trips_without_mutable_aliases(self):
+        payload = home_document_bytes()
+        home = parse_home_overlay(payload, len(payload))
+
+        self.assertEqual(home.inject_node_groups, ("ProxyServer",))
+        self.assertEqual(home.inject_home_node_groups, ("HomeServer",))
+        self.assertEqual(
+            dict(home.extend_proxy_groups),
+            {"BiliBili": ("ProxyServer",), "国内流媒体": ("ProxyServer",)},
+        )
+        self.assertEqual(
+            home.proxies,
+            (
+                {
+                    "name": "HomeExit",
+                    "type": "ss",
+                    "server": "home.example.invalid",
+                    "port": 8388,
+                    "cipher": "aes-128-gcm",
+                    "password": "synthetic-home-password",
+                },
+                {
+                    "name": "HomeRelay",
+                    "type": "ss",
+                    "server": "relay.example.invalid",
+                    "port": 8389,
+                    "cipher": "aes-128-gcm",
+                    "password": "synthetic-home-password",
+                },
+            ),
+        )
+        self.assertEqual(
+            home.proxy_groups,
+            (
+                {"name": "ProxyServer", "type": "select", "proxies": ["HomeExit"]},
+                {"name": "HomeServer", "type": "select", "proxies": ["HomeRelay"]},
+            ),
+        )
+        self.assertEqual(home.rules, ("IP-CIDR,192.168.0.0/16,HomeServer,no-resolve",))
+        self.assertEqual(parse_home_overlay(dump_home_overlay(home), 5 * 1024 * 1024), home)
+        self.assertEqual(home_overlay_digest(home), home_overlay_digest(home))
+
+    def test_home_overlay_deep_copies_and_freezes_constructor_input(self):
+        proxies = [{"name": "HomeExit", "type": "ss"}]
+        groups = [{"name": "ProxyServer", "type": "select", "proxies": ["HomeExit"]}]
+        extensions = {"BiliBili": ["ProxyServer"]}
+        home = HomeOverlay(
+            proxies=tuple(proxies),
+            proxy_groups=tuple(groups),
+            extend_proxy_groups=extensions,
+            inject_node_groups=("ProxyServer",),
+            inject_home_node_groups=(),
+            rules=(),
+        )
+
+        proxies[0]["name"] = "Mutated"
+        groups[0]["proxies"].append("Mutated")
+        extensions["BiliBili"].append("Mutated")
+        extensions["Extra"] = ["ProxyServer"]
+
+        self.assertEqual(home.proxies, ({"name": "HomeExit", "type": "ss"},))
+        self.assertEqual(
+            home.proxy_groups,
+            ({"name": "ProxyServer", "type": "select", "proxies": ["HomeExit"]},),
+        )
+        self.assertEqual(dict(home.extend_proxy_groups), {"BiliBili": ("ProxyServer",)})
+        with self.assertRaises(TypeError):
+            home.extend_proxy_groups["BiliBili"] = ("HomeServer",)
+        with self.assertRaises(FrozenInstanceError):
+            home.inject_node_groups = ()
+
+    def test_dump_is_deterministic_and_digest_is_stable(self):
+        home = parse_home_overlay(home_document_bytes(), self.max_bytes)
+
+        first = dump_home_overlay(home)
+        second = dump_home_overlay(home)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.endswith(b"\n"))
+        self.assertFalse(first.endswith(b"\n\n"))
+        self.assertRegex(home_overlay_digest(home), r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            home_overlay_digest(home),
+            home_overlay_digest(parse_home_overlay(first, self.max_bytes)),
+        )
+
+    def test_injection_lists_must_be_disjoint_and_reference_private_groups(self):
+        document = home_document()
+        document["inject-node-groups"] = ["HomeServer"]
+        document["inject-home-node-groups"] = ["HomeServer"]
+
+        with self.assertRaises(HomeSourceError) as caught:
+            parse_home_overlay(yaml.safe_dump(document).encode(), 5 * 1024 * 1024)
+
+        self.assertEqual(caught.exception.code, "home_group_reference_invalid")
+
+    def test_rejects_missing_and_unknown_top_level_keys(self):
+        for key in home_document():
+            with self.subTest(missing=key):
+                self.assertDocumentCode(
+                    lambda document, key=key: document.pop(key), "home_schema_invalid"
+                )
+        with self.subTest(unknown="extra"):
+            self.assertDocumentCode(
+                lambda document: document.update({"extra": []}), "home_schema_invalid"
+            )
+
+    def test_rejects_wrong_top_level_shapes_and_non_documents(self):
+        for key, value in (
+            ("proxies", "not-a-list"),
+            ("proxy-groups", "not-a-list"),
+            ("extend-proxy-groups", ["not-a-mapping"]),
+            ("inject-node-groups", "not-a-list"),
+            ("inject-home-node-groups", {"ProxyServer": 1}),
+            ("rules", "not-a-list"),
+        ):
+            with self.subTest(key=key):
+                self.assertDocumentCode(
+                    lambda document, key=key, value=value: document.update({key: value}),
+                    "home_schema_invalid",
+                )
+        self.assertHomeCode(b"[]\n", "home_schema_invalid")
+        self.assertHomeCode(b"- one\n- two\n", "home_schema_invalid")
+        self.assertHomeCode(b"null\n", "home_schema_invalid")
+
+    def test_rejects_bad_injection_list_entries_as_schema_invalid(self):
+        for key in ("inject-node-groups", "inject-home-node-groups"):
+            with self.subTest(key=key):
+                self.assertDocumentCode(
+                    lambda document, key=key: document.update({key: [17]}),
+                    "home_schema_invalid",
+                )
+
+    def test_rejects_empty_or_duplicated_proxy_and_group_sections(self):
+        for key, code in (
+            ("proxies", "home_proxy_invalid"),
+            ("proxy-groups", "home_group_invalid"),
+        ):
+            with self.subTest(empty=key):
+                self.assertDocumentCode(
+                    lambda document, key=key: document.update({key: []}), code
+                )
+            with self.subTest(duplicated=key):
+                self.assertDocumentCode(
+                    lambda document, key=key: document[key].append(
+                        dict(document[key][0])
+                    ),
+                    code,
+                )
+        self.assertDocumentCode(
+            lambda document: document["proxies"].__setitem__(0, "not-a-mapping"),
+            "home_proxy_invalid",
+        )
+        self.assertDocumentCode(
+            lambda document: document["proxy-groups"].__setitem__(0, ["not-a-mapping"]),
+            "home_group_invalid",
+        )
+
+    def test_rejects_extension_mappings_with_bad_values_or_missing_targets(self):
+        for name, mutation, code in (
+            (
+                "string-value",
+                lambda document: document.update(
+                    {"extend-proxy-groups": {"BiliBili": "ProxyServer"}}
+                ),
+                "home_extension_invalid",
+            ),
+            (
+                "empty-value",
+                lambda document: document.update({"extend-proxy-groups": {"BiliBili": []}}),
+                "home_extension_invalid",
+            ),
+            (
+                "empty-key",
+                lambda document: document.update({"extend-proxy-groups": {"": ["ProxyServer"]}}),
+                "home_extension_invalid",
+            ),
+            (
+                "missing-target",
+                lambda document: document.update(
+                    {"extend-proxy-groups": {"BiliBili": ["MissingGroup"]}}
+                ),
+                "home_group_reference_invalid",
+            ),
+        ):
+            with self.subTest(name=name):
+                self.assertDocumentCode(mutation, code)
+
+    def test_rejects_injection_referencing_groups_missing_from_proxy_groups(self):
+        for key in ("inject-node-groups", "inject-home-node-groups"):
+            with self.subTest(key=key):
+                self.assertDocumentCode(
+                    lambda document, key=key: document.update({key: ["MissingGroup"]}),
+                    "home_group_reference_invalid",
+                )
+
+    def test_rejects_duplicate_names_within_one_injection_list(self):
+        for key, group in (
+            ("inject-node-groups", "ProxyServer"),
+            ("inject-home-node-groups", "HomeServer"),
+        ):
+            with self.subTest(key=key):
+                self.assertDocumentCode(
+                    lambda document, key=key, group=group: document.update(
+                        {key: [group, group]}
+                    ),
+                    "home_group_reference_invalid",
+                )
+
+    def test_rejects_invalid_and_terminal_rules(self):
+        for rule in (
+            "MATCH,ProxyServer",
+            "FINAL,HomeServer",
+            "match,ProxyServer",
+            "MATCH",
+            "MATCH ,HomeServer",
+            "final ,HomeServer",
+            "match\t,HomeServer",
+            "MATCH , HomeServer,no-resolve",
+            "IP-CIDR,192.168.0.0/16,MissingGroup",
+            "IP-CIDR",
+            "",
+        ):
+            with self.subTest(rule=rule):
+                self.assertDocumentCode(
+                    lambda document, rule=rule: document.update(rules=[rule]),
+                    "home_rule_invalid",
+                )
+        self.assertDocumentCode(
+            lambda document: document.update(rules=[42]), "home_rule_invalid"
+        )
+        self.assertDocumentCode(
+            lambda document: document.update(rules=[None]), "home_rule_invalid"
+        )
+
+    def test_rejects_unsafe_payload_bytes(self):
+        for payload in (
+            b"",
+            b"\xff\xfebroken",
+            b"proxies: [\n",
+            b"{{ home_proxies }}\n",
+            b"{% extends layout %}\n",
+        ):
+            with self.subTest(payload=payload):
+                self.assertHomeCode(payload, "home_yaml_invalid")
+        with self.assertRaises(HomeSourceError) as caught:
+            parse_home_overlay(b"\xff\xfebroken", self.max_bytes)
+        self.assertIsNone(caught.exception.__context__)
+        payload = home_document_bytes()
+        for bad_max_bytes in (0, len(payload) - 1, "64"):
+            with self.subTest(max_bytes=bad_max_bytes):
+                with self.assertRaises(HomeSourceError) as caught:
+                    parse_home_overlay(payload, bad_max_bytes)
+                self.assertEqual(caught.exception.code, "home_source_invalid")
+        with self.assertRaises(HomeSourceError) as caught:
+            parse_home_overlay(payload.decode("utf-8"), self.max_bytes)
+        self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_home_errors_never_echo_document_values_in_message_or_traceback(self):
+        document = home_document()
+        document["proxy-groups"].append(dict(document["proxy-groups"][0]))
+        payload = yaml.safe_dump(document, allow_unicode=True).encode("utf-8")
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(HomeSourceError) as caught:
+                parse_home_overlay(payload, self.max_bytes)
+
+        self.assertEqual(caught.exception.code, "home_group_invalid")
+        rendered = "".join(traceback.format_exception(caught.exception))
+        for secret in ("ProxyServer", "HomeExit", "synthetic-home-password", "192.168.0.0/16"):
+            self.assertNotIn(secret, str(caught.exception))
+            self.assertNotIn(secret, repr(caught.exception))
+            self.assertNotIn(secret, rendered)
+        self.assertIsNone(caught.exception.__context__)
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_loads_a_single_link_owner_only_home_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_home_file(directory)
+
+            home = load_home_overlay(path, self.max_bytes)
+
+            self.assertEqual(home.inject_node_groups, ("ProxyServer",))
+            self.assertEqual(home.inject_home_node_groups, ("HomeServer",))
+
+    def test_rejects_symlinked_home_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_home_file(directory)
+            link = Path(directory) / "linked-home.yaml"
+            os.symlink(path, link)
+
+            with self.assertRaises(HomeSourceError) as caught:
+                load_home_overlay(link, self.max_bytes)
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_rejects_hard_linked_home_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_home_file(directory)
+            os.link(path, path.with_name("hard-home.yaml"))
+
+            with self.assertRaises(HomeSourceError) as caught:
+                load_home_overlay(path, self.max_bytes)
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_rejects_home_overlay_owned_by_another_user(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_home_file(directory)
+            if os.geteuid() == 0:
+                os.chown(path, 1, -1)
+                with self.assertRaises(HomeSourceError) as caught:
+                    load_home_overlay(path, self.max_bytes)
+                self.assertEqual(caught.exception.code, "home_source_invalid")
+            else:
+                with patch(
+                    "clash_sub.sources.os.geteuid", return_value=os.geteuid() + 1
+                ):
+                    with self.assertRaises(HomeSourceError) as caught:
+                        load_home_overlay(path, self.max_bytes)
+                    self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_rejects_home_overlay_with_shared_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_home_file(directory)
+            os.chmod(path, 0o644)
+
+            with self.assertRaises(HomeSourceError) as caught:
+                load_home_overlay(path, self.max_bytes)
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_rejects_home_overlay_larger_than_max_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self._write_home_file(directory)
+
+            with self.assertRaises(HomeSourceError) as caught:
+                load_home_overlay(path, 16)
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+
+    def test_rejects_missing_home_overlay_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(HomeSourceError) as caught:
+                load_home_overlay(Path(directory) / "absent.yaml", self.max_bytes)
+
+            self.assertEqual(caught.exception.code, "home_source_invalid")
+            self.assertIsNone(caught.exception.__context__)
+            self.assertIsNone(caught.exception.__cause__)

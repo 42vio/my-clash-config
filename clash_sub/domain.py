@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -99,3 +100,34 @@ class PreparedRelease:
 
     def __post_init__(self):
         object.__setattr__(self, "public_paths", MappingProxyType(dict(self.public_paths)))
+
+
+@dataclass(frozen=True)
+class HomeOverlay:
+    """The owner-only six-field private overlay value."""
+
+    proxies: tuple[Mapping, ...]
+    proxy_groups: tuple[Mapping, ...]
+    extend_proxy_groups: Mapping[str, tuple[str, ...]]
+    inject_node_groups: tuple[str, ...]
+    inject_home_node_groups: tuple[str, ...]
+    rules: tuple[str, ...]
+
+    def __post_init__(self):
+        object.__setattr__(
+            self,
+            "proxies",
+            tuple(copy.deepcopy(dict(item)) for item in self.proxies),
+        )
+        object.__setattr__(
+            self,
+            "proxy_groups",
+            tuple(copy.deepcopy(dict(item)) for item in self.proxy_groups),
+        )
+        object.__setattr__(
+            self,
+            "extend_proxy_groups",
+            MappingProxyType(
+                {key: tuple(value) for key, value in self.extend_proxy_groups.items()}
+            ),
+        )

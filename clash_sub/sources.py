@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import os
 import stat
 import urllib.request
@@ -10,7 +11,7 @@ from urllib.request import HTTPRedirectHandler, Request
 
 import yaml
 
-from clash_sub.domain import Traffic
+from clash_sub.domain import HomeOverlay, Traffic
 
 
 class SourceError(RuntimeError):
@@ -349,3 +350,211 @@ def _snapshot_fail():
 
 def _userinfo_fail():
     raise SourceError(_USERINFO_ERROR)
+
+
+_HOME_KEYS = frozenset(
+    (
+        "proxies",
+        "proxy-groups",
+        "extend-proxy-groups",
+        "inject-node-groups",
+        "inject-home-node-groups",
+        "rules",
+    )
+)
+_HOME_ERROR_CODES = frozenset(
+    (
+        "home_source_invalid",
+        "home_yaml_invalid",
+        "home_schema_invalid",
+        "home_proxy_invalid",
+        "home_group_invalid",
+        "home_group_reference_invalid",
+        "home_rule_invalid",
+        "home_extension_invalid",
+        "home_mihomo_validation_failed",
+    )
+)
+_HOME_RULE_OPTIONS = frozenset(("no-resolve", "src"))
+_HOME_RULE_POLICIES = frozenset(("DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"))
+
+
+class HomeSourceError(RuntimeError):
+    """Raised when the private home overlay cannot be safely used."""
+
+    def __init__(self, code):
+        if code not in _HOME_ERROR_CODES:
+            raise ValueError("unapproved home error code")
+        super().__init__("home overlay rejected: %s" % code)
+        self.code = code
+
+
+def parse_home_overlay(payload, max_bytes):
+    """Parse and validate the strict six-field private home overlay."""
+    _require_home_payload(payload, max_bytes)
+    return _build_home_overlay(_load_home_document(payload))
+
+
+def load_home_overlay(path, max_bytes):
+    """Load one owner-only private home overlay file."""
+    overlay_path = Path(path)
+    payload = None
+    try:
+        details = overlay_path.lstat()
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or stat.S_ISLNK(details.st_mode)
+            or stat.S_IMODE(details.st_mode) != 0o600
+            or details.st_uid != os.geteuid()
+            or details.st_nlink > 1
+        ):
+            _home_fail("home_source_invalid")
+        with overlay_path.open("rb") as handle:
+            payload = handle.read(max_bytes + 1)
+    except HomeSourceError:
+        raise
+    except (OSError, TypeError, ValueError):
+        payload = None
+    if payload is None:
+        _home_fail("home_source_invalid")
+    return parse_home_overlay(payload, max_bytes)
+
+
+def dump_home_overlay(home):
+    """Serialize one home overlay back to canonical overlay bytes."""
+    document = {
+        "proxies": [dict(proxy) for proxy in home.proxies],
+        "proxy-groups": [dict(group) for group in home.proxy_groups],
+        "extend-proxy-groups": {
+            key: list(value) for key, value in home.extend_proxy_groups.items()
+        },
+        "inject-node-groups": list(home.inject_node_groups),
+        "inject-home-node-groups": list(home.inject_home_node_groups),
+        "rules": list(home.rules),
+    }
+    text = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
+    return (text.rstrip("\n") + "\n").encode("utf-8")
+
+
+def home_overlay_digest(home):
+    """Return the stable sha256 digest of the canonical overlay bytes."""
+    return hashlib.sha256(dump_home_overlay(home)).hexdigest()
+
+
+def _home_fail(code):
+    raise HomeSourceError(code)
+
+
+def _require_home_payload(payload, max_bytes):
+    if (
+        not isinstance(payload, bytes)
+        or type(max_bytes) is not int
+        or max_bytes <= 0
+        or len(payload) > max_bytes
+    ):
+        _home_fail("home_source_invalid")
+
+
+def _load_home_document(payload):
+    if not payload or b"{{" in payload or b"{%" in payload:
+        _home_fail("home_yaml_invalid")
+    try:
+        return yaml.safe_load(payload.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError, RecursionError):
+        pass
+    _home_fail("home_yaml_invalid")
+
+
+def _build_home_overlay(document):
+    if not isinstance(document, Mapping) or set(document) != _HOME_KEYS:
+        _home_fail("home_schema_invalid")
+    proxies = _home_named_entries(
+        document["proxies"], "home_schema_invalid", "home_proxy_invalid"
+    )
+    groups = _home_named_entries(
+        document["proxy-groups"], "home_schema_invalid", "home_group_invalid"
+    )
+    group_names = frozenset(group["name"] for group in groups)
+    extensions = _home_extensions(document["extend-proxy-groups"], group_names)
+    inject_node = _home_injection(document["inject-node-groups"], group_names)
+    inject_home = _home_injection(document["inject-home-node-groups"], group_names)
+    if set(inject_node) & set(inject_home):
+        _home_fail("home_group_reference_invalid")
+    return HomeOverlay(
+        proxies=proxies,
+        proxy_groups=groups,
+        extend_proxy_groups=extensions,
+        inject_node_groups=inject_node,
+        inject_home_node_groups=inject_home,
+        rules=_home_rules(document["rules"], group_names),
+    )
+
+
+def _home_named_entries(entries, shape_code, entry_code):
+    if not isinstance(entries, list):
+        _home_fail(shape_code)
+    if not entries:
+        _home_fail(entry_code)
+    names = set()
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            _home_fail(entry_code)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip() or name in names:
+            _home_fail(entry_code)
+        names.add(name)
+    return tuple(entries)
+
+
+def _home_extensions(extensions, group_names):
+    if not isinstance(extensions, Mapping):
+        _home_fail("home_schema_invalid")
+    normalized = {}
+    for key, value in extensions.items():
+        if not isinstance(key, str) or not key.strip():
+            _home_fail("home_extension_invalid")
+        if not isinstance(value, list) or not value:
+            _home_fail("home_extension_invalid")
+        targets = []
+        for target in value:
+            if not isinstance(target, str) or not target.strip():
+                _home_fail("home_extension_invalid")
+            if target not in group_names:
+                _home_fail("home_group_reference_invalid")
+            targets.append(target)
+        normalized[key] = tuple(targets)
+    return normalized
+
+
+def _home_injection(names, group_names):
+    if not isinstance(names, list):
+        _home_fail("home_schema_invalid")
+    for name in names:
+        if not isinstance(name, str):
+            _home_fail("home_schema_invalid")
+        if name not in group_names:
+            _home_fail("home_group_reference_invalid")
+    if len(set(names)) != len(names):
+        _home_fail("home_group_reference_invalid")
+    return tuple(names)
+
+
+def _home_rules(rules, group_names):
+    if not isinstance(rules, list):
+        _home_fail("home_schema_invalid")
+    for rule in rules:
+        if not isinstance(rule, str) or not rule.strip():
+            _home_fail("home_rule_invalid")
+        parts = rule.strip().split(",")
+        if len(parts) < 2:
+            _home_fail("home_rule_invalid")
+        if parts[0].strip().lower() in ("match", "final"):
+            _home_fail("home_rule_invalid")
+        target = parts[-1]
+        if target in _HOME_RULE_OPTIONS:
+            if len(parts) < 3:
+                _home_fail("home_rule_invalid")
+            target = parts[-2]
+        if target not in group_names and target not in _HOME_RULE_POLICIES:
+            _home_fail("home_rule_invalid")
+    return tuple(rules)
