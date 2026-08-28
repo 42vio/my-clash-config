@@ -666,6 +666,8 @@ class Installer:
                 ),
                 self.runner,
                 nginx_binary="/usr/sbin/nginx",
+                systemctl_binary="/usr/bin/systemctl",
+                reload=True,
             )
         except NginxError:
             raise InstallerError("nginx_activation_failed") from None

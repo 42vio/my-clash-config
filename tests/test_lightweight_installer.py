@@ -999,6 +999,7 @@ class NginxActivationPhaseTests(unittest.TestCase):
         self.assertTrue(self.paths.routes_conf.exists())
         joined = [" ".join(c) for c in self.runner_calls]
         self.assertTrue(any("nginx" in item and "-t" in item for item in joined))
+        self.assertIn(["/usr/bin/systemctl", "reload", "nginx"], self.runner_calls)
         self.assertTrue(any("enable" in item and "nginx" in item for item in joined))
 
     def test_activate_nginx_strips_trailing_slash(self):
