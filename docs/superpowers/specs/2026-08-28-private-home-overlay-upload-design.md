@@ -2,7 +2,7 @@
 
 ## Goal
 
-把 owner 的家庭节点、家庭策略组、公共组扩展和家庭专用规则集中到开发机
+把 owner 的家庭节点、家庭策略组、节点注入声明、公共组扩展和家庭专用规则集中到开发机
 上的一份私有文件：
 
 ```text
@@ -31,13 +31,15 @@ private/home.yaml
 - 不增加家庭配置定时刷新、文件监听器、常驻服务或 Web 上传界面。
 - 不让 `template-sync` 下载 Mihomo；继续要求 `MIHOMO_BIN` 指向维护者选择的
   固定本地二进制。
+- 本次不修改 YAML 注释或排版处理；`template-sync` 与运行时生成继续允许
+  解析/导出过程丢弃注释并规范化格式。
 - 不改变机场的 `AmyTelecom.yaml` 稳定 provider 设计、3x-ui 节点来源、用户
   variant 数量或服务器日常菜单结构。
 
 ## Private file format
 
 `private/home.yaml` 是 Clash 配置的私有覆盖层，不是可独立导入客户端的完整
-配置。顶层只允许且必须包含以下四个字段：
+配置。顶层只允许且必须包含以下六个字段：
 
 ```yaml
 proxies:
@@ -59,10 +61,14 @@ proxy-groups:
 extend-proxy-groups:
   BiliBili:
     - ProxyServer
-  PT站加速:
-    - ProxyServer
   国内流媒体:
     - ProxyServer
+
+inject-node-groups:
+  - ProxyServer
+
+inject-home-node-groups:
+  - HomeServer
 
 rules:
   - IP-CIDR,192.168.2.0/24,HomeServer,no-resolve
@@ -73,8 +79,15 @@ rules:
 - `proxies` 必须是非空 proxy mapping 列表，名称非空且唯一。
 - `proxy-groups` 必须是非空 group mapping 列表，名称非空且唯一。
 - `extend-proxy-groups` 必须把已存在的公共组名称映射到非空的家庭组名称
-  列表；本期保留 `BiliBili`、`PT站加速`、`国内流媒体` 到
-  `ProxyServer` 的三个现有扩展。
+  列表；本期只保留 `BiliBili`、`国内流媒体` 到 `ProxyServer` 的两个
+  扩展，明确移除 `PT站加速` 的 `ProxyServer` 成员。
+- `inject-node-groups` 声明哪些家庭组在运行时接收该 owner variant 获准的
+  全部 inline 节点，并在存在机场 provider 时接收 `use: [AmyTelecom]`；
+  本期固定包含 `ProxyServer`。
+- `inject-home-node-groups` 声明哪些家庭组只接收家庭 inline 节点；本期
+  固定包含 `HomeServer`。
+- 两类 injection 列表只能引用 `proxy-groups` 中唯一存在的组，且同一组
+  不能在两个列表中重复声明。
 - `rules` 是家庭专用规则列表。渲染时它整体置于公共规则之前；禁止
   `MATCH`、`FINAL` 或其他会提前截断公共规则的终结规则。
 - 家庭组可以引用家庭节点、其他家庭组、存在的公共组或 Clash 内建策略，
@@ -89,7 +102,9 @@ rules:
 ## Local template-sync ownership model
 
 `template-sync` 继续只读固定输入
-`private/workbench/balanced.yaml`，但输出从三个公开文件扩展为：
+`private/workbench/balanced.yaml`。该文件不是永久母版，而是维护者直接下载
+服务器最新 `clash-balanced.yaml` 后保存、修改并实测的滚动本地工作副本。
+输出从三个公开文件扩展为：
 
 ```text
 templates/clash.yaml
@@ -107,8 +122,9 @@ manifest 中 balanced/privacy 的 `home` feature 声明随之删除；家庭覆�
 `private/home.yaml` 是下一次同步的家庭 scope 声明：
 
 - 其 `proxy-groups` 名称集合声明哪些工作稿策略组属于家庭。
-- 工作稿中被这些家庭组递归引用的 inline proxy 对象成为新的家庭
-  `proxies`。
+- `inject-home-node-groups` 声明从哪些组的工作稿成员识别家庭 inline proxy；
+  这些 proxy 对象成为新的家庭 `proxies`。不得从 `inject-node-groups` 的
+  全节点成员反推家庭来源。
 - 工作稿中策略目标属于家庭组的规则成为新的家庭 `rules`。
 - 公共组中对家庭组的引用成为新的 `extend-proxy-groups`。
 
@@ -124,14 +140,17 @@ manifest 中 balanced/privacy 的 `home` feature 声明随之删除；家庭覆�
 
 1. 读取并验证工作稿、现有 `private/home.yaml` 和当前 tracked templates。
 2. 从工作稿复制 scope 中声明的家庭组，保持其出现顺序。
-3. 沿家庭组引用图递归收集工作稿 inline proxies，保持 proxy 出现顺序；
-   不收集 `AmyTelecom` provider 或与家庭组无关的 3x-ui/机场节点。
-4. 从公共组候选中移除家庭组成员，并把这些成员记录为家庭 group
+3. 从 `inject-home-node-groups` 声明的工作稿组出发收集其家庭 inline
+   proxies，保持 proxy 出现顺序；不得从 `ProxyServer` 等全节点注入组收集
+   3x-ui 节点，也不收集 `AmyTelecom` provider。
+4. 从复制出的家庭组删除将由运行时重新注入的 inline proxy 成员和 provider
+   `use`；静态的公共组、家庭组和 Clash 内建策略成员保持不变。
+5. 从公共组候选中移除家庭组成员，并把这些成员记录为家庭 group
    extensions；同时继续剥离所有动态 inline proxy 成员。
-5. 把策略目标为家庭组的规则移到家庭 `rules`，其余规则留在公共模板并
+6. 把策略目标为家庭组的规则移到家庭 `rules`，其余规则留在公共模板并
    保持相对顺序。
-6. 从公共候选删除家庭组、inline proxies 和运行时 provider mapping。
-7. 生成新的公共模板、manifest 与 `private/home.yaml` 候选。
+7. 从公共候选删除家庭组、inline proxies 和运行时 provider mapping。
+8. 生成新的公共模板、manifest 与 `private/home.yaml` 候选。
 
 任何 scope 中的家庭组缺失、重复或无法解析时必须失败，不得静默删除家庭
 行为。新家庭内容不得因“看起来像家庭配置”而被自动归类。
@@ -167,8 +186,11 @@ manifest 中 balanced/privacy 的 `home` feature 声明随之删除；家庭覆�
    重命名同步应用到家庭组成员引用。
 4. 添加家庭策略组；拒绝与公共组同名。
 5. 将 `extend-proxy-groups` 成员追加到目标公共组，拒绝缺失目标和重复成员。
-6. 把家庭 `rules` 整体置于公共 `rules` 之前。
-7. 注入其他运行时节点/provider，完成结构与 Mihomo 校验。
+6. 向 `inject-node-groups` 注入该 variant 的全部 inline 节点，并在存在机场
+   provider 时添加 `use: [AmyTelecom]`；向 `inject-home-node-groups` 只注入
+   经过重名处理后的家庭节点。
+7. 把家庭 `rules` 整体置于公共 `rules` 之前。
+8. 完成其他运行时注入、结构与 Mihomo 校验。
 
 固定授权矩阵：
 
@@ -251,8 +273,10 @@ token 或工作稿标量。上传中断或 SSH 失败不改变服务器任何文
 
 1. 从当前开发机私有 `proxies.yaml`、`proxy-groups.yaml` 与已实测 balanced
    工作稿取得家庭 proxies/groups；不得把其内容打印到终端或测试输出。
-2. 从当前 `templates/features/home.yaml` 迁移三个公共组扩展和
-   `IP-CIDR,192.168.2.0/24,HomeServer,no-resolve` 家庭规则。
+2. 从当前 `templates/features/home.yaml` 迁移两个 injection 声明、
+   `BiliBili`/`国内流媒体` 两个公共组扩展和
+   `IP-CIDR,192.168.2.0/24,HomeServer,no-resolve` 家庭规则；不迁移
+   `PT站加速` 的 `ProxyServer` 扩展。
 3. 不复制旧 `private/rules.yaml` 中已经存在于公共模板的重复规则。
 4. 生成并验证 `private/home.yaml`，确认其 mode 为 `0600`。
 5. 运行新版 `template-sync`，确认 public/private 候选与所有 variant 通过。
@@ -267,7 +291,8 @@ token 或工作稿标量。上传中断或 SSH 失败不改变服务器任何文
 
 更新 README、operations、private-data 及受影响的部署/恢复说明：
 
-- 把本地事实来源说明改为完整 workbench + 生成的私有 home overlay。
+- 把本地工作流说明改为最新服务器 balanced 下载形成的滚动 workbench +
+  生成的私有 home overlay；不得再称 workbench 为永久原稿。
 - 把 `template-sync` 输出改为公共模板与 `private/home.yaml` 双输出。
 - 删除 public home feature、手动 SFTP/scp、服务器目录直传和 inbox 说明。
 - 只展示两条本地日常命令：
@@ -290,7 +315,7 @@ token 或工作稿标量。上传中断或 SSH 失败不改变服务器任何文
 
 - `clash_sub/template_sync.py`：实现 home scope 提取、双输出、候选组合校验、
   私密泄漏校验和失败恢复。
-- `clash_sub/sources.py`：把 home loader 从 proxy 列表升级为严格的四字段
+- `clash_sub/sources.py`：把 home loader 从 proxy 列表升级为严格的六字段
   overlay loader，并提供 bytes/path 两种安全入口。
 - `clash_sub/generator.py`：实现 owner-only home overlay 的 groups、extensions
   与 prepended rules 组合；移除 tracked home feature 依赖。
@@ -311,15 +336,16 @@ token 或工作稿标量。上传中断或 SSH 失败不改变服务器任何文
 
 1. 有效 workbench + 既有 home scope 同时生成正确公共模板和 `0600`
    `private/home.yaml`，并保留顺序。
-2. 家庭 proxies、groups、extensions 和 rules 都不出现在 tracked outputs；
-   私密标量泄漏会原子拒绝全部输出。
+2. 家庭 proxies、groups、extensions、injection 声明和 rules 都不出现在
+   tracked outputs；私密标量泄漏会原子拒绝全部输出。
 3. 新家庭节点配置从 workbench 刷新；未声明的新家庭组不会被猜测成 home；
    scope 缺失或悬空会失败。
-4. owner balanced/privacy 含家庭节点、组、三个扩展和前置规则；owner standard
-   与 member standard 不含任何家庭对象或名称。
+4. owner balanced/privacy 含家庭节点、组、两个扩展、全节点/home-only 注入
+   和前置规则；`PT站加速` 不含 `ProxyServer`；owner standard 与 member
+   standard 不含任何家庭对象或名称。
 5. 跨来源 proxy 重名后，家庭组引用同步指向最终名称。
-6. 未知字段、坏 YAML、重复名称、无效 proxy/group/rule/extension、终结规则、
-   不安全本地文件和超限文件均返回对应脱敏代码。
+6. 未知字段、坏 YAML、重复名称、无效 proxy/group/rule/extension/injection、
+   终结规则、不安全本地文件和超限文件均返回对应脱敏代码。
 7. 上传脚本只接受一个安全 `root@host`，固定读取 `private/home.yaml`，通过
    stdin 发送，不泄漏内容，并准确传播 SSH/服务器退出码。
 8. 上传候选解析、Mihomo、Nginx、activation 或写入任一步失败时，旧 home、
