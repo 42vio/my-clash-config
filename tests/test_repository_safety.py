@@ -110,6 +110,38 @@ RETAINED_SCRIPT_ENTRY_POINTS = {
     "scan_tracked_secrets.py",
 }
 
+# The home overlay reaches the server only through a manual SFTP overwrite
+# of private/home.yaml followed by `clash-sub sync`; no upload workflow may
+# exist anywhere in the runtime.
+HOME_UPLOAD_SURFACE_REFERENCES = (
+    "home-import",
+    "home_import",
+    "home-upload",
+    "home_upload",
+    "upload-home",
+    "upload_home",
+)
+
+DOCUMENTED_CLI_COMMANDS = frozenset(
+    (
+        "sync",
+        "traffic-update",
+        "status",
+        "links",
+        "history",
+        "rollback",
+        "rotate-link",
+        "reinitialize-owner",
+        "recover",
+        "install",
+        "backup",
+        "template-sync",
+        "mihomo-update",
+        "update",
+        "cert",
+    )
+)
+
 
 class RepositorySafetyTests(unittest.TestCase):
     def test_only_retained_script_entry_points_compile_without_execution(self):
@@ -163,6 +195,33 @@ class RepositorySafetyTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_no_home_upload_workflow_exists_in_the_command_surface(self):
+        paths = [str(ROOT / "bin" / "clash-sub"), str(ROOT / "clash_sub")]
+        for reference in HOME_UPLOAD_SURFACE_REFERENCES:
+            result = subprocess.run(
+                ["rg", "--fixed-strings", "--line-number", reference, "--", *paths],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_cli_commands_stay_exactly_the_documented_argument_free_sync_surface(self):
+        import argparse
+
+        from clash_sub import cli
+
+        parser = cli._parser()
+        subparsers = next(
+            action
+            for action in parser._actions
+            if isinstance(action, argparse._SubParsersAction)
+        )
+        self.assertEqual(frozenset(subparsers.choices), DOCUMENTED_CLI_COMMANDS)
+        # `sync` never grows an upload target: it accepts no arguments.
+        self.assertEqual(subparsers.choices["sync"]._actions, [])
 
     def test_every_runtime_private_path_is_ignored(self):
         paths = (

@@ -24,7 +24,7 @@ from clash_sub.service import ClashSubService, ServiceError
 from clash_sub.sources import (
     download_airport_document,
     fetch_xui_proxies,
-    load_home_overlay,
+    normalize_server_home,
 )
 from clash_sub.state import load_state, reconcile_state, rotate_user_token, save_state
 from clash_sub.xui import read_xui_snapshot
@@ -32,6 +32,23 @@ from clash_sub.xui import read_xui_snapshot
 
 ROOT = Path(__file__).resolve().parents[1]
 XUI_SCHEMA = ROOT / "tests" / "fixtures" / "xui-3.6.0.sql"
+
+
+def home_document_bytes(node_name="Home"):
+    """Synthetic six-field overlay bytes exactly as SFTP would upload them."""
+    return yaml.safe_dump(
+        {
+            "proxies": [{"name": node_name, "type": "ss"}],
+            "proxy-groups": [
+                {"name": "HomeServer", "type": "select", "proxies": [node_name]}
+            ],
+            "extend-proxy-groups": {},
+            "inject-node-groups": [],
+            "inject-home-node-groups": ["HomeServer"],
+            "rules": [],
+        },
+        sort_keys=False,
+    ).encode("utf-8")
 
 
 class FakeResponse:
@@ -213,6 +230,8 @@ class AcceptanceHarness:
             encoding="utf-8",
         )
         os.chmod(home_path, 0o600)
+        # The maintainer's SFTP overwrite target: private/home.yaml.
+        self.home_path = home_path
 
         self.runner = FakeRunner(self)
         self.release_store = ReleaseStore(self.private_root, self.public_root)
@@ -224,7 +243,11 @@ class AcceptanceHarness:
             rotate_user_token=rotate_user_token,
             fetch_xui_proxies=self._fetch_xui,
             download_airport_document=self._download_airport,
-            load_home_overlay=load_home_overlay,
+            # The same server boundary the real runtime injects; the local
+            # test user stands in for the root service account.
+            load_home_overlay=lambda path, max_bytes: normalize_server_home(
+                path, max_bytes, expected_uid=os.geteuid()
+            ),
             render_user_bundle=self._render,
             validate_clash=validate_clash,
             mihomo_validator=MihomoValidator(self.config.mihomo_binary, runner=self.runner),
@@ -340,6 +363,33 @@ class AcceptanceHarness:
             "state": hashlib.sha256((self.private_root / "state.json").read_bytes()).hexdigest(),
             "routes": hashlib.sha256(self.routes_path.read_bytes()).hexdigest(),
             "releases": tuple(releases),
+        }
+
+    def active_owner_view(self):
+        """The complete live owner surface: identity, marker, release, bytes."""
+        user = self.state().users[self.owner_id]
+        release = (
+            self.release_store.verify_release(self.owner_id, user.current_release)
+            if user.current_release is not None
+            else None
+        )
+        return {
+            "user": user,
+            "marker": (self.private_root / "current" / str(self.owner_id)).read_text(
+                encoding="ascii"
+            ),
+            "release_id": user.current_release,
+            "public": tuple(
+                sorted(
+                    (variant, hashlib.sha256(path.read_bytes()).hexdigest())
+                    for variant, path in release.public_paths.items()
+                )
+            )
+            if release is not None
+            else None,
+            "airport": hashlib.sha256(release.airport_path.read_bytes()).hexdigest()
+            if release is not None and release.airport_path is not None
+            else None,
         }
 
     def assert_candidate_cleanup(self, testcase):
@@ -586,6 +636,9 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
+        # A home-less owner candidate keeps the generic owner failure code;
+        # the home-bearing rejection is pinned by the overwrite tests below.
+        harness.home_path.unlink()
         harness.set_xui_proxy(harness.owner_id, "Owner changed")
         harness.runner.fail_mihomo = True
 
@@ -815,6 +868,171 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(completed.returncode, 0)
+
+
+class DirectHomeOverwriteAcceptanceTests(unittest.TestCase):
+    """The direct-SFTP failure model: the upload stays, the runtime freezes.
+
+    Every scenario writes bytes straight to ``private/home.yaml`` — exactly
+    what an external SFTP client does outside any program transaction — and
+    then runs the real service.  A rejected upload is never repaired,
+    moved, or rolled back; it stays on disk for debugging while the
+    previously activated runtime survives untouched.
+    """
+
+    def make_harness(self):
+        return AcceptanceHarness(self)
+
+    def test_uploaded_home_is_published_by_the_next_sync(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        previous = harness.active_owner_view()
+        uploaded = home_document_bytes(node_name="Home Updated")
+        harness.home_path.write_bytes(uploaded)
+        os.chmod(harness.home_path, 0o600)
+
+        result = harness.service.sync_all()
+
+        self.assertFalse(result["errors"])
+        self.assertEqual(harness.home_path.read_bytes(), uploaded)
+        current = harness.active_owner_view()
+        self.assertNotEqual(current["release_id"], previous["release_id"])
+        self.assertEqual(current["marker"], current["release_id"] + "\n")
+        names = {
+            variant: [
+                proxy["name"]
+                for proxy in yaml.safe_load(path.read_text(encoding="utf-8"))["proxies"]
+            ]
+            for variant, path in harness.release(harness.owner_id).public_paths.items()
+        }
+        self.assertEqual(names["balanced"], ["Owner 3x-ui", "Home Updated"])
+        self.assertEqual(names["privacy"], ["Owner 3x-ui", "Home Updated"])
+        self.assertEqual(names["standard"], ["Owner 3x-ui"])
+        self.assertEqual(stat.S_IMODE(harness.home_path.stat().st_mode), 0o600)
+        harness.assert_lock_and_markers(self)
+
+    def test_uploaded_home_with_mode_0644_is_normalized_and_published(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        uploaded = home_document_bytes(node_name="Home Widened")
+        harness.home_path.write_bytes(uploaded)
+        os.chmod(harness.home_path, 0o644)
+
+        result = harness.service.sync_all()
+
+        self.assertFalse(result["errors"])
+        self.assertEqual(harness.home_path.read_bytes(), uploaded)
+        self.assertEqual(stat.S_IMODE(harness.home_path.stat().st_mode), 0o600)
+        balanced = yaml.safe_load(
+            harness.release(harness.owner_id).public_paths["balanced"].read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn(
+            "Home Widened", [proxy["name"] for proxy in balanced["proxies"]]
+        )
+
+    def test_malformed_uploaded_home_is_kept_and_reported_while_members_sync(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before = harness.active_owner_view()
+        uploaded = b"proxies: [unclosed\n"
+        harness.home_path.write_bytes(uploaded)
+        harness.set_xui_proxy(harness.member_id, "Member changed")
+
+        result = harness.service.sync_all()
+
+        self.assertEqual(
+            result["errors"],
+            ({"client_id": harness.owner_id, "code": "home_yaml_invalid"},),
+        )
+        self.assertEqual(harness.home_path.read_bytes(), uploaded)
+        self.assertEqual(harness.active_owner_view(), before)
+        self.assertIn(
+            harness.member_id, [item["client_id"] for item in result["updated"]]
+        )
+        harness.assert_candidate_cleanup(self)
+
+    def test_uploaded_home_with_an_invalid_reference_is_kept_and_reported(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before = harness.active_view()
+        document = yaml.safe_load(home_document_bytes())
+        document["inject-home-node-groups"] = ["MissingGroup"]
+        uploaded = yaml.safe_dump(document, sort_keys=False).encode("utf-8")
+        harness.home_path.write_bytes(uploaded)
+
+        result = harness.service.sync_all()
+
+        self.assertEqual(
+            result["errors"],
+            ({"client_id": harness.owner_id, "code": "home_group_reference_invalid"},),
+        )
+        self.assertEqual(harness.home_path.read_bytes(), uploaded)
+        self.assertEqual(harness.active_view(), before)
+        harness.assert_candidate_cleanup(self)
+
+    def test_mihomo_rejects_uploaded_home_but_source_is_not_rolled_back(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before = harness.active_view()
+        uploaded = home_document_bytes(node_name="Mihomo Reject")
+        harness.home_path.write_bytes(uploaded)
+        harness.runner.fail_mihomo = True
+
+        result = harness.service.sync_all()
+
+        self.assertEqual(harness.home_path.read_bytes(), uploaded)
+        self.assertEqual(harness.active_view(), before)
+        self.assertEqual(
+            result["errors"],
+            ({"client_id": harness.owner_id, "code": "home_mihomo_validation_failed"},),
+        )
+        harness.assert_candidate_cleanup(self)
+
+    def test_nginx_rejection_freezes_the_runtime_and_keeps_the_upload(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before = harness.active_view()
+        uploaded = home_document_bytes(node_name="Nginx Reject")
+        harness.home_path.write_bytes(uploaded)
+        harness.runner.fail_nginx_test = True
+
+        with self.assertRaisesRegex(ServiceError, "sync_activation_failed"):
+            harness.service.sync_all()
+
+        self.assertEqual(harness.home_path.read_bytes(), uploaded)
+        self.assertEqual(harness.active_view(), before)
+        harness.assert_candidate_cleanup(self)
+        harness.assert_lock_and_markers(self)
+
+    def test_empty_or_truncated_upload_is_rejected_and_kept_verbatim(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        for uploaded in (
+            b"",
+            b"proxies:\n- {name: Truncated Upload, type: ss\n",
+        ):
+            with self.subTest(uploaded=uploaded):
+                before = harness.active_view()
+                harness.home_path.write_bytes(uploaded)
+
+                result = harness.service.sync_all()
+
+                self.assertEqual(
+                    result["errors"],
+                    ({"client_id": harness.owner_id, "code": "home_yaml_invalid"},),
+                )
+                self.assertEqual(harness.home_path.read_bytes(), uploaded)
+                self.assertEqual(harness.active_view(), before)
+        harness.assert_candidate_cleanup(self)
 
 
 if __name__ == "__main__":

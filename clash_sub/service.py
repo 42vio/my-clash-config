@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from clash_sub.checks import CheckError
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, AirportProvider, HomeOverlay, RuntimeState
 from clash_sub.sources import HomeSourceError, home_overlay_digest, normalize_xui_endpoints
 from clash_sub.state import StateError
@@ -173,22 +174,28 @@ class ClashSubService:
         release=self._releases.prepare(client.client_id,bundle,inputs,airport_document=airport if owner else None)
         if release:
             if candidates is not None: candidates.append((client.client_id,release))
-            if owner: self._validate_owner_with_mihomo(bundle,airport)
+            if owner: self._validate_owner_with_mihomo(bundle,airport,home)
             else:
                 for path in release.public_paths.values(): self._mihomo.validate(path)
         return release
-    def _validate_owner_with_mihomo(self,bundle,airport):
+    def _validate_owner_with_mihomo(self,bundle,airport,home):
         # The published profile keeps the HTTP provider; Mihomo checks a
         # non-published equivalent that points at the raw local airport
         # bytes, which also proves the airport YAML is a usable provider.
-        with tempfile.TemporaryDirectory(prefix=".clash-sub-owner-validate.") as directory:
-            airport_file=Path(directory)/"AmyTelecom.yaml"; airport_file.write_bytes(airport)
-            for variant,text in bundle.items():
-                document=yaml.safe_load(text)
-                document["proxy-providers"]["AmyTelecom"]={"type":"file","path":str(airport_file)}
-                candidate=Path(directory)/("verify-%s.yaml"%variant)
-                candidate.write_text(yaml.safe_dump(document,allow_unicode=True,sort_keys=False),encoding="utf-8")
-                self._mihomo.validate(candidate)
+        try:
+            with tempfile.TemporaryDirectory(prefix=".clash-sub-owner-validate.") as directory:
+                airport_file=Path(directory)/"AmyTelecom.yaml"; airport_file.write_bytes(airport)
+                for variant,text in bundle.items():
+                    document=yaml.safe_load(text)
+                    document["proxy-providers"]["AmyTelecom"]={"type":"file","path":str(airport_file)}
+                    candidate=Path(directory)/("verify-%s.yaml"%variant)
+                    candidate.write_text(yaml.safe_dump(document,allow_unicode=True,sort_keys=False),encoding="utf-8")
+                    self._mihomo.validate(candidate)
+        except CheckError:
+            # A Mihomo rejection of a home-bearing owner candidate keeps the
+            # stable home code; home-less owner failures stay generic.
+            if home is None: raise
+            raise HomeSourceError("home_mihomo_validation_failed") from None
     def _activate(self,clients,state,candidates,extra=()):
         try: self._activate_runtime(self.config,state,self._render_routes(self.config,_routable(state),clients),self._runner,tuple(extra)+tuple(self._releases.current_artifact(i,r.release_id) for i,r in candidates))
         except Exception: raise ServiceError("sync_activation_failed") from None

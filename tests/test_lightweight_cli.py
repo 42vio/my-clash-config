@@ -289,6 +289,35 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(stdout, "同步已完成。\n")
         self.assertEqual(stderr, "")
 
+    def test_sync_reports_home_error_without_source_details(self):
+        self.service.sync_result = {
+            "updated": (),
+            "errors": ({"client_id": 7, "code": "home_yaml_invalid"},),
+        }
+
+        code, stdout, stderr = run_cli(["sync"], self.service)
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, "同步部分完成。\n")
+        self.assertEqual(stderr, "客户端 ID 7（错误代码：home_yaml_invalid）\n")
+        for detail in ("home.yaml", "proxies", "proxy-groups", "rules"):
+            self.assertNotIn(detail, stdout + stderr)
+
+    def test_home_import_stays_invalid_and_no_menu_offers_a_home_upload(self):
+        menus = MENU + MAINTENANCE_MENU + CERT_MENU + BACKUP_MENU + USER_MENU
+        for item in ("home", "上传", "导入", "sftp", "SFTP"):
+            self.assertNotIn(item, menus)
+        for argv in (["home-import"], ["home-import", "7"], ["upload-home"]):
+            with self.subTest(argv=argv):
+                service = FakeService()
+
+                code, stdout, stderr = run_cli(argv, service)
+
+                self.assertEqual(code, 2)
+                self.assertEqual(stdout, "")
+                self.assertEqual(stderr, "操作失败（错误代码：invalid_command）\n")
+                self.assertEqual(service.calls, [])
+
     def test_links_lists_every_user_in_returned_database_id_order_without_selection(self):
         code, stdout, stderr = run_cli(["links"], self.service)
 
