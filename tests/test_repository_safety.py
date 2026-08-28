@@ -32,7 +32,6 @@ FORBIDDEN_SUBSTRINGS = (
 
 TRACKED_DOCUMENT_PATHS = (
     "templates/clash.yaml",
-    "templates/features/home.yaml",
     "templates/variants/manifest.yaml",
     "templates/variants/privacy-dns.yaml",
 )
@@ -87,7 +86,6 @@ ACTIVE_RUNTIME_PATHS = (
     "scripts/check_reality_target.py",
     "scripts/scan_tracked_secrets.py",
     "templates/clash.yaml",
-    "templates/features",
     "templates/variants",
     "requirements.txt",
 )

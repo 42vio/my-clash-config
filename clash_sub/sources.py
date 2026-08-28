@@ -122,6 +122,19 @@ def normalize_xui_endpoints(proxies, endpoint):
 
 def merge_proxy_sources(labeled_sources):
     """Copy sources in order and make same-name cross-source nodes distinct."""
+    merged, _aliases = merge_proxy_sources_with_aliases(labeled_sources)
+    return merged
+
+
+def merge_proxy_sources_with_aliases(labeled_sources):
+    """Merge sources and record each source's original-to-final name map.
+
+    The alias maps exist so explicit references into one source (home group
+    members) can follow the collision rewrites; a duplicate name inside the
+    home source could never resolve to one final name and is rejected before
+    an ambiguous map is built.  Sources other than ``home`` keep the
+    historical numbered disambiguation for same-name entries.
+    """
     try:
         pairs = tuple(
             labeled_sources.items()
@@ -133,12 +146,18 @@ def merge_proxy_sources(labeled_sources):
         for label, proxies in pairs:
             if not isinstance(label, str) or not label:
                 _source_fail()
-            for proxy in _normalize_proxies({"proxies": proxies}):
+            normalized = _normalize_proxies({"proxies": proxies})
+            if label == "home":
+                label_names = [proxy["name"] for proxy in normalized]
+                if len(set(label_names)) != len(label_names):
+                    _source_fail()
+            for proxy in normalized:
                 entries.append((label, proxy))
                 names.append(proxy["name"])
         duplicates = Counter(names)
         merged = []
         used_names = set()
+        aliases = {}
         for label, proxy in entries:
             copied = copy.deepcopy(proxy)
             name = copied["name"]
@@ -152,7 +171,9 @@ def merge_proxy_sources(labeled_sources):
             copied["name"] = name
             used_names.add(name)
             merged.append(copied)
-        return merged
+            if name != proxy["name"]:
+                aliases.setdefault(label, {})[proxy["name"]] = name
+        return merged, aliases
     except SourceError:
         raise
     except (TypeError, ValueError, RecursionError):
@@ -389,6 +410,12 @@ class HomeSourceError(RuntimeError):
         self.code = code
 
 
+def rule_is_terminal(rule):
+    """True when one Clash rule line is the unconditional final policy."""
+    parts = rule.split(",")
+    return bool(parts) and parts[0].strip().lower() in ("match", "final")
+
+
 def parse_home_overlay(payload, max_bytes):
     """Parse and validate the strict six-field private home overlay."""
     _require_home_payload(payload, max_bytes)
@@ -545,10 +572,10 @@ def _home_rules(rules, group_names):
     for rule in rules:
         if not isinstance(rule, str) or not rule.strip():
             _home_fail("home_rule_invalid")
+        if rule_is_terminal(rule):
+            _home_fail("home_rule_invalid")
         parts = rule.strip().split(",")
         if len(parts) < 2:
-            _home_fail("home_rule_invalid")
-        if parts[0].strip().lower() in ("match", "final"):
             _home_fail("home_rule_invalid")
         target = parts[-1]
         if target in _HOME_RULE_OPTIONS:

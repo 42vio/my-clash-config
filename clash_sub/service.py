@@ -10,8 +10,8 @@ from pathlib import Path
 
 import yaml
 
-from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, AirportProvider, RuntimeState
-from clash_sub.sources import normalize_xui_endpoints
+from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, AirportProvider, HomeOverlay, RuntimeState
+from clash_sub.sources import home_overlay_digest, normalize_xui_endpoints
 from clash_sub.state import StateError
 
 class ServiceError(RuntimeError):
@@ -67,8 +67,8 @@ class _OperationLock:
         if error and exc_type is None: raise ServiceError("operation_lock_invalid")
 
 class ClashSubService:
-    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_document, load_proxy_snapshot, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, state_sink=None, lock_factory=None, clock=None, reinitialize_owner=None, recover_runtime=None):
-        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_document; self._load_proxy=load_proxy_snapshot; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time; self._reinitialize=reinitialize_owner; self._recover_runtime=recover_runtime or (lambda *_, **__: None)
+    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_document, load_home_overlay, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, state_sink=None, lock_factory=None, clock=None, reinitialize_owner=None, recover_runtime=None):
+        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_document; self._load_home=load_home_overlay; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time; self._reinitialize=reinitialize_owner; self._recover_runtime=recover_runtime or (lambda *_, **__: None)
     def sync_all(self):
         with self._lock():
             self._recover()
@@ -78,7 +78,7 @@ class ClashSubService:
                 if not user or not client.enabled: continue
                 if owner and bad_owner: errors.append(_error(client,"owner_update_failed")); continue
                 try:
-                    release=self._prepare(client,owner,snapshot.source_url(client),airport if owner else None,home if owner else (),user,tokens,candidates=candidates)
+                    release=self._prepare(client,owner,snapshot.source_url(client),airport if owner else None,home if owner else None,user,tokens,candidates=candidates)
                     if release: next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
                 except Exception:
                     owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
@@ -165,7 +165,7 @@ class ClashSubService:
             provider=AirportProvider(_provider_url(self.config,identity.token),_airport_digest(airport))
         bundle=self._render(owner,xui,provider,home,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
         for text in bundle.values(): self._validate(text,forbidden,provider.url if provider else None)
-        inputs={"xui":_digest(xui)} if not owner else {"xui":_digest(xui),"home":_digest(home),"airport":_airport_digest(airport)}
+        inputs={"xui":_digest(xui)} if not owner else {"xui":_digest(xui),"home":_home_digest(home),"airport":_airport_digest(airport)}
         release=self._releases.prepare(client.client_id,bundle,inputs,airport_document=airport if owner else None)
         if release:
             if candidates is not None: candidates.append((client.client_id,release))
@@ -227,8 +227,8 @@ class ClashSubService:
         path=_home_path(self.config)
         # Only genuine absence is optional; a dangling symlink, insecure
         # file, or parser failure remains an owner-source failure.
-        if not path.exists() and not path.is_symlink(): return ()
-        return self._load_proxy(path)
+        if not path.exists() and not path.is_symlink(): return None
+        return self._load_home(path,self.config.max_source_bytes)
     def _observe(self,state):
         try:self._sink(state)
         except Exception:pass
@@ -278,6 +278,7 @@ def _traffic_matches_state(clients,state):
 def _shape(b,owner):
     if tuple(b)!=(OWNER_VARIANTS if owner else MEMBER_VARIANTS):raise ValueError
 def _digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,default=str).encode()).hexdigest()
+def _home_digest(home):return home_overlay_digest(home) if isinstance(home,HomeOverlay) else _digest(home)
 def _airport_digest(document):return hashlib.sha256(document).hexdigest()
 def _provider_url(c,t):return "https://%s/s/%s/AmyTelecom.yaml"%(c.subscription_authority,t)
 def _identity(s,i):

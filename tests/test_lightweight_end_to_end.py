@@ -24,7 +24,7 @@ from clash_sub.service import ClashSubService, ServiceError
 from clash_sub.sources import (
     download_airport_document,
     fetch_xui_proxies,
-    load_proxy_snapshot,
+    load_home_overlay,
 )
 from clash_sub.state import load_state, reconcile_state, rotate_user_token, save_state
 from clash_sub.xui import read_xui_snapshot
@@ -194,7 +194,21 @@ class AcceptanceHarness:
         home_path = self.private_root / "home.yaml"
         home_path.write_text(
             yaml.safe_dump(
-                {"proxies": [self._proxy("Home", "home-snapshot")]}, sort_keys=False
+                {
+                    "proxies": [self._proxy("Home", "home-snapshot")],
+                    "proxy-groups": [
+                        {
+                            "name": "HomeServer",
+                            "type": "select",
+                            "proxies": ["🎯 Direct", "Home"],
+                        }
+                    ],
+                    "extend-proxy-groups": {},
+                    "inject-node-groups": [],
+                    "inject-home-node-groups": ["HomeServer"],
+                    "rules": [],
+                },
+                sort_keys=False,
             ),
             encoding="utf-8",
         )
@@ -210,7 +224,7 @@ class AcceptanceHarness:
             rotate_user_token=rotate_user_token,
             fetch_xui_proxies=self._fetch_xui,
             download_airport_document=self._download_airport,
-            load_proxy_snapshot=load_proxy_snapshot,
+            load_home_overlay=load_home_overlay,
             render_user_bundle=self._render,
             validate_clash=validate_clash,
             mihomo_validator=MihomoValidator(self.config.mihomo_binary, runner=self.runner),

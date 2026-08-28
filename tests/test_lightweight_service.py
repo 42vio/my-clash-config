@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from clash_sub.domain import PreparedRelease, RuntimeState, ServiceConfig, UserState, XuiClient, XuiSnapshot
+from clash_sub.domain import HomeOverlay, PreparedRelease, RuntimeState, ServiceConfig, UserState, XuiClient, XuiSnapshot
 from clash_sub.state import StateError
 
 try:
@@ -138,7 +138,14 @@ class ServiceTests(unittest.TestCase):
         self.download_calls = []
         self.validation_calls = []
         self.airport_document = b"proxies:\n- name: Airport candidate\n  type: ss\n"
-        self.home = [{"name": "Home"}]
+        self.home = HomeOverlay(
+            proxies=({"name": "Home", "type": "ss"},),
+            proxy_groups=({"name": "HomeServer", "type": "select", "proxies": ["Home"]},),
+            extend_proxy_groups={},
+            inject_node_groups=(),
+            inject_home_node_groups=("HomeServer",),
+            rules=(),
+        )
         self.fail_client = None
         self.fail_owner_render = False
         self.service = ClashSubService(
@@ -149,7 +156,7 @@ class ServiceTests(unittest.TestCase):
             rotate_user_token=self._rotate,
             fetch_xui_proxies=self._fetch,
             download_airport_document=self._download,
-            load_proxy_snapshot=lambda path: self.home,
+            load_home_overlay=lambda path, max_bytes: self.home,
             render_user_bundle=self._render,
             validate_clash=self._validate,
             mihomo_validator=type("Validator", (), {"validate": lambda _, path: self.mihomo_calls.append(path)})(),
@@ -583,7 +590,7 @@ class ServiceTests(unittest.TestCase):
         home = Path(self.config.private_root) / "home.yaml"
         self.assertFalse(home.exists())
         loaded = []
-        self.service._load_proxy = lambda path: loaded.append(path) or self.home
+        self.service._load_home = lambda path, max_bytes: loaded.append(path) or self.home
 
         result = self.service.update_airport("https://airport.example/transient")
 
@@ -592,7 +599,7 @@ class ServiceTests(unittest.TestCase):
 
     def test_existing_invalid_home_snapshot_still_blocks_airport_update(self):
         home = Path(self.config.private_root) / "home.yaml"; home.write_text("broken", encoding="utf-8")
-        self.service._load_proxy = lambda path: (_ for _ in ()).throw(ValueError()) if path == home else self.home
+        self.service._load_home = lambda path, max_bytes: (_ for _ in ()).throw(ValueError()) if path == home else self.home
 
         with self.assertRaisesRegex(ServiceError, "airport_activation_failed"):
             self.service.update_airport("https://airport.example/transient")

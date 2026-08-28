@@ -2,10 +2,11 @@
 
 ``clash-sub template-sync`` is a development-machine command: it reads the
 ignored ``private/workbench/balanced.yaml``, strips every dynamic node,
-splits the remainder into the public template and the declared home
-feature, re-validates the composed candidates with synthetic probes, and
-only then atomically replaces the tracked template files.  It performs no
-network access, no server actions, and no git operations.
+re-validates the composed candidates with synthetic probes, and only then
+atomically replaces the tracked template files.  Private home content is
+composed at render time from the private overlay, so the shared templates
+carry public policy only.  The command performs no network access, no
+server actions, and no git operations.
 
 Every failure raises :class:`TemplateSyncError` with one stable code and
 never echoes workbench content, node names, or credentials.
@@ -33,18 +34,9 @@ MAX_WORKBENCH_BYTES = 5 * 1024 * 1024
 
 TEMPLATE_RELATIVE_PATHS = (
     "templates/clash.yaml",
-    "templates/features/home.yaml",
     "templates/variants/manifest.yaml",
 )
-FEATURE_NAME = "home"
 TEMPLATE_FILE_MODE = 0o644
-_FEATURE_OPERATION_KEYS = {
-    "add-proxy-groups",
-    "extend-proxy-groups",
-    "prepend-rules",
-    "inject-node-groups",
-    "inject-home-node-groups",
-}
 
 # Proxy fields whose values are protocol structure, not secrets: they may
 # legitimately appear in rendered output (e.g. the synthetic probe nodes)
@@ -134,19 +126,17 @@ def run_template_sync(repo_root, mihomo_binary=None, runner=subprocess.run):
     workbench = _load_workbench(root)
     mihomo = _resolve_mihomo(mihomo_binary)
     scanner = _load_scanner(root)
-    candidate_public, candidate_feature, candidate_manifest = _split_workbench(root, workbench)
+    candidate_public, candidate_manifest = _split_workbench(root, workbench)
     forbidden_names, forbidden_values = _forbidden_values(workbench)
 
     with tempfile.TemporaryDirectory(prefix="clash-sub-template-sync.") as scratch:
         candidate_root = Path(scratch)
-        _materialize_candidates(
-            candidate_root, candidate_public, candidate_feature, candidate_manifest, root
-        )
+        _materialize_candidates(candidate_root, candidate_public, candidate_manifest, root)
         _validate_candidates(
             candidate_root, mihomo, runner, forbidden_names, forbidden_values, scanner
         )
 
-    payloads = _candidate_bytes(candidate_public, candidate_feature, candidate_manifest)
+    payloads = _candidate_bytes(candidate_public, candidate_manifest)
     _atomic_replace_templates(root, payloads)
     return {"changed": TEMPLATE_RELATIVE_PATHS}
 
@@ -234,21 +224,7 @@ def _split_workbench(root, workbench):
     # at render time; the shared templates must stay free of both.
     candidate.pop("proxy-providers", None)
 
-    feature_path = root / "templates" / "features" / ("%s.yaml" % FEATURE_NAME)
-    try:
-        feature = yaml.safe_load(feature_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError, UnicodeError):
-        raise TemplateSyncError("template_feature_invalid") from None
-    feature = _validated_feature(feature)
-    owned_order = [group["name"] for group in feature["add-proxy-groups"]]
-    owned = set(owned_order)
-    declared = list(feature["inject-node-groups"]) + list(feature["inject-home-node-groups"])
-    if set(declared) - owned:
-        raise TemplateSyncError("template_feature_invalid")
-
     public_groups = []
-    feature_groups = []
-    extend_members = {}
     node_injected = []
     for group in candidate["proxy-groups"]:
         name = group.get("name")
@@ -256,53 +232,17 @@ def _split_workbench(root, workbench):
         had_dynamic = isinstance(proxies, list) and any(
             member in dynamic for member in proxies if isinstance(member, str)
         )
-        if name in owned:
-            feature_groups.append(_without_provider_use(_strip_dynamic_members(group, dynamic)))
-            continue
         if had_dynamic:
             node_injected.append(name)
         if not isinstance(proxies, list):
             public_groups.append(_without_provider_use(group))
             continue
-        stripped = [
-            member
-            for member in proxies
-            if member not in dynamic and member not in owned
-        ]
-        kept_owned = [member for member in proxies if member in owned]
-        if kept_owned:
-            extend_members[name] = kept_owned
-        if stripped != proxies or kept_owned:
+        stripped = [member for member in proxies if member not in dynamic]
+        if stripped != proxies:
             group = dict(group, proxies=stripped)
         public_groups.append(_without_provider_use(group))
 
-    if len(feature_groups) != len(owned_order):
-        raise TemplateSyncError("template_feature_invalid")
-
-    public_rules = []
-    feature_rules = []
-    home_positions = []
-    for index, rule in enumerate(candidate["rules"]):
-        if _rule_target(rule) in owned:
-            feature_rules.append(rule)
-            home_positions.append(index)
-        else:
-            public_rules.append(rule)
-    # Feature rules can only be expressed as a prepended block; anything
-    # other than a contiguous leading block in the workbench would silently
-    # reorder public rules, so fail closed instead.
-    if home_positions and home_positions != list(range(len(home_positions))):
-        raise TemplateSyncError("template_rule_order_invalid")
-
     candidate["proxy-groups"] = public_groups
-    candidate["rules"] = public_rules
-    new_feature = {
-        "add-proxy-groups": feature_groups,
-        "extend-proxy-groups": extend_members,
-        "prepend-rules": feature_rules,
-        "inject-node-groups": list(feature.get("inject-node-groups", [])),
-        "inject-home-node-groups": list(feature.get("inject-home-node-groups", [])),
-    }
 
     manifest_path = root / "templates" / "variants" / "manifest.yaml"
     try:
@@ -315,17 +255,7 @@ def _split_workbench(root, workbench):
         "variants": manifest["variants"],
         "inject-node-groups": node_injected,
     }
-    return candidate, new_feature, new_manifest
-
-
-def _strip_dynamic_members(group, dynamic):
-    proxies = group.get("proxies")
-    if not isinstance(proxies, list):
-        return group
-    stripped = [member for member in proxies if member not in dynamic]
-    if stripped == proxies:
-        return group
-    return dict(group, proxies=stripped)
+    return candidate, new_manifest
 
 
 def _without_provider_use(group):
@@ -337,61 +267,10 @@ def _without_provider_use(group):
     return stripped
 
 
-def _validated_feature(feature):
-    """Reject any feature shape mismatch before list()/iteration runs."""
-    def fail():
-        raise TemplateSyncError("template_feature_invalid")
-
-    if not isinstance(feature, dict):
-        fail()
-    if set(feature) - _FEATURE_OPERATION_KEYS:
-        fail()
-    add_groups = feature.get("add-proxy-groups", [])
-    if not isinstance(add_groups, list):
-        fail()
-    names = []
-    for group in add_groups:
-        if not isinstance(group, dict):
-            fail()
-        name = group.get("name")
-        if not isinstance(name, str) or not name.strip() or name in names:
-            fail()
-        names.append(name)
-    extend_groups = feature.get("extend-proxy-groups", {})
-    if not isinstance(extend_groups, dict):
-        fail()
-    for group_name, members in extend_groups.items():
-        if not isinstance(group_name, str) or not group_name.strip():
-            fail()
-        if not isinstance(members, list) or not all(
-            isinstance(member, str) and member.strip() for member in members
-        ):
-            fail()
-    for key in ("prepend-rules", "inject-node-groups", "inject-home-node-groups"):
-        value = feature.get(key, [])
-        if not isinstance(value, list) or not all(
-            isinstance(item, str) and item.strip() for item in value
-        ):
-            fail()
-    return feature
-
-
-def _rule_target(rule):
-    parts = [part.strip() for part in rule.split(",")]
-    if len(parts) < 2:
-        return None
-    index = len(parts) - 1
-    while index > 1 and parts[index] == "no-resolve":
-        index -= 1
-    return parts[index]
-
-
-def _materialize_candidates(candidate_root, candidate_public, candidate_feature, candidate_manifest, root):
+def _materialize_candidates(candidate_root, candidate_public, candidate_manifest, root):
     templates = candidate_root / "templates"
-    (templates / "features").mkdir(parents=True)
     (templates / "variants").mkdir(parents=True)
     _write_yaml(templates / "clash.yaml", candidate_public)
-    _write_yaml(templates / "features" / ("%s.yaml" % FEATURE_NAME), candidate_feature)
     _write_yaml(templates / "variants" / "manifest.yaml", candidate_manifest)
     try:
         source = root / "templates" / "variants" / "privacy-dns.yaml"
@@ -412,7 +291,7 @@ def _write_yaml(path, document):
 
 def _probe_proxies():
     probes = []
-    for label in ("3xui", "airport", "home"):
+    for label in ("3xui", "airport"):
         probe = dict(_PROBE_REALITY)
         probe.update(
             {
@@ -422,19 +301,21 @@ def _probe_proxies():
             }
         )
         probes.append(probe)
-    return probes[0], probes[1], probes[2]
+    return probes[0], probes[1]
 
 
 def _validate_candidates(candidate_root, mihomo, runner, forbidden_names, forbidden_values, scanner):
-    xui, airport, home = _probe_proxies()
+    xui, airport = _probe_proxies()
     provider = AirportProvider(_PROBE_PROVIDER_URL, _PROBE_PROVIDER_DIGEST)
     try:
+        # The tracked candidates are public templates; the private home
+        # overlay is composed at render time and is validated separately.
         owner = render_user_bundle(
-            True, [copy.deepcopy(xui)], provider, [copy.deepcopy(home)],
+            True, [copy.deepcopy(xui)], provider, None,
             candidate_root / "templates",
         )
         member = render_user_bundle(
-            False, [copy.deepcopy(xui)], None, [], candidate_root / "templates"
+            False, [copy.deepcopy(xui)], None, None, candidate_root / "templates"
         )
     except ValueError:
         raise TemplateSyncError("template_candidate_invalid") from None
@@ -649,10 +530,9 @@ def _url_has_credentials(value):
     return False
 
 
-def _candidate_bytes(candidate_public, candidate_feature, candidate_manifest):
+def _candidate_bytes(candidate_public, candidate_manifest):
     return {
         "templates/clash.yaml": _dump_yaml(candidate_public),
-        "templates/features/home.yaml": _dump_yaml(candidate_feature),
         "templates/variants/manifest.yaml": _dump_yaml(candidate_manifest),
     }
 

@@ -48,22 +48,6 @@ AIRPORT_PROXY = {
     "cipher": "aes-256-gcm",
     "password": "synthetic-airport-password-0123456789",
 }
-HOME_PROXY = {
-    "name": "Synthetic Home",
-    "type": "vless",
-    "server": "203.0.113.30",
-    "port": 443,
-    "uuid": "33333333-3333-4333-8333-333333333333",
-    "network": "tcp",
-    "tls": True,
-    "flow": "xtls-rprx-vision",
-    "servername": "home.example.com",
-    "client-fingerprint": "chrome",
-    "reality-opts": {
-        "public-key": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
-        "short-id": "fedcba9876543210",
-    },
-}
 
 PROBE_PROVIDER = AirportProvider(
     "https://sub.example.invalid/s/probe-token/AmyTelecom.yaml", "6" * 64
@@ -72,7 +56,6 @@ PROBE_PROVIDER = AirportProvider(
 
 PUBLIC_TEMPLATE_FILES = (
     "templates/clash.yaml",
-    "templates/features/home.yaml",
     "templates/variants/manifest.yaml",
 )
 
@@ -91,9 +74,9 @@ def make_repo(directory):
 
 
 def make_workbench_document(transform=None):
-    """Build a synthetic full balanced workbench from the shipped templates."""
+    """Build a synthetic public balanced workbench from the shipped templates."""
     bundle = render_user_bundle(
-        True, [dict(XUI_PROXY)], PROBE_PROVIDER, [dict(HOME_PROXY)], TEMPLATE_ROOT
+        True, [dict(XUI_PROXY)], PROBE_PROVIDER, None, TEMPLATE_ROOT
     )
     document = yaml.safe_load(bundle["balanced"])
     if transform is not None:
@@ -275,9 +258,9 @@ class TemplateSyncRoundTripTests(unittest.TestCase):
         run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
 
         owner = render_user_bundle(
-            True, [dict(XUI_PROXY)], PROBE_PROVIDER, [dict(HOME_PROXY)], self.root / "templates"
+            True, [dict(XUI_PROXY)], PROBE_PROVIDER, None, self.root / "templates"
         )
-        member = render_user_bundle(False, [dict(XUI_PROXY)], None, [], self.root / "templates")
+        member = render_user_bundle(False, [dict(XUI_PROXY)], None, None, self.root / "templates")
 
         self.assertEqual(tuple(owner), ("balanced", "standard", "privacy"))
         self.assertEqual(tuple(member), ("standard",))
@@ -309,10 +292,10 @@ class TemplateSyncEvolutionTests(unittest.TestCase):
                 True,
                 [dict(XUI_PROXY)],
                 PROBE_PROVIDER,
-                [dict(HOME_PROXY)],
+                None,
                 self.root / "templates",
             ),
-            "member": render_user_bundle(False, [dict(XUI_PROXY)], None, [], self.root / "templates"),
+            "member": render_user_bundle(False, [dict(XUI_PROXY)], None, None, self.root / "templates"),
         }
 
     def test_new_public_rule_group_provider_and_dns_reach_every_output(self):
@@ -392,7 +375,7 @@ class TemplateSyncEvolutionTests(unittest.TestCase):
                 {
                     "name": "新聚合组",
                     "type": "select",
-                    "proxies": ["🎯 Direct", "Synthetic 3x-ui", "Synthetic Home"],
+                    "proxies": ["🎯 Direct", "Synthetic 3x-ui"],
                 },
             )
 
@@ -409,28 +392,6 @@ class TemplateSyncEvolutionTests(unittest.TestCase):
             groups = {group["name"]: group for group in yaml.safe_load(text)["proxy-groups"]}
             self.assertIn("Synthetic 3x-ui", groups["新聚合组"]["proxies"])
 
-    def test_home_feature_ownership_is_not_extended_by_new_groups(self):
-        def transform(document):
-            document["proxy-groups"].append(
-                {
-                    "name": "家庭专属新组",
-                    "type": "select",
-                    "proxies": ["HomeServer", "Synthetic Home"],
-                }
-            )
-
-        self._sync(make_workbench_document(transform))
-        feature = yaml.safe_load(
-            (self.root / "templates" / "features" / "home.yaml").read_text(encoding="utf-8")
-        )
-
-        feature_groups = {group["name"] for group in feature["add-proxy-groups"]}
-        self.assertNotIn("家庭专属新组", feature_groups)
-
-        # It is public, so every variant (including member standard) sees it.
-        member = yaml.safe_load(self._bundles()["member"]["standard"])
-        self.assertIn("家庭专属新组", {group["name"] for group in member["proxy-groups"]})
-
     def test_home_groups_stay_out_of_standard_and_member_outputs(self):
         self._sync(make_workbench_document())
         bundles = self._bundles()
@@ -445,107 +406,14 @@ class TemplateSyncEvolutionTests(unittest.TestCase):
             for group in document["proxy-groups"]:
                 self.assertNotIn("ProxyServer", group.get("proxies", []))
 
-    def test_removing_a_home_owned_group_fails_closed(self):
-        def transform(document):
-            # Removing the group and every reference keeps the workbench
-            # self-consistent; the mismatch is then between the declared
-            # home ownership and the workbench.
-            document["proxy-groups"] = [
-                group for group in document["proxy-groups"] if group["name"] != "ProxyServer"
-            ]
-            for group in document["proxy-groups"]:
-                group["proxies"] = [
-                    member for member in group.get("proxies", []) if member != "ProxyServer"
-                ]
-
-        before = snapshot_files(self.root, PUBLIC_TEMPLATE_FILES)
-        write_workbench(self.root, make_workbench_document(transform))
-
-        with self.assertRaises(TemplateSyncError) as caught:
-            run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
-        self.assertEqual(str(caught.exception), "template_feature_invalid")
-        self.assertEqual(snapshot_files(self.root, PUBLIC_TEMPLATE_FILES), before)
-
-    def test_public_rule_inserted_before_home_rules_fails_closed(self):
-        def transform(document):
-            document["rules"].insert(0, "DOMAIN,priority.example,🎯 Direct")
-
-        before = snapshot_files(self.root, PUBLIC_TEMPLATE_FILES)
-        write_workbench(self.root, make_workbench_document(transform))
-
-        with self.assertRaises(TemplateSyncError) as caught:
-            run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
-        self.assertEqual(str(caught.exception), "template_rule_order_invalid")
-        self.assertEqual(snapshot_files(self.root, PUBLIC_TEMPLATE_FILES), before)
-
-    def test_interleaved_home_rules_fail_closed(self):
-        def transform(document):
-            rules = document["rules"]
-            rules.insert(5, rules.pop(0))
-
-        before = snapshot_files(self.root, PUBLIC_TEMPLATE_FILES)
-        write_workbench(self.root, make_workbench_document(transform))
-
-        with self.assertRaises(TemplateSyncError) as caught:
-            run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
-        self.assertEqual(str(caught.exception), "template_rule_order_invalid")
-        self.assertEqual(snapshot_files(self.root, PUBLIC_TEMPLATE_FILES), before)
-
-    def test_leading_home_rules_still_sync_and_stay_first(self):
+    def test_synced_manifest_keeps_the_global_injection_declarations(self):
         self._sync(make_workbench_document())
 
         manifest = yaml.safe_load(
             (self.root / "templates" / "variants" / "manifest.yaml").read_text(encoding="utf-8")
         )
         self.assertIn("加速线路", manifest["inject-node-groups"])
-
-    def test_broken_home_feature_schema_fails_closed(self):
-        broken_features = (
-            {"add-proxy-groups": None},
-            {"add-proxy-groups": [{"name": "HomeServer"}], "extend-proxy-groups": None},
-            {"add-proxy-groups": [], "inject-node-groups": [7]},
-            {"add-proxy-groups": [{"name": "HomeServer"}, {"name": "HomeServer"}]},
-            {"add-proxy-groups": [{"type": "select"}]},
-            {"prepend-rules": "IP-CIDR,192.168.2.0/24,HomeServer,no-resolve"},
-            "not-a-mapping",
-        )
-        for broken in broken_features:
-            with self.subTest(broken=broken):
-                feature_path = self.root / "templates" / "features" / "home.yaml"
-                original = feature_path.read_text(encoding="utf-8")
-                feature_path.write_text(
-                    yaml.safe_dump(broken, allow_unicode=True) if not isinstance(broken, str) else broken,
-                    encoding="utf-8",
-                )
-                # The broken feature itself is part of the tree; "zero
-                # changes" means the failing sync writes nothing on top of
-                # the state it was handed.
-                before = snapshot_files(self.root, PUBLIC_TEMPLATE_FILES)
-                write_workbench(self.root, make_workbench_document())
-
-                with self.assertRaises(TemplateSyncError) as caught:
-                    run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
-
-                self.assertEqual(str(caught.exception), "template_feature_invalid")
-                self.assertNotIn("HomeServer", str(caught.exception))
-                self.assertEqual(snapshot_files(self.root, PUBLIC_TEMPLATE_FILES), before)
-                feature_path.write_text(original, encoding="utf-8")
-
-    def test_unknown_home_feature_operation_fails_closed(self):
-        feature_path = self.root / "templates" / "features" / "home.yaml"
-        feature = yaml.safe_load(feature_path.read_text(encoding="utf-8"))
-        feature["append-rules"] = ["DOMAIN,private.example,HomeServer"]
-        feature_path.write_text(
-            yaml.safe_dump(feature, allow_unicode=True, sort_keys=False), encoding="utf-8"
-        )
-        before = snapshot_files(self.root, PUBLIC_TEMPLATE_FILES)
-        write_workbench(self.root, make_workbench_document())
-
-        with self.assertRaises(TemplateSyncError) as caught:
-            run_template_sync(self.root, mihomo_binary=self.mihomo, runner=ok_runner)
-
-        self.assertEqual(str(caught.exception), "template_feature_invalid")
-        self.assertEqual(snapshot_files(self.root, PUBLIC_TEMPLATE_FILES), before)
+        self.assertIn("AI服务", manifest["inject-node-groups"])
 
 
 class TemplateSyncFailureTests(unittest.TestCase):
@@ -923,9 +791,6 @@ class TemplateSyncFailureTests(unittest.TestCase):
             # Every tracked target must genuinely change so a missing
             # restore cannot hide behind identical bytes.
             document["dns"]["listen"] = "0.0.0.0:5353"
-            for group in document["proxy-groups"]:
-                if group["name"] == "HomeServer":
-                    group["proxies"] = ["🎯 Direct", "REJECT"]
             document["proxy-groups"].append(
                 {
                     "name": "注入组",
@@ -937,7 +802,7 @@ class TemplateSyncFailureTests(unittest.TestCase):
         from clash_sub import template_sync
 
         original_replace = template_sync._os_replace
-        for fail_at in (1, 2, 3):
+        for fail_at in (1, 2):
             with self.subTest(fail_at=fail_at):
                 with TemporaryDirectory() as directory:
                     root = make_repo(directory)
@@ -988,7 +853,7 @@ class TemplateSyncFailureTests(unittest.TestCase):
             def failing_replace(source, destination):
                 calls.append(destination)
                 original_replace(source, destination)
-                if len(calls) == 3:
+                if len(calls) == 2:
                     raise OSError("injected failure")
 
             with patch.object(template_sync, "_os_replace", side_effect=failing_replace):

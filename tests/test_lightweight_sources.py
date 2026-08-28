@@ -27,6 +27,7 @@ from clash_sub.sources import (
     load_home_overlay,
     load_proxy_snapshot,
     merge_proxy_sources,
+    merge_proxy_sources_with_aliases,
     normalize_xui_endpoints,
     parse_home_overlay,
     parse_subscription_userinfo,
@@ -337,6 +338,10 @@ class SourceFetchingTests(unittest.TestCase):
         self.assertEqual(captured["timeout"], 15)
 
 
+def proxy(name):
+    return {"name": name, "type": "ss"}
+
+
 class SnapshotAndMergeTests(unittest.TestCase):
     def _home_snapshot(self, directory):
         path = Path(directory) / "home.yaml"
@@ -427,6 +432,23 @@ class SnapshotAndMergeTests(unittest.TestCase):
         )
         self.assertEqual(len(names), len(set(names)))
         self.assertEqual((xui, airport), originals)
+
+    def test_merge_returns_home_aliases_for_collision_rewrites(self):
+        merged, aliases = merge_proxy_sources_with_aliases(
+            (("3x-ui", [proxy("Duplicate")]), ("home", [proxy("Duplicate")]))
+        )
+
+        self.assertEqual(
+            [item["name"] for item in merged], ["Duplicate [3x-ui]", "Duplicate [home]"]
+        )
+        self.assertEqual(aliases["home"], {"Duplicate": "Duplicate [home]"})
+        self.assertEqual(aliases["3x-ui"], {"Duplicate": "Duplicate [3x-ui]"})
+
+    def test_merge_rejects_duplicate_names_inside_one_home_source(self):
+        with self.assertRaises(SourceError):
+            merge_proxy_sources_with_aliases(
+                (("3x-ui", [proxy("Shared")]), ("home", [proxy("Same"), proxy("Same")]))
+            )
 
 
 class TrafficHeaderTests(unittest.TestCase):
