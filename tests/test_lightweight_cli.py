@@ -196,23 +196,35 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(main(None, stdin=InterruptingInput(), stdout=io.StringIO(), stderr=io.StringIO(), service_factory=factory), 0)
         self.assertEqual(constructed, [])
 
-    def test_menu_airport_input_uses_getpass_and_keeps_url_out_of_terminal_output(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n")
+    def test_menu_airport_input_uses_plain_input(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch(
+            "clash_sub.cli.getpass",
+            side_effect=AssertionError("airport URL must not use getpass"),
+        ):
+            code = main(
+                None,
+                stdin=io.StringIO("1\n" + AIRPORT_URL + "\n0\n"),
+                stdout=stdout,
+                stderr=stderr,
+                service_factory=lambda: self.service,
+            )
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("update_airport", (AIRPORT_URL,))])
-        self.assertNotIn(AIRPORT_URL, stdout + stderr)
+        self.assertIn("请输入机场订阅地址：", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_menu_rejects_empty_airport_input_before_constructing_service(self):
         constructed = []
-        with patch("clash_sub.cli.getpass", return_value=""):
-            code = main(
-                None,
-                stdin=io.StringIO("1\n"),
-                stdout=io.StringIO(),
-                stderr=io.StringIO(),
-                service_factory=lambda: constructed.append(object()),
-            )
+        code = main(
+            None,
+            stdin=io.StringIO("1\n\n"),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            service_factory=lambda: constructed.append(object()),
+        )
 
         self.assertEqual(code, 2)
         self.assertEqual(constructed, [])

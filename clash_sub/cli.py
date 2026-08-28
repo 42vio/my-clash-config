@@ -102,7 +102,7 @@ def _menu(stdin, stdout, stderr, factory):
 
 def _menu_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "1":
-        return _menu_airport(stdout, stderr, factory)
+        return _menu_airport(stdin, stdout, stderr, factory)
     if choice == "2":
         return _call("sync", None, stdout, stderr, factory), False
     if choice == "3":
@@ -135,10 +135,9 @@ def _menu_dispatch(choice, stdin, stdout, stderr, factory):
     return 0, False
 
 
-def _menu_airport(stdout, stderr, factory):
-    try:
-        airport_url = getpass("请输入机场订阅地址：")
-    except (EOFError, KeyboardInterrupt):
+def _menu_airport(stdin, stdout, stderr, factory):
+    airport_url = _prompt(stdin, stdout, "请输入机场订阅地址：")
+    if airport_url is None:
         return 0, False
     if not isinstance(airport_url, str) or not airport_url.strip():
         return _error(stderr, "invalid_airport_url", 2), False
