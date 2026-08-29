@@ -60,12 +60,10 @@ def _authorized_sources(is_owner, xui, airport, home):
         return ((MEMBER_VARIANTS[0], (xui_source,)),)
     if airport is None:
         raise ValueError("owner profiles require the airport provider")
+    if home is None:
+        raise HomeSourceError("home_source_invalid")
     owner_sources = (xui_source,)
-    office_sources = (
-        owner_sources + ((HOME_SOURCE_LABEL, list(home.proxies)),)
-        if home is not None
-        else owner_sources
-    )
+    office_sources = owner_sources + ((HOME_SOURCE_LABEL, list(home.proxies)),)
     return (
         ("compat-office", office_sources),
         ("compat-universal", owner_sources),

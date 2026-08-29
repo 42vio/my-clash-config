@@ -7,7 +7,7 @@ from ruamel.yaml.comments import CommentedMap
 
 from clash_sub.domain import AirportProvider
 from clash_sub.generator import _compose_variant, render_user_bundle
-from clash_sub.sources import parse_home_overlay
+from clash_sub.sources import HomeSourceError, parse_home_overlay
 
 
 PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
@@ -294,6 +294,22 @@ class LightweightGeneratorTests(unittest.TestCase):
                 home_overlay(),
                 self.root / "templates",
             )
+
+    def test_owner_requires_home_overlay_for_office_profiles(self):
+        with self.assertRaises(HomeSourceError) as caught:
+            render_user_bundle(
+                True,
+                [reality_proxy("Owner 3x-ui")],
+                provider(),
+                None,
+                self.root / "templates",
+            )
+
+        self.assertEqual(caught.exception.code, "home_source_invalid")
+        self.assertEqual(
+            str(caught.exception),
+            "home overlay rejected: home_source_invalid",
+        )
 
     def test_identical_inputs_are_byte_stable(self):
         first = render_user_bundle(
