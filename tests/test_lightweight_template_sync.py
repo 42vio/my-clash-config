@@ -488,7 +488,7 @@ class TemplateSyncHomeExtractionTests(unittest.TestCase):
         self.assertEqual(home_server["proxies"], ["🎯 Direct"])
         self.assertNotIn("use", home_server)
 
-    def test_exactly_two_extensions_and_both_injection_lists_are_exported(self):
+    def test_declared_extensions_and_both_injection_lists_are_exported(self):
         run_template_sync(self.root)
 
         home = self._home()
@@ -542,21 +542,34 @@ class TemplateSyncHomeExtractionTests(unittest.TestCase):
         )
         self.assertEqual([item["name"] for item in home.proxies], ["Home"])
 
-    def test_pt_extension_is_never_exported(self):
+    def test_declared_extension_is_exported_for_any_public_group(self):
         def transform(document):
             group = next(
                 item for item in document["proxy-groups"] if item["name"] == "PT站加速"
             )
             group["proxies"] = list(group["proxies"]) + ["ProxyServer"]
 
-        before = snapshot_outputs(self.root)
         write_workbench(self.root, make_workbench_document(transform))
+        run_template_sync(self.root)
 
-        with self.assertRaises(TemplateSyncError) as caught:
-            run_template_sync(self.root)
-
-        self.assertEqual(str(caught.exception), "template_candidate_invalid")
-        self.assertEqual(snapshot_outputs(self.root), before)
+        public = yaml.safe_load(
+            (self.root / "templates" / "clash.yaml").read_text(encoding="utf-8")
+        )
+        pt_group = next(item for item in public["proxy-groups"] if item["name"] == "PT站加速")
+        self.assertNotIn("ProxyServer", pt_group["proxies"])
+        home = self._home()
+        self.assertEqual(dict(home.extend_proxy_groups)["PT站加速"], ("ProxyServer",))
+        rendered = yaml.safe_load(
+            render_user_bundle(
+                True,
+                [dict(XUI_PROXY)],
+                PROBE_PROVIDER,
+                home,
+                self.root / "templates",
+            )["balanced"]
+        )
+        rendered_pt = next(item for item in rendered["proxy-groups"] if item["name"] == "PT站加速")
+        self.assertIn("ProxyServer", rendered_pt["proxies"])
 
 
 class TemplateSyncEvolutionTests(unittest.TestCase):

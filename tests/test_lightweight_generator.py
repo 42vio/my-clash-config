@@ -290,7 +290,17 @@ class LightweightGeneratorTests(unittest.TestCase):
         )
         self.assertEqual(groups["ProxyServer"]["use"], ["AmyTelecom"])
         self.assertEqual(groups["HomeServer"]["proxies"], ["🎯 Direct", "Home"])
-        self.assertNotIn("ProxyServer", groups["PT站加速"]["proxies"])
+
+    def test_private_home_overlay_preserves_arbitrary_public_group_extensions(self):
+        bundle = render_user_bundle(
+            True,
+            [reality_proxy("Owner")],
+            provider(),
+            overlay_with(**{"extend-proxy-groups": {"PT站加速": ["ProxyServer"]}}),
+            TEMPLATE_ROOT,
+        )
+        groups = proxy_groups(bundle["balanced"])
+        self.assertIn("ProxyServer", groups["PT站加速"]["proxies"])
 
     def test_home_content_reaches_only_balanced_and_privacy(self):
         bundle = render_user_bundle(

@@ -18,7 +18,8 @@
 - Python remains 3.9+ and dependencies remain `Jinja2==3.1.6` plus `PyYAML==6.0.3`; comment/format round-trip preservation is explicitly out of scope.
 - `private/home.yaml` is ignored, current-user-owned `0600` on Mac, and `0600 root:root` on the server. It is never staged or committed.
 - Owner balanced/privacy receive home; owner standard and member standard receive no home objects, controls, rules, or names.
-- Preserve `BiliBili -> ProxyServer` and `国内流媒体 -> ProxyServer`; deliberately remove `PT站加速 -> ProxyServer`.
+- Preserve every valid public-group extension declared by the workbench, including
+  `PT站加速 -> ProxyServer` when the workbench contains it.
 - Preserve `inject-node-groups: [ProxyServer]` and `inject-home-node-groups: [HomeServer]`.
 - Local `template-sync` must run with neither Mihomo nor `MIHOMO_BIN`; real Mihomo validation occurs only inside server `clash-sub sync`.
 - The only documented transfer is SFTP from local `private/home.yaml` directly onto `/var/lib/clash-sub/private/home.yaml`, followed by server `clash-sub sync`. Do not add FTP, `scp`, an upload script, inbox, candidate path, or `home-import`.
@@ -69,7 +70,9 @@
 
 - [ ] **Step 1: Add failing six-field parsing and immutability tests**
 
-Add `HomeOverlaySourceTests` with a synthetic document containing two proxy groups, the two approved extensions/injection lists, and the home CIDR rule. Assert exact tuple/mapping values, defensive copies, deterministic dump/load, and digest stability.
+Add `HomeOverlaySourceTests` with a synthetic document containing two proxy groups,
+sample extension/injection declarations, and the home CIDR rule. Assert exact
+tuple/mapping values, defensive copies, deterministic dump/load, and digest stability.
 
 ```python
 def test_six_field_home_overlay_round_trips_without_mutable_aliases(self):
@@ -207,8 +210,8 @@ Reject duplicate proxy names inside one home source before an ambiguous alias ma
 
 Create a `home_overlay()` fixture and update every render call to pass `HomeOverlay` or `None`, not a bare proxy list. Assert:
 
-- balanced/privacy contain `HomeServer`, `ProxyServer`, home CIDR rule, home nodes, and both approved extensions;
-- `PT站加速` does not contain `ProxyServer`;
+- balanced/privacy contain `HomeServer`, `ProxyServer`, home CIDR rule, home nodes,
+  and every extension declared by the private overlay;
 - `ProxyServer` receives owner 3x-ui + renamed home nodes and `use: [AmyTelecom]`;
 - `HomeServer` receives only renamed home nodes and never provider `use`;
 - both standard profiles contain no home names, rules, controls, or extensions;
@@ -224,7 +227,7 @@ def test_private_home_overlay_has_fixed_variant_authorization(self):
     self.assertEqual(groups["ProxyServer"]["proxies"], ["🎯 Direct", "HomeServer", "Owner", "Home"])
     self.assertEqual(groups["ProxyServer"]["use"], ["AmyTelecom"])
     self.assertEqual(groups["HomeServer"]["proxies"], ["🎯 Direct", "Home"])
-    self.assertNotIn("ProxyServer", groups["PT站加速"]["proxies"])
+    self.assertIn("ProxyServer", groups["BiliBili"]["proxies"])
 ```
 
 - [ ] **Step 4: Run generator tests and verify failure**
@@ -239,7 +242,7 @@ Expected: FAIL because generator still accepts a proxy list and reads the tracke
 
 - [ ] **Step 5: Implement overlay composition and simplify the manifest**
 
-Change source authorization to carry an overlay only for owner balanced/privacy. Copy private groups, rewrite explicit home proxy members through `source_aliases["home"]`, add the two extensions, prepend private rules, then apply the two injection lists. Keep public manifest injection for common groups and keep privacy DNS override; remove the `features` key and all tracked feature loading/application code.
+Change source authorization to carry an overlay only for owner balanced/privacy. Copy private groups, rewrite explicit home proxy members through `source_aliases["home"]`, add every declared extension, prepend private rules, then apply the two injection lists. Keep public manifest injection for common groups and keep privacy DNS override; remove the `features` key and all tracked feature loading/application code.
 
 The resulting manifest shape is exactly:
 
@@ -307,7 +310,7 @@ Cover:
 - home group names come only from the existing private scope;
 - home proxies are collected only from `inject-home-node-groups`, never from `ProxyServer` all-node members;
 - copied private groups have runtime inline names and provider `use` removed;
-- exactly two extensions and both injection lists are exported;
+- all declared extensions and both injection lists are exported;
 - the home-target rule moves to private rules and stays before public rules at render time;
 - missing scope, insecure scope, missing declared group, and leaked private values preserve every previous byte and mode;
 - an undeclared new group is treated as public, never receives home nodes, and must still pass the public-candidate and private-leak checks;
@@ -349,7 +352,7 @@ OUTPUT_MODES = {
 TEMPLATE_OUTPUT_PATHS = tuple(OUTPUT_MODES)
 ```
 
-Use the existing home group/injection declarations as scope. Before building the private candidate, record all inline proxy names, collect only members of `inject-home-node-groups`, and strip every runtime inline member plus `use: AmyTelecom` from copied home groups. Derive extensions from remaining public groups, explicitly reject `PT站加速 -> ProxyServer`, and classify rules by parsed policy target.
+Use the existing home group/injection declarations as scope. Before building the private candidate, record all inline proxy names, collect only members of `inject-home-node-groups`, and strip every runtime inline member plus `use: AmyTelecom` from copied home groups. Derive and preserve extensions from remaining public groups without special-casing their names, and classify rules by parsed policy target.
 
 Update candidate validation to render all four authorization cases with synthetic sources and pass every rendered string through `validate_clash`. Remove `_resolve_mihomo`, `MihomoValidator`, `MIHOMO_BIN`, runner plumbing used only for Mihomo, temporary Mihomo files, and `mihomo_validation_failed` from this local command. Expand forbidden-name/value checks to include the candidate home proxy/group names and complete private rules. The replacement loop snapshots bytes and modes for all three outputs and restores all attempted paths after any error.
 
@@ -699,7 +702,7 @@ rules:
   - IP-CIDR,192.168.2.0/24,HomeServer,no-resolve
 ```
 
-Do not copy redundant public rules and do not add `ProxyServer` to `PT站加速`.
+Do not copy redundant public rules. Preserve any valid public-group extension present in the source workbench.
 
 - [ ] **Step 3: Secure and validate without displaying the file**
 
@@ -714,7 +717,7 @@ Expected: template sync lists only its three paths without locating or running M
 
 - [ ] **Step 4: Verify the generated private file structurally without echoing values**
 
-Use the repository loader in a command that prints only counts and booleans, never names or fields. Confirm nonzero proxy/group counts, exactly two extensions, exactly one all-node injection, exactly one home-only injection, exactly one home rule, and mode `0600`.
+Use the repository loader in a command that prints only counts and booleans, never names or fields. Confirm nonzero proxy/group counts, the expected extension count from the source workbench, exactly one all-node injection, exactly one home-only injection, exactly one home rule, and mode `0600`.
 
 - [ ] **Step 5: Remove only authorized legacy fragments**
 

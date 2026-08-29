@@ -83,8 +83,8 @@ rules:
 - `proxies` 必须是非空 proxy mapping 列表，名称非空且唯一。
 - `proxy-groups` 必须是非空 group mapping 列表，名称非空且唯一。
 - `extend-proxy-groups` 必须把已存在的公共组名称映射到非空的家庭组名称
-  列表；本期只保留 `BiliBili`、`国内流媒体` 到 `ProxyServer` 的两个
-  扩展，明确移除 `PT站加速` 的 `ProxyServer` 成员。
+  列表；同步时保留 workbench 中声明的所有合法公共组扩展，不对具体公共组
+  名称或扩展组合做额外限制。
 - `inject-node-groups` 声明哪些家庭组在运行时接收该 owner variant 获准的
   全部 inline 节点，并在存在机场 provider 时接收 `use: [AmyTelecom]`；
   本期固定包含 `ProxyServer`。
@@ -288,10 +288,9 @@ token 或工作稿标量。SFTP 中断可能留下缺失或截断的正式源文
 
 1. 从当前开发机私有 `proxies.yaml`、`proxy-groups.yaml` 与已实测 balanced
    工作稿取得家庭 proxies/groups；不得把其内容打印到终端或测试输出。
-2. 从当前 `templates/features/home.yaml` 迁移两个 injection 声明、
-   `BiliBili`/`国内流媒体` 两个公共组扩展和
-   `IP-CIDR,192.168.2.0/24,HomeServer,no-resolve` 家庭规则；不迁移
-   `PT站加速` 的 `ProxyServer` 扩展。
+2. 从当前 `templates/features/home.yaml` 迁移两个 injection 声明、现有公共组
+   扩展和 `IP-CIDR,192.168.2.0/24,HomeServer,no-resolve` 家庭规则；公共组
+   扩展按 workbench 中的实际声明同步，不因组名而过滤。
 3. 不复制旧 `private/rules.yaml` 中已经存在于公共模板的重复规则。
 4. 生成并验证 `private/home.yaml`，确认其 mode 为 `0600`。
 5. 运行新版 `template-sync`，确认 public/private 候选与所有 variant 通过。
@@ -360,9 +359,9 @@ token 或工作稿标量。SFTP 中断可能留下缺失或截断的正式源文
    tracked outputs；私密标量泄漏会原子拒绝全部输出。
 3. 新家庭节点配置从 workbench 刷新；未声明的新家庭组不会被猜测成 home；
    scope 缺失或悬空会失败。
-4. owner balanced/privacy 含家庭节点、组、两个扩展、全节点/home-only 注入
-   和前置规则；`PT站加速` 不含 `ProxyServer`；owner standard 与 member
-   standard 不含任何家庭对象或名称。
+4. owner balanced/privacy 含家庭节点、workbench 声明的公共组扩展、全节点/
+   home-only 注入和前置规则；owner standard 与 member standard 不含任何家庭
+   对象或名称。
 5. 跨来源 proxy 重名后，家庭组引用同步指向最终名称。
 6. 未知字段、坏 YAML、重复名称、无效 proxy/group/rule/extension/injection、
    终结规则、不安全本地文件和超限文件均返回对应脱敏代码。

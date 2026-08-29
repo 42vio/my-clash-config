@@ -119,10 +119,6 @@ _CREDENTIAL_QUERY_KEYS = {
 }
 _MIN_FORBIDDEN_CHARS = 4
 
-# The home extension is deliberately not exported for the PT group; any
-# attempt to sync such an extension is rejected before candidates exist.
-_DENIED_EXTENSION_TARGET = "PT站加速"
-
 # Clash rule options that may trail the policy target of a rule line.
 _RULE_OPTION_TOKENS = frozenset(("no-resolve", "src"))
 
@@ -303,9 +299,6 @@ def _split_workbench(root, workbench, home_scope):
         public_groups.append(
             _split_public_group(group, name, inline, declared, node_injected_names, extensions)
         )
-    if _DENIED_EXTENSION_TARGET in extensions:
-        raise TemplateSyncError("template_candidate_invalid")
-
     private_rules = []
     public_rules = []
     for rule in candidate["rules"]:
