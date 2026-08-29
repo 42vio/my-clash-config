@@ -72,12 +72,27 @@ DOCUMENTATION_PATHS = {
     "operations": ROOT / "docs" / "operations.md",
     "private-data": ROOT / "docs" / "private-data.md",
     "recovery": ROOT / "docs" / "recovery.md",
-    "legacy-topology": ROOT / "docs" / "legacy-trojan-topology.md",
 }
 
 
-class DocumentationCoverageTests(unittest.TestCase):
-    """Coverage: the active documentation must stay complete."""
+RETIRED_DOCUMENTATION_PATHS = (
+    "docs/dns-design.md",
+    "docs/legacy-trojan-topology.md",
+    "docs/superpowers/plans/2026-08-21-clash-subscription-publication.md",
+    "docs/superpowers/plans/2026-08-23-clash-sub-lightweight.md",
+    "docs/superpowers/plans/2026-08-25-clash-sub-integration.md",
+    "docs/superpowers/plans/2026-08-28-private-home-overlay-upload.md",
+    "docs/superpowers/specs/2026-08-21-clash-subscription-publication-design.md",
+    "docs/superpowers/specs/2026-08-23-clash-sub-lightweight-redesign.md",
+    "docs/superpowers/specs/2026-08-25-clash-sub-integration-design.md",
+    "docs/superpowers/specs/2026-08-27-local-template-workbench-design.md",
+    "docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md",
+    "docs/superpowers/specs/2026-08-28-stable-amytelecom-provider-design.md",
+)
+
+
+class DocumentationContractTests(unittest.TestCase):
+    """The six concise user documents describe only the current workflow."""
 
     @classmethod
     def setUpClass(cls):
@@ -90,276 +105,55 @@ class DocumentationCoverageTests(unittest.TestCase):
         for name, path in DOCUMENTATION_PATHS.items():
             self.assertTrue(path.is_file(), name)
 
-    def test_deployment_documents_host_constraints_and_idle_processes(self):
-        deployment = self.texts["deployment"]
-        for phrase in ("512 MiB", "256 MiB Swap", "10 GiB", "常驻进程只有"):
-            self.assertIn(phrase, deployment)
-
-    def test_deployment_documents_unified_443_port_plan(self):
-        deployment = self.texts["deployment"]
-        for phrase in ("TCP 443", "10443", "30443", "20443", "不开放 UDP 443", "不使用公网 1443"):
-            self.assertIn(phrase, deployment)
-
-    def test_xui_setup_documents_loopback_listeners_and_readonly_sqlite(self):
-        xui = self.texts["xui-setup"]
-        for phrase in ("127.0.0.1", "Clash 输出", "x-ui.db", "只读"):
-            self.assertIn(phrase, xui)
-
-    def test_active_shell_examples_are_safe_to_copy_without_ripgrep(self):
-        for name in ("deployment", "xui-setup", "operations"):
-            with self.subTest(document=name):
-                blocks = _fenced_blocks(self.texts[name], {"bash", "sh", "shell"})
-                self.assertTrue(blocks)
-                for block in blocks:
-                    self.assertNotRegex(block, r"<[^>\n]+>")
-                    self.assertNotRegex(block, r"\brg\b")
-
-    def test_deployment_documents_installer_lifecycle_and_first_sync(self):
-        deployment = self.texts["deployment"]
-        for phrase in (
-            "bash install.sh",
-            "nginx -t",
-            "clash-sub sync",
-            "clash-sub links",
-        ):
-            self.assertIn(phrase, deployment)
-
-    def test_operations_documents_mobile_airport_update_and_commands(self):
-        operations = self.texts["operations"]
-        for phrase in (
-            "手机",
-            "隐藏输入",
-            "仅接受 https://",
-            "clash-sub status",
-            "clash-sub history",
-            "clash-sub rollback",
-            "clash-sub rotate-link",
-            "clash-sub traffic-update",
-        ):
-            self.assertIn(phrase, operations)
-
-    def test_operations_documents_xui_upgrade_procedure(self):
-        operations = self.texts["operations"]
-        for phrase in (
-            "备份",
-            "停止",
-            "副本",
-            "clash-sub sync",
-            "旧 YAML",
-        ):
-            self.assertIn(phrase, operations)
-
-    def test_operations_documents_pinned_acme_maintenance(self):
-        operations = self.texts["operations"]
-        for phrase in (
-            "acme.sh 3.1.4",
-            "每季度",
-            "SHA-256",
-            "--auto-upgrade",
-            "证书自动续期",
-        ):
-            self.assertIn(phrase, operations)
-
-    def test_activation_candidate_inventory_is_strict_and_read_only(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            private_root = root / "private"
-            current_root = private_root / "current"
-            nginx_root = root / "nginx"
-            current_root.mkdir(parents=True)
-            nginx_root.mkdir()
-            candidates = (
-                private_root / ".state.json.a1b2c3d4",
-                private_root / "..activation-journal.json.i9j0k1l2",
-                current_root / ".7.m3n4o5p6",
-                nginx_root / ".routes.conf.q7r8s9t0",
-            )
-            decoys = (
-                private_root / ".status.json.a1b2c3d4",
-                private_root / ".state.json.bad-suffix!",
-                current_root / ".0.m3n4o5p6",
-                nginx_root / ".routes.conf.bad-suffix!",
-            )
-            for path in candidates + decoys:
-                path.write_bytes(b"fixture\n")
-
-            status, listed = _activation_candidate_inventory_paths(
-                self.texts["operations"], private_root, current_root, nginx_root
-            )
-
-            self.assertEqual(status, 0)
-            self.assertEqual(set(listed), set(candidates))
-            self.assertTrue(all(path.exists() for path in candidates + decoys))
-
-    def test_operations_documents_replacement_checklists(self):
-        operations = self.texts["operations"]
-        for phrase in ("更换域名", "更换 VPS", "recovery.md", "install-state.json"):
-            self.assertIn(phrase, operations)
-
-    def test_recovery_documents_backup_scope_and_reserved_trojan_caveat(self):
-        recovery = self.texts["recovery"]
-        for phrase in (
-            "x-ui.db",
-            "service.yaml",
-            "20443",
-            "fail-closed",
-            "normalize_xui_endpoints",
-        ):
-            self.assertIn(phrase, recovery)
-
-    def test_readme_documents_non_goals_and_menu_management(self):
+    def test_readme_documents_authorization_and_release_filenames(self):
         readme = self.texts["readme"]
         for phrase in (
-            "更新机场订阅",
-            "重新生成所有配置",
-            "更新代码并同步配置",
-            "template-sync",
-            "不提供短链",
-            "实时查询",
-            "Telegram",
-            "不需要记住 refresh",
+            "owner | `compat-office`",
+            "owner | `compat-universal`",
+            "owner | `balance-office`",
+            "member | `compat-universal`",
+            "clash-compat-office.yaml",
+            "clash-compat-universal.yaml",
+            "clash-balance-office.yaml",
+            "./bin/clash-sub template-sync",
         ):
             self.assertIn(phrase, readme)
 
-    def test_active_docs_never_reference_removed_tooling(self):
-        removed = ("server_preflight", "install-server", "install_server", "certbot")
-        for name in DOCUMENTATION_PATHS:
-            if name == "legacy-topology":
-                continue
-            for phrase in removed:
-                self.assertNotIn(phrase, self.texts[name], "%s: %s" % (name, phrase))
+    def test_operations_documents_iCloud_sources_single_source_updates_and_report(self):
+        operations = self.texts["operations"]
+        for phrase in (
+            "Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents",
+            "Compat-Office.yaml",
+            "Balance-Office.yaml",
+            "--compat-office",
+            "--balance-office",
+            "change report",
+            "不显示家庭内容或动态节点",
+            "未来的服务器上传",
+        ):
+            self.assertIn(phrase, operations)
 
+    def test_documents_explain_comments_private_modes_and_deferred_privacy(self):
+        self.assertIn("Compat 公共注释", self.texts["operations"])
+        self.assertIn("Balance 的完整 `dns`", self.texts["operations"])
+        private_data = self.texts["private-data"]
+        for phrase in ("Git 忽略", "0600", "private/home.yaml"):
+            self.assertIn(phrase, private_data)
+        self.assertIn("privacy", self.texts["readme"])
+        self.assertIn("not included", self.texts["readme"])
 
-PRIVATE_HOME_WORKFLOW_DOCS = ("readme", "operations", "private-data")
-PRIVATE_HOME_SIX_FIELDS = (
-    "proxies",
-    "proxy-groups",
-    "extend-proxy-groups",
-    "inject-node-groups",
-    "inject-home-node-groups",
-    "rules",
-)
-
-
-def _unwrapped(text):
-    """Collapse hard line wraps so phrase assertions survive markdown reflow."""
-    return re.sub(r"\s+", "", text)
-
-
-class PrivateHomeWorkflowDocumentationTests(unittest.TestCase):
-    """Coverage: the private home overlay upload workflow stays documented."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.texts = {
-            name: DOCUMENTATION_PATHS[name].read_text(encoding="utf-8")
-            for name in PRIVATE_HOME_WORKFLOW_DOCS
-        }
-        cls.flattened = {
-            name: _unwrapped(text) for name, text in cls.texts.items()
-        }
-
-    def _assert_documented(self, name, phrase):
-        self.assertIn(_unwrapped(phrase), self.flattened[name], "%s: %s" % (name, phrase))
-
-    def _assert_not_documented(self, name, phrase):
-        self.assertNotIn(
-            _unwrapped(phrase), self.flattened[name], "%s: %s" % (name, phrase)
-        )
-
-    def test_workflow_documents_the_three_fixed_elements(self):
-        for name in ("readme", "operations"):
-            with self.subTest(document=name):
-                for phrase in (
-                    "./bin/clash-sub template-sync",
-                    "private/home.yaml → /var/lib/clash-sub/private/home.yaml",
-                    "clash-sub sync",
-                ):
-                    self._assert_documented(name, phrase)
-
-    def test_private_data_documents_the_fixed_sftp_target(self):
-        self._assert_documented(
-            "private-data",
-            "private/home.yaml → /var/lib/clash-sub/private/home.yaml",
-        )
-
-    def test_documented_remote_targets_are_only_the_fixed_home_path(self):
-        for name in PRIVATE_HOME_WORKFLOW_DOCS:
-            with self.subTest(document=name):
-                for line in self.texts[name].splitlines():
-                    if "→ /var/lib/clash-sub" in line:
-                        self.assertIn(
-                            "/var/lib/clash-sub/private/home.yaml",
-                            line,
-                            "%s: %s" % (name, line.strip()),
-                        )
-
-    def test_workflow_documents_the_rolling_workbench_origin(self):
-        for name in PRIVATE_HOME_WORKFLOW_DOCS:
-            with self.subTest(document=name):
-                for phrase in ("clash-balanced.yaml", "滚动"):
-                    self._assert_documented(name, phrase)
-
-    def test_workflow_documents_the_six_private_home_fields(self):
-        for name in ("operations", "private-data"):
-            with self.subTest(document=name):
-                self._assert_documented(name, "六个顶层字段")
-                for field in PRIVATE_HOME_SIX_FIELDS:
-                    self._assert_documented(name, field)
-
-    def test_workflow_documents_owner_variant_isolation(self):
-        for name in PRIVATE_HOME_WORKFLOW_DOCS:
-            with self.subTest(document=name):
-                for phrase in ("owner standard", "member standard"):
-                    self._assert_documented(name, phrase)
-
-    def test_workflow_documents_server_only_mihomo_validation(self):
-        for name in PRIVATE_HOME_WORKFLOW_DOCS:
-            with self.subTest(document=name):
-                self._assert_documented(name, "本机不需要安装 Mihomo")
-
-    def test_workflow_documents_asymmetric_failure_rule(self):
-        for name in PRIVATE_HOME_WORKFLOW_DOCS:
-            with self.subTest(document=name):
-                for phrase in ("旧 owner release 继续服务", "不会恢复"):
-                    self._assert_documented(name, phrase)
-        self._assert_documented("private-data", "不是源文件备份")
-
-    def test_workflow_documents_backup_boundaries(self):
-        for phrase in ("`home.yaml`（家庭覆盖层）", "加密备份", "永不进入 Git"):
-            self._assert_documented("private-data", phrase)
-
-    def test_workflow_documents_sanitized_home_errors(self):
-        operations = self.flattened["operations"]
-        self.assertIn(_unwrapped("home_yaml_invalid"), operations)
-        # Scope-file failures keep their home_* codes inside the
-        # template-sync error catalog itself, not only in the server
-        # sync section further down.
-        template_sync_semantics = operations.split(
-            _unwrapped("`template-sync` 的安全语义：")
-        )[1].split(_unwrapped("## 家庭覆盖层上传与服务器发布"))[0]
-        self.assertIn(_unwrapped("home_source_invalid"), template_sync_semantics)
-
-    def test_operational_docs_do_not_advertise_removed_upload_surfaces(self):
+    def test_retired_documents_and_old_release_aliases_are_absent(self):
+        for relative in RETIRED_DOCUMENTATION_PATHS:
+            self.assertFalse((ROOT / relative).exists(), relative)
         banned = (
-            "MIHOMO_BIN",
-            "mihomo_binary_missing",
-            "mihomo_validation_failed",
-            "本地 Mihomo",
-            "本机 Mihomo",
-            "inbox",
-            "home-import",
-            "templates/features/home.yaml",
-            "上传脚本",
+            "clash-" + "balanced.yaml",
+            "clash-" + "standard.yaml",
+            "clash-" + "privacy.yaml",
+            "private/workbench/" + "balanced.yaml",
         )
-        for name in PRIVATE_HOME_WORKFLOW_DOCS:
-            with self.subTest(document=name):
-                text = self.texts[name]
-                for phrase in banned:
-                    self._assert_not_documented(name, phrase)
-                # Word boundaries keep the SFTP recommendation itself legal.
-                self.assertNotRegex(text, r"(?i)\bscp\b")
-                self.assertNotRegex(text, r"(?i)\bftp\b")
+        for name, text in self.texts.items():
+            for phrase in banned:
+                self.assertNotIn(phrase, text, "%s: %s" % (name, phrase))
 
 
 class LightweightDeploymentTests(unittest.TestCase):
@@ -442,10 +236,10 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("After=clash-sub-recover.service", drop_in)
         self.assertNotIn("[Install]", service)
 
-    def test_requirements_are_the_two_approved_pins(self):
+    def test_requirements_are_the_approved_pins(self):
         self.assertEqual(
             REQUIREMENTS.read_text(encoding="utf-8").splitlines(),
-            ["Jinja2==3.1.6", "PyYAML==6.0.3"],
+            ["Jinja2==3.1.6", "PyYAML==6.0.3", "ruamel.yaml==0.19.1"],
         )
 
 
