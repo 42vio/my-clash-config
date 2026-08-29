@@ -17,9 +17,6 @@ Owner releases contain `clash-compat-office.yaml`,
 `AmyTelecom.yaml`. A member release contains only
 `clash-compat-universal.yaml`.
 
-`privacy` is deferred and not included in this release, its links, or its
-templates.
-
 ## Local data flow
 
 `Compat-Office.yaml` becomes the public base. `Balance-Office.yaml` contributes

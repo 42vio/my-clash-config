@@ -133,14 +133,12 @@ class DocumentationContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, operations)
 
-    def test_documents_explain_comments_private_modes_and_deferred_profile(self):
+    def test_documents_explain_comments_private_modes_and_current_workflow(self):
         self.assertIn("Compat 公共注释", self.texts["operations"])
         self.assertIn("Balance 的完整 `dns`", self.texts["operations"])
         private_data = self.texts["private-data"]
         for phrase in ("Git 忽略", "0600", "private/home.yaml"):
             self.assertIn(phrase, private_data)
-        self.assertIn("pri" + "vacy", self.texts["readme"])
-        self.assertIn("not included", self.texts["readme"])
 
     def test_retired_documents_and_old_release_aliases_are_absent(self):
         for relative in RETIRED_DOCUMENTATION_PATHS:
