@@ -6,6 +6,8 @@ from tempfile import TemporaryDirectory
 
 import yaml
 
+from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS
+
 try:
     from clash_sub.checks import CheckError, MihomoValidator, validate_clash
 except ImportError:
@@ -185,6 +187,13 @@ class ProviderMappingTests(unittest.TestCase):
 
 
 class LightweightChecksTests(unittest.TestCase):
+    def test_fixed_profile_authorization_sets_have_no_legacy_aliases(self):
+        self.assertEqual(
+            OWNER_VARIANTS,
+            ("compat-office", "compat-universal", "balance-office"),
+        )
+        self.assertEqual(MEMBER_VARIANTS, ("compat-universal",))
+
     def test_valid_document_is_accepted(self):
         self.assertIsNotNone(validate_clash)
 

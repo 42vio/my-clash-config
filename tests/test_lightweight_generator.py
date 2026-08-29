@@ -1,24 +1,87 @@
-import contextlib
-import copy
-import io
-import shutil
-import traceback
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import yaml
+from ruamel.yaml.comments import CommentedMap
 
-from clash_sub.checks import validate_clash
-from clash_sub.domain import AirportProvider, HomeOverlay
-from clash_sub.generator import render_user_bundle
-from clash_sub.sources import HomeSourceError
+from clash_sub.domain import AirportProvider
+from clash_sub.generator import _compose_variant, render_user_bundle
+from clash_sub.sources import parse_home_overlay
 
 
-ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE_ROOT = ROOT / "templates"
 PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
-HOME_CIDR_RULE = "IP-CIDR,192.168.2.0/24,HomeServer,no-resolve"
+HOME_CIDR_RULE = "IP-CIDR,192.168.2.0/24,HomeOnly,no-resolve"
+
+
+BASE_COMPAT = """# compat shared comment
+mixed-port: 7890
+allow-lan: true
+mode: rule
+dns:
+  enable: true
+  nameserver:  # compat dns comment
+  - https://compat-only-dns.example/dns-query  # compat nameserver item
+proxies: []
+proxy-groups:
+- name: Public
+  type: select
+  proxies: [DIRECT]
+rule-providers: {}
+rules:
+- MATCH,Public
+"""
+
+BALANCE_DNS = """# balance dns document comment
+dns:
+  enable: true  # balance dns comment
+  nameserver:
+  - https://balance-only-dns.example/dns-query  # balance nameserver item
+"""
+
+PROFILES = """profiles:
+  compat-office:
+    dns: compat
+    home: true
+  compat-universal:
+    dns: compat
+    home: false
+  balance-office:
+    dns: balance-office
+    home: true
+inject-node-groups:
+- Public
+"""
+
+HOME_YAML = """# home header
+proxies: # home proxies comment
+- name: Home  # home proxy comment
+  type: vless
+  server: 192.0.2.20
+  port: 443
+  uuid: 22222222-2222-4222-8222-222222222222
+  network: tcp
+  tls: true
+  flow: xtls-rprx-vision
+  servername: home.example.test
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+    short-id: fedcba9876543210
+proxy-groups: # home groups comment
+- name: HomeServer  # home group comment
+  type: select
+  proxies: [DIRECT]
+- name: HomeOnly
+  type: select
+  proxies: [DIRECT]
+extend-proxy-groups:
+  Public: [HomeServer]
+inject-node-groups: [HomeServer]
+inject-home-node-groups: [HomeOnly]
+rules: # home rules comment
+- IP-CIDR,192.168.2.0/24,HomeOnly,no-resolve
+"""
 
 
 def provider(digest="1" * 64):
@@ -44,47 +107,8 @@ def reality_proxy(name):
     }
 
 
-def home_document():
-    """A synthetic six-field home overlay holding only fake values."""
-    return {
-        "proxies": [reality_proxy("Home")],
-        "proxy-groups": [
-            {
-                "type": "select",
-                "name": "ProxyServer",
-                "proxies": ["🎯 Direct", "HomeServer"],
-            },
-            {"type": "select", "name": "HomeServer", "proxies": ["🎯 Direct"]},
-        ],
-        "extend-proxy-groups": {
-            "BiliBili": ["ProxyServer"],
-            "国内流媒体": ["ProxyServer"],
-        },
-        "inject-node-groups": ["ProxyServer"],
-        "inject-home-node-groups": ["HomeServer"],
-        "rules": [HOME_CIDR_RULE],
-    }
-
-
-def home_overlay(document=None):
-    """Build one HomeOverlay value from a (possibly mutated) home document."""
-    base = document or home_document()
-    return HomeOverlay(
-        proxies=tuple(copy.deepcopy(base["proxies"])),
-        proxy_groups=tuple(copy.deepcopy(base["proxy-groups"])),
-        extend_proxy_groups={
-            name: list(members) for name, members in base["extend-proxy-groups"].items()
-        },
-        inject_node_groups=list(base["inject-node-groups"]),
-        inject_home_node_groups=list(base["inject-home-node-groups"]),
-        rules=list(base["rules"]),
-    )
-
-
-def overlay_with(**changes):
-    document = home_document()
-    document.update(changes)
-    return home_overlay(document)
+def home_overlay():
+    return parse_home_overlay(HOME_YAML.encode("utf-8"), 1024 * 1024)
 
 
 def proxy_names(text):
@@ -99,538 +123,194 @@ def provider_mapping(text):
     return yaml.safe_load(text).get("proxy-providers", {})
 
 
-def rules(text):
-    return yaml.safe_load(text)["rules"]
-
-
 class LightweightGeneratorTests(unittest.TestCase):
-    def test_member_standard_contains_only_its_xui_proxies(self):
-        bundle = render_user_bundle(
-            False,
-            [reality_proxy("Member 3x-ui")],
-            None,
-            None,
-            TEMPLATE_ROOT,
-        )
+    def setUp(self):
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self._write("templates/base/compat-office.yaml", BASE_COMPAT)
+        self._write("templates/dns/balance-office.yaml", BALANCE_DNS)
+        self._write("templates/profiles.yaml", PROFILES)
 
-        self.assertEqual(tuple(bundle), ("standard",))
-        self.assertEqual(proxy_names(bundle["standard"]), ["Member 3x-ui"])
-        self.assertEqual(provider_mapping(bundle["standard"]), {})
-        for group in proxy_groups(bundle["standard"]).values():
-            self.assertNotIn("use", group)
+    def _write(self, relative, text):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
 
-    def test_owner_variants_use_their_exact_authorized_source_scopes(self):
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Owner 3x-ui")],
-            provider(),
-            home_overlay(),
-            TEMPLATE_ROOT,
-        )
-
-        self.assertEqual(tuple(bundle), ("balanced", "standard", "privacy"))
-        self.assertEqual(set(proxy_names(bundle["balanced"])), {"Owner 3x-ui", "Home"})
-        self.assertEqual(proxy_names(bundle["standard"]), ["Owner 3x-ui"])
-        self.assertEqual(set(proxy_names(bundle["privacy"])), {"Owner 3x-ui", "Home"})
-        for variant in bundle:
-            self.assertEqual(tuple(provider_mapping(bundle[variant])), ("AmyTelecom",))
-
-    def test_owner_emits_exactly_one_stable_amytelecom_provider(self):
-        bundle = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), home_overlay(), TEMPLATE_ROOT
-        )
-
-        for variant, text in bundle.items():
-            mapping = provider_mapping(text)
-            self.assertEqual(
-                mapping,
-                {
-                    "AmyTelecom": {
-                        "type": "http",
-                        "url": PROVIDER_URL,
-                        "path": "./proxy_providers/AmyTelecom-%s.yaml" % ("1" * 64),
-                        "interval": 0,
-                    }
-                },
-                variant,
-            )
-
-    def test_changed_airport_digest_changes_the_cache_path_only(self):
-        first = render_user_bundle(
-            True, [reality_proxy("Owner")], provider("1" * 64), None, TEMPLATE_ROOT
-        )
-        second = render_user_bundle(
-            True, [reality_proxy("Owner")], provider("2" * 64), None, TEMPLATE_ROOT
-        )
-        unchanged = render_user_bundle(
-            True, [reality_proxy("Owner")], provider("1" * 64), None, TEMPLATE_ROOT
-        )
-
-        self.assertIn("AmyTelecom-%s.yaml" % ("1" * 64), first["standard"])
-        self.assertIn("AmyTelecom-%s.yaml" % ("2" * 64), second["standard"])
-        self.assertEqual(first, unchanged)
-
-    def test_provider_use_reaches_declared_and_include_all_owner_groups(self):
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Owner 3x-ui")],
-            provider(),
-            home_overlay(),
-            TEMPLATE_ROOT,
-        )
-
-        expected = {
-            "加速线路",
-            "AI服务",
-            "ProxyServer",
-            "自动选择",
-            "🇭🇰 香港节点",
-            "🇯🇵 日本节点",
-            "🇺🇲 美国节点",
-            "🇨🇳 台湾节点",
-            "🇸🇬 新加坡节点",
-        }
-        for variant in ("balanced", "standard", "privacy"):
-            groups = proxy_groups(bundle[variant])
-            with_use = {name for name, group in groups.items() if "use" in group}
-            if variant == "standard":
-                self.assertEqual(with_use, expected - {"ProxyServer"})
-            else:
-                self.assertEqual(with_use, expected)
-            for name in with_use:
-                self.assertEqual(groups[name]["use"], ["AmyTelecom"], name)
-        # Groups without airport reach keep their plain shape.
-        self.assertNotIn("use", proxy_groups(bundle["balanced"])["HomeServer"])
-        self.assertNotIn("use", proxy_groups(bundle["standard"])["游戏下载"])
-
-    def test_owner_without_a_provider_and_member_with_one_fail_closed(self):
-        with self.assertRaises(ValueError):
-            render_user_bundle(True, [reality_proxy("Owner")], None, None, TEMPLATE_ROOT)
-        with self.assertRaises(ValueError):
-            render_user_bundle(
-                False, [reality_proxy("Member")], provider(), None, TEMPLATE_ROOT
-            )
-
-    def test_render_rejects_a_bare_home_proxy_list(self):
-        with self.assertRaises(ValueError):
-            render_user_bundle(
-                True,
-                [reality_proxy("Owner")],
-                provider(),
-                [reality_proxy("Home")],
-                TEMPLATE_ROOT,
-            )
-
-    def test_rendered_rule_providers_use_immutable_revisions(self):
-        import re
-
-        bundle = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), home_overlay(), TEMPLATE_ROOT
-        )
-
-        urls = [item["url"] for item in yaml.safe_load(bundle["standard"])["rule-providers"].values()]
-        self.assertTrue(urls)
-        jsdelivr = [url for url in urls if "jsdelivr.net/gh/" in url]
-        gist = next(url for url in urls if "gist.githubusercontent.com" in url)
-        self.assertTrue(all(re.search(r"@[0-9a-f]{40}/", url) for url in jsdelivr))
-        self.assertRegex(gist, r"/raw/[0-9a-f]{40}/Ai\.yaml$")
-
-    def test_owner_bundle_allows_missing_optional_home_overlay(self):
-        bundle = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), None, TEMPLATE_ROOT
-        )
-
-        self.assertEqual(tuple(bundle), ("balanced", "standard", "privacy"))
-        for variant in bundle:
-            groups = proxy_groups(bundle[variant])
-            self.assertNotIn("HomeServer", groups)
-            self.assertNotIn("ProxyServer", groups)
-
-    def test_source_collisions_are_renamed_without_changing_authorization(self):
-        document = home_document()
-        document["proxies"] = [reality_proxy("Duplicate")]
-        document["proxy-groups"] = [
-            {"type": "select", "name": "HomeServer", "proxies": ["Duplicate"]}
-        ]
-        document["inject-node-groups"] = []
-        document["inject-home-node-groups"] = ["HomeServer"]
-        document["extend-proxy-groups"] = {}
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Duplicate")],
-            provider(),
-            home_overlay(document),
-            TEMPLATE_ROOT,
-        )
-
-        self.assertEqual(
-            proxy_names(bundle["standard"]),
-            ["Duplicate"],
-        )
-        self.assertEqual(
-            proxy_names(bundle["balanced"]),
-            ["Duplicate [3x-ui]", "Duplicate [home]"],
-        )
-        # Explicit home group members follow the collision rewrite.
-        self.assertEqual(
-            proxy_groups(bundle["balanced"])["HomeServer"]["proxies"],
-            ["Duplicate [home]"],
-        )
-
-    def test_private_home_overlay_has_fixed_variant_authorization(self):
-        bundle = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), home_overlay(), TEMPLATE_ROOT
-        )
-        balanced = yaml.safe_load(bundle["balanced"])
-        groups = {item["name"]: item for item in balanced["proxy-groups"]}
-
-        self.assertEqual(
-            groups["ProxyServer"]["proxies"],
-            ["🎯 Direct", "HomeServer", "Owner", "Home"],
-        )
-        self.assertEqual(groups["ProxyServer"]["use"], ["AmyTelecom"])
-        self.assertEqual(groups["HomeServer"]["proxies"], ["🎯 Direct", "Home"])
-
-    def test_private_home_overlay_preserves_arbitrary_public_group_extensions(self):
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Owner")],
-            provider(),
-            overlay_with(**{"extend-proxy-groups": {"PT站加速": ["ProxyServer"]}}),
-            TEMPLATE_ROOT,
-        )
-        groups = proxy_groups(bundle["balanced"])
-        self.assertIn("ProxyServer", groups["PT站加速"]["proxies"])
-
-    def test_home_content_reaches_only_balanced_and_privacy(self):
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Owner 3x-ui")],
-            provider(),
-            home_overlay(),
-            TEMPLATE_ROOT,
-        )
-        member = render_user_bundle(
-            False, [reality_proxy("Member 3x-ui")], None, None, TEMPLATE_ROOT
-        )
-
-        for variant in ("balanced", "privacy"):
-            groups = proxy_groups(bundle[variant])
-            self.assertIn("HomeServer", groups)
-            self.assertIn("ProxyServer", groups)
-            self.assertIn("Home", proxy_names(bundle[variant]))
-            self.assertIn(HOME_CIDR_RULE, rules(bundle[variant]))
-            self.assertEqual(
-                groups["BiliBili"]["proxies"], ["🎯 Direct", "加速线路", "ProxyServer"]
-            )
-            self.assertEqual(
-                groups["国内流媒体"]["proxies"], ["🎯 Direct", "加速线路", "ProxyServer"]
-            )
-
-        # Isolation invariant: nothing home-derived reaches any standard
-        # profile, neither names, rules, controls, nor extensions.
-        home_group_names = {"HomeServer", "ProxyServer"}
-        for text in (bundle["standard"], member["standard"]):
-            document = yaml.safe_load(text)
-            self.assertNotIn("Home", [proxy["name"] for proxy in document["proxies"]])
-            group_names = {group["name"] for group in document["proxy-groups"]}
-            self.assertEqual(group_names & home_group_names, set())
-            for group in document["proxy-groups"]:
-                self.assertEqual(set(group.get("proxies", [])) & home_group_names, set())
-            for rule in document["rules"]:
-                self.assertNotIn("HomeServer", rule)
-                self.assertNotIn("ProxyServer", rule)
-                self.assertNotIn("192.168.2.0/24", rule)
-
-    def test_home_node_injection_matches_the_declared_groups(self):
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Owner 3x-ui")],
-            provider(),
-            home_overlay(),
-            TEMPLATE_ROOT,
-        )
-
-        groups = proxy_groups(bundle["balanced"])
-        self.assertEqual(
-            groups["ProxyServer"]["proxies"],
-            ["🎯 Direct", "HomeServer", "Owner 3x-ui", "Home"],
-        )
-        self.assertEqual(groups["ProxyServer"]["use"], ["AmyTelecom"])
-        self.assertEqual(groups["HomeServer"]["proxies"], ["🎯 Direct", "Home"])
-        self.assertNotIn("use", groups["HomeServer"])
-        self.assertIn("Owner 3x-ui", groups["加速线路"]["proxies"])
-        self.assertIn("Home", groups["加速线路"]["proxies"])
-        self.assertEqual(groups["加速线路"]["use"], ["AmyTelecom"])
-
-        standard_groups = proxy_groups(bundle["standard"])
-        self.assertNotIn("Home", standard_groups["加速线路"]["proxies"])
-
-    def test_standard_receives_only_global_node_injections(self):
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Owner 3x-ui")],
-            provider(),
-            home_overlay(),
-            TEMPLATE_ROOT,
-        )
-
-        groups = proxy_groups(bundle["standard"])
-        self.assertEqual(
-            groups["加速线路"]["proxies"],
-            ["自动选择", "🇭🇰 香港节点", "🇯🇵 日本节点", "🇺🇲 美国节点", "🇨🇳 台湾节点", "🇸🇬 新加坡节点", "Owner 3x-ui"],
-        )
-        self.assertEqual(groups["加速线路"]["use"], ["AmyTelecom"])
-
-    def test_privacy_keeps_its_dns_override_and_inherits_the_rest(self):
-        bundle = render_user_bundle(
-            True,
-            [reality_proxy("Owner 3x-ui")],
-            provider(),
-            home_overlay(),
-            TEMPLATE_ROOT,
-        )
-
-        privacy_dns = yaml.safe_load(bundle["privacy"])["dns"]
-        self.assertEqual(
-            privacy_dns["nameserver"],
-            ["https://223.5.5.5/dns-query", "https://doh.pub/dns-query"],
-        )
-        self.assertFalse(privacy_dns["respect-rules"])
-        # Inherited public values stay present after the override.
-        self.assertEqual(privacy_dns["fake-ip-range"], "198.18.0.1/16")
-        self.assertEqual(
-            privacy_dns["nameserver-policy"]["+.hitrontech.com"],
-            ["172.28.30.211", "172.28.30.210"],
-        )
-        balanced_dns = yaml.safe_load(bundle["balanced"])["dns"]
-        self.assertEqual(
-            balanced_dns["nameserver"],
-            ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"],
-        )
-        self.assertTrue(balanced_dns["respect-rules"])
-
-    def test_public_template_carries_empty_proxies_and_no_home_content(self):
-        document = yaml.safe_load((TEMPLATE_ROOT / "clash.yaml").read_text(encoding="utf-8"))
-
-        self.assertEqual(document["proxies"], [])
-        group_names = {group["name"] for group in document["proxy-groups"]}
-        self.assertNotIn("HomeServer", group_names)
-        self.assertNotIn("ProxyServer", group_names)
-        for rule in document["rules"]:
-            self.assertNotIn("HomeServer", rule)
-            self.assertNotIn("ProxyServer", rule)
-        self.assertFalse((TEMPLATE_ROOT / "features" / "home.yaml").exists())
-
-    def test_manifest_declares_the_fixed_variant_composition(self):
-        manifest = yaml.safe_load(
-            (TEMPLATE_ROOT / "variants" / "manifest.yaml").read_text(encoding="utf-8")
-        )
-
-        self.assertEqual(
-            manifest,
-            {
-                "variants": {
-                    "balanced": {"overrides": []},
-                    "standard": {"overrides": []},
-                    "privacy": {"overrides": ["privacy-dns"]},
-                },
-                "inject-node-groups": ["加速线路", "AI服务"],
-            },
-        )
-
-    def test_every_rendered_profile_validates(self):
+    def test_fixed_owner_and_member_profile_sets(self):
         owner = render_user_bundle(
             True,
             [reality_proxy("Owner 3x-ui")],
             provider(),
             home_overlay(),
-            TEMPLATE_ROOT,
+            self.root / "templates",
         )
         member = render_user_bundle(
-            False, [reality_proxy("Member 3x-ui")], None, None, TEMPLATE_ROOT
+            False,
+            [reality_proxy("Member 3x-ui")],
+            None,
+            None,
+            self.root / "templates",
         )
 
-        for text in owner.values():
-            validate_clash(text, (), allowed_provider_url=PROVIDER_URL)
-        for text in member.values():
-            validate_clash(text, ())
+        self.assertEqual(
+            tuple(owner), ("compat-office", "compat-universal", "balance-office")
+        )
+        self.assertEqual(tuple(member), ("compat-universal",))
 
-    def test_identical_inputs_produce_byte_stable_output(self):
+    def test_authorization_matrix_has_exact_inline_sources_and_home_scope(self):
+        owner = render_user_bundle(
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            provider(),
+            home_overlay(),
+            self.root / "templates",
+        )
+        member = render_user_bundle(
+            False,
+            [reality_proxy("Member 3x-ui")],
+            None,
+            None,
+            self.root / "templates",
+        )
+
+        self.assertEqual(
+            proxy_names(owner["compat-office"]), ["Owner 3x-ui", "Home"]
+        )
+        self.assertEqual(proxy_names(owner["compat-universal"]), ["Owner 3x-ui"])
+        self.assertEqual(
+            proxy_names(owner["balance-office"]), ["Owner 3x-ui", "Home"]
+        )
+        self.assertEqual(proxy_names(member["compat-universal"]), ["Member 3x-ui"])
+
+        for variant in ("compat-office", "balance-office"):
+            document = yaml.safe_load(owner[variant])
+            groups = proxy_groups(owner[variant])
+            self.assertIn("HomeServer", groups)
+            self.assertIn("HomeOnly", groups)
+            self.assertIn(HOME_CIDR_RULE, document["rules"])
+            self.assertEqual(tuple(provider_mapping(owner[variant])), ("AmyTelecom",))
+        universal = yaml.safe_load(owner["compat-universal"])
+        self.assertNotIn("Home", proxy_names(owner["compat-universal"]))
+        self.assertNotIn(
+            "HomeServer", {group["name"] for group in universal["proxy-groups"]}
+        )
+        self.assertNotIn(HOME_CIDR_RULE, universal["rules"])
+        self.assertEqual(
+            tuple(provider_mapping(owner["compat-universal"])), ("AmyTelecom",)
+        )
+
+        member_document = yaml.safe_load(member["compat-universal"])
+        self.assertEqual(provider_mapping(member["compat-universal"]), {})
+        self.assertNotIn("Home", proxy_names(member["compat-universal"]))
+        self.assertNotIn(
+            "HomeServer", {group["name"] for group in member_document["proxy-groups"]}
+        )
+        self.assertNotIn(HOME_CIDR_RULE, member_document["rules"])
+
+    def test_balance_replaces_complete_dns_and_comments_remain_profile_specific(self):
+        owner = render_user_bundle(
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            provider(),
+            home_overlay(),
+            self.root / "templates",
+        )
+
+        self.assertIn("# compat shared comment", owner["compat-office"])
+        self.assertIn("# compat shared comment", owner["compat-universal"])
+        self.assertIn("# balance dns comment", owner["balance-office"])
+        self.assertNotIn("compat-only-dns.example", owner["balance-office"])
+        self.assertEqual(
+            yaml.safe_load(owner["balance-office"])["dns"],
+            yaml.safe_load(
+                (self.root / "templates/dns/balance-office.yaml").read_text(
+                    encoding="utf-8"
+                )
+            )["dns"],
+        )
+
+    def test_home_object_comments_and_key_comments_only_reach_office_outputs(self):
+        owner = render_user_bundle(
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            provider(),
+            home_overlay(),
+            self.root / "templates",
+        )
+
+        for variant in ("compat-office", "balance-office"):
+            self.assertIn("# home group comment", owner[variant])
+            self.assertIn("# home groups comment", owner[variant])
+            self.assertIn("# home rules comment", owner[variant])
+            self.assertIn("# home proxy comment", owner[variant])
+        self.assertNotIn("# home group comment", owner["compat-universal"])
+        self.assertNotIn("# home groups comment", owner["compat-universal"])
+        self.assertNotIn("# home rules comment", owner["compat-universal"])
+        self.assertNotIn("# home proxy comment", owner["compat-universal"])
+
+    def test_compose_variant_returns_round_trip_document_and_manifest_injections(self):
+        document, injections = _compose_variant(
+            self.root / "templates", "compat-universal"
+        )
+
+        self.assertIsInstance(document, CommentedMap)
+        self.assertEqual(injections, {"Public": "all"})
+        self.assertEqual(document["proxies"], [])
+
+    def test_manifest_is_strict_and_cannot_add_extra_keys(self):
+        self._write(
+            "templates/profiles.yaml",
+            PROFILES.replace(
+                "inject-node-groups:\n- Public\n",
+                "inject-node-groups:\n- Public\nlegacy: true\n",
+            ),
+        )
+
+        with self.assertRaises(ValueError):
+            render_user_bundle(
+                False,
+                [reality_proxy("Member 3x-ui")],
+                None,
+                None,
+                self.root / "templates",
+            )
+
+    def test_member_rejects_unauthorized_provider_and_home(self):
+        with self.assertRaises(ValueError):
+            render_user_bundle(
+                False,
+                [reality_proxy("Member 3x-ui")],
+                provider(),
+                None,
+                self.root / "templates",
+            )
+        with self.assertRaises(ValueError):
+            render_user_bundle(
+                False,
+                [reality_proxy("Member 3x-ui")],
+                None,
+                home_overlay(),
+                self.root / "templates",
+            )
+
+    def test_identical_inputs_are_byte_stable(self):
         first = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), home_overlay(), TEMPLATE_ROOT
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            provider(),
+            home_overlay(),
+            self.root / "templates",
         )
         second = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), home_overlay(), TEMPLATE_ROOT
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            provider(),
+            home_overlay(),
+            self.root / "templates",
         )
-
         self.assertEqual(first, second)
-
-    def test_rule_order_is_preserved_end_to_end(self):
-        bundle = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), home_overlay(), TEMPLATE_ROOT
-        )
-
-        self.assertEqual(rules(bundle["balanced"])[0], HOME_CIDR_RULE)
-        self.assertEqual(
-            rules(bundle["standard"])[0], "IP-CIDR,199.19.110.145/32,🎯 Direct,no-resolve"
-        )
-        self.assertEqual(rules(bundle["balanced"])[-1], "MATCH,🐟 Final")
-        self.assertEqual(rules(bundle["standard"])[-1], "MATCH,🐟 Final")
-
-
-class GeneratorFailClosedTests(unittest.TestCase):
-    def _copy_templates(self):
-        directory = TemporaryDirectory()
-        self.addCleanup(directory.cleanup)
-        root = Path(directory.name)
-        shutil.copytree(TEMPLATE_ROOT, root / "templates")
-        return root / "templates"
-
-    def _write_yaml(self, path, document):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
-
-    def assertHomeCode(self, home, code):
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            with self.assertRaises(HomeSourceError) as caught:
-                render_user_bundle(
-                    True, [reality_proxy("Owner")], provider(), home, TEMPLATE_ROOT
-                )
-        self.assertEqual(caught.exception.code, code)
-        return caught.exception
-
-    def test_missing_public_template_fails_closed(self):
-        root = self._copy_templates()
-        (root / "clash.yaml").unlink()
-
-        with self.assertRaises(ValueError):
-            render_user_bundle(False, [reality_proxy("Member")], None, None, root)
-
-    def test_manifest_cannot_reintroduce_feature_declarations(self):
-        root = self._copy_templates()
-        manifest = yaml.safe_load((root / "variants" / "manifest.yaml").read_text(encoding="utf-8"))
-        manifest["variants"]["standard"]["features"] = ["home"]
-        self._write_yaml(root / "variants" / "manifest.yaml", manifest)
-
-        with self.assertRaises(ValueError):
-            render_user_bundle(True, [reality_proxy("Owner")], provider(), None, root)
-
-    def test_manifest_cannot_introduce_unknown_variants(self):
-        root = self._copy_templates()
-        manifest = yaml.safe_load((root / "variants" / "manifest.yaml").read_text(encoding="utf-8"))
-        manifest["variants"]["experimental"] = {"overrides": []}
-        self._write_yaml(root / "variants" / "manifest.yaml", manifest)
-
-        with self.assertRaises(ValueError):
-            render_user_bundle(True, [reality_proxy("Owner")], provider(), None, root)
-
-    def test_home_group_colliding_with_public_or_home_groups_fails_closed(self):
-        document = home_document()
-        document["proxy-groups"][0]["name"] = "BiliBili"
-        self.assertHomeCode(home_overlay(document), "home_group_invalid")
-
-        document = home_document()
-        document["proxy-groups"].append(dict(document["proxy-groups"][0]))
-        self.assertHomeCode(home_overlay(document), "home_group_invalid")
-
-    def test_home_extension_to_a_missing_public_group_fails_closed(self):
-        self.assertHomeCode(
-            overlay_with(**{"extend-proxy-groups": {"不存在的组": ["ProxyServer"]}}),
-            "home_extension_invalid",
-        )
-
-    def test_home_extension_duplicating_a_member_fails_closed(self):
-        self.assertHomeCode(
-            overlay_with(**{"extend-proxy-groups": {"BiliBili": ["ProxyServer", "ProxyServer"]}}),
-            "home_extension_invalid",
-        )
-
-    def test_overlapping_injection_declarations_fail_closed(self):
-        self.assertHomeCode(
-            overlay_with(**{"inject-node-groups": ["加速线路"]}),
-            "home_group_reference_invalid",
-        )
-
-        document = home_document()
-        document["inject-node-groups"] = ["HomeServer"]
-        document["inject-home-node-groups"] = ["HomeServer"]
-        self.assertHomeCode(home_overlay(document), "home_group_reference_invalid")
-
-    def test_home_injection_referencing_a_missing_group_fails_closed(self):
-        for key in ("inject-node-groups", "inject-home-node-groups"):
-            with self.subTest(key=key):
-                self.assertHomeCode(
-                    overlay_with(**{key: ["MissingGroup"]}),
-                    "home_group_reference_invalid",
-                )
-
-    def test_terminal_rules_in_the_overlay_fail_closed(self):
-        for rule in ("MATCH,ProxyServer", "final,HomeServer"):
-            with self.subTest(rule=rule):
-                self.assertHomeCode(overlay_with(rules=[rule]), "home_rule_invalid")
-
-    def test_home_composition_errors_never_echo_private_values(self):
-        document = home_document()
-        document["extend-proxy-groups"] = {"不存在的组": ["ProxyServer"]}
-        exception = self.assertHomeCode(
-            home_overlay(document), "home_extension_invalid"
-        )
-
-        rendered = "".join(traceback.format_exception(exception))
-        for secret in ("不存在的组", "ProxyServer", "HomeServer", "192.168.2.0/24"):
-            self.assertNotIn(secret, str(exception))
-            self.assertNotIn(secret, repr(exception))
-            self.assertNotIn(secret, rendered)
-        self.assertEqual(str(exception), "home overlay rejected: home_extension_invalid")
-        self.assertIsNone(exception.__context__)
-        self.assertIsNone(exception.__cause__)
-
-    def test_override_cannot_touch_proxies_or_injection_controls(self):
-        root = self._copy_templates()
-        self._write_yaml(root / "variants" / "privacy-dns.yaml", {"proxies": [reality_proxy("Evil")]})
-
-        with self.assertRaises(ValueError):
-            render_user_bundle(True, [reality_proxy("Owner")], provider(), None, root)
-
-        self._write_yaml(root / "variants" / "privacy-dns.yaml", {"inject-node-groups": ["隐私广告"]})
-
-        with self.assertRaises(ValueError):
-            render_user_bundle(True, [reality_proxy("Owner")], provider(), None, root)
-
-    def test_injection_declared_for_an_unknown_group_fails_closed(self):
-        root = self._copy_templates()
-        manifest = yaml.safe_load((root / "variants" / "manifest.yaml").read_text(encoding="utf-8"))
-        manifest["inject-node-groups"] = ["加速线路", "AI服务", "不存在的组"]
-        self._write_yaml(root / "variants" / "manifest.yaml", manifest)
-
-        with self.assertRaises(ValueError):
-            render_user_bundle(True, [reality_proxy("Owner")], provider(), None, root)
-
-    def test_override_list_replaces_wholesale_instead_of_concatenating(self):
-        root = self._copy_templates()
-        self._write_yaml(
-            root / "variants" / "privacy-dns.yaml",
-            {
-                "dns": {
-                    "nameserver": ["https://223.5.5.5/dns-query"],
-                }
-            },
-        )
-
-        bundle = render_user_bundle(
-            True, [reality_proxy("Owner")], provider(), None, root
-        )
-
-        self.assertEqual(
-            yaml.safe_load(bundle["privacy"])["dns"]["nameserver"],
-            ["https://223.5.5.5/dns-query"],
-        )
 
 
 if __name__ == "__main__":

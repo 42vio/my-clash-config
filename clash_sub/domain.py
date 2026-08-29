@@ -6,9 +6,9 @@ from typing import Mapping
 from urllib.parse import quote
 
 
-VARIANTS = ("balanced", "standard", "privacy")
+VARIANTS = ("compat-office", "compat-universal", "balance-office")
 OWNER_VARIANTS = VARIANTS
-MEMBER_VARIANTS = ("standard",)
+MEMBER_VARIANTS = ("compat-universal",)
 
 
 @dataclass(frozen=True)
