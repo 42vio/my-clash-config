@@ -27,6 +27,7 @@ from clash_sub.template_sync import (
     initialize_home_scope,
     run_template_sync,
 )
+from clash_sub import template_sync
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -301,6 +302,130 @@ class TemplateSyncInputTests(unittest.TestCase):
         report = run_template_sync(self.root, balance_office=self.balance_path)
         self.assertEqual(report.changed, ("templates/dns/balance-office.yaml",))
 
+    def test_accepts_valid_yaml_flow_mapping_with_closing_braces(self):
+        flow_provider = (
+            "proxy-providers: {AmyTelecom: {type: http, url: %s, interval: 0, "
+            "path: ./proxy_providers/AmyTelecom-%s.yaml}}\n"
+        ) % (PROVIDER_URL, PROVIDER_DIGEST)
+        source = COMPAT_OFFICE.replace(
+            "proxy-providers:\n"
+            "  AmyTelecom:\n"
+            "    type: http\n"
+            "    url: %s\n"
+            "    interval: 0\n"
+            "    path: ./proxy_providers/AmyTelecom-%s.yaml\n"
+            % (PROVIDER_URL, PROVIDER_DIGEST),
+            flow_provider,
+        )
+        path = _write_source(self.source_root / "Compat-Office-flow.yaml", source)
+        report = run_template_sync(self.root, compat_office=path)
+        self.assertIn(PUBLIC_TEMPLATE_FILES[0], report.changed)
+
+    def test_accepts_source_only_local_file_provider(self):
+        source_provider = (
+            "proxy-providers: {SourceNodes: {type: file, "
+            "path: ./proxy_providers/source.yaml}}\n"
+        )
+        source = COMPAT_OFFICE.replace(
+            "proxy-providers:\n"
+            "  AmyTelecom:\n"
+            "    type: http\n"
+            "    url: %s\n"
+            "    interval: 0\n"
+            "    path: ./proxy_providers/AmyTelecom-%s.yaml\n"
+            % (PROVIDER_URL, PROVIDER_DIGEST),
+            source_provider,
+        )
+        source = source.replace(
+            "- name: Public\n  type: select\n",
+            "- name: Public\n  type: select\n  use: [SourceNodes]\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-local.yaml", source)
+        report = run_template_sync(self.root, compat_office=path)
+        self.assertIn(PUBLIC_TEMPLATE_FILES[0], report.changed)
+
+    def test_strips_provider_nodes_and_keeps_provider_only_groups_valid(self):
+        source_provider = (
+            "proxy-providers: {SourceNodes: {type: file, "
+            "path: ./proxy_providers/source.yaml}}\n"
+        )
+        source = COMPAT_OFFICE.replace(
+            "proxy-providers:\n"
+            "  AmyTelecom:\n"
+            "    type: http\n"
+            "    url: %s\n"
+            "    interval: 0\n"
+            "    path: ./proxy_providers/AmyTelecom-%s.yaml\n"
+            % (PROVIDER_URL, PROVIDER_DIGEST),
+            source_provider,
+        ).replace(
+            "- name: Public\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, HomeAll]\n",
+            "- name: Public\n  type: select\n  use: [SourceNodes]\n  proxies: [DIRECT, Shared 3x-ui, HomeAll, SourceNode]\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-provider-node.yaml", source)
+        run_template_sync(self.root, compat_office=path)
+        document = yaml.safe_load((self.root / PUBLIC_TEMPLATE_FILES[0]).read_text())
+        self.assertNotIn("SourceNode", (self.root / PUBLIC_TEMPLATE_FILES[0]).read_text())
+        self.assertTrue(
+            all(
+                isinstance(group.get("proxies"), list) or group.get("include-all") is True
+                for group in document["proxy-groups"]
+            )
+        )
+
+    def test_candidate_validation_does_not_mutate_yaml_merge_state(self):
+        source_provider = (
+            "proxy-providers: {SourceNodes: {type: file, "
+            "path: ./proxy_providers/source.yaml}}\n"
+        )
+        source = COMPAT_OFFICE.replace(
+            "proxy-providers:\n"
+            "  AmyTelecom:\n"
+            "    type: http\n"
+            "    url: %s\n"
+            "    interval: 0\n"
+            "    path: ./proxy_providers/AmyTelecom-%s.yaml\n"
+            % (PROVIDER_URL, PROVIDER_DIGEST),
+            source_provider,
+        ).replace(
+            "proxy-groups:\n",
+            "provider-group: &provider-group\n"
+            "  use: [SourceNodes]\n"
+            "proxy-groups:\n",
+        ).replace(
+            "- name: Public\n  type: select\n",
+            "- name: Public\n  type: select\n  <<: *provider-group\n",
+        ).replace(
+            "- name: HomeAll\n  type: select\n",
+            "- name: HomeAll\n  type: select\n  <<: *provider-group\n",
+        ).replace(
+            "- name: HomeOnly\n  type: select\n",
+            "- name: HomeOnly\n  type: select\n  <<: *provider-group\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-merge.yaml", source)
+
+        report = run_template_sync(self.root, compat_office=path)
+
+        self.assertIn(PUBLIC_TEMPLATE_FILES[0], report.changed)
+
+    def test_accepts_source_rule_with_empty_policy_target(self):
+        source = COMPAT_OFFICE.replace(
+            "- DOMAIN-SUFFIX,home.example.test,HomeAll,no-resolve\n",
+            "- DOMAIN-SUFFIX,home.example.test,HomeAll,no-resolve\n- GEOIP,ZZ,\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-empty-target.yaml", source)
+        report = run_template_sync(self.root, compat_office=path)
+        self.assertIn(PUBLIC_TEMPLATE_FILES[0], report.changed)
+
+    def test_allows_short_proxy_address_as_part_of_public_rule_value(self):
+        source = COMPAT_OFFICE.replace(
+            "- DOMAIN-SUFFIX,public.example.test,Public\n",
+            "- DOMAIN-SUFFIX,192.0.2.10.example.test,Public\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-public-address.yaml", source)
+        report = run_template_sync(self.root, compat_office=path)
+        self.assertIn(PUBLIC_TEMPLATE_FILES[0], report.changed)
+
 
 class TemplateSyncSplitTests(unittest.TestCase):
     def setUp(self):
@@ -444,6 +569,42 @@ class HomeScopeBootstrapTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "template_source_invalid")
         self.assertFalse((self.root / HOME_SCOPE_PATH).exists())
 
+    def test_initialize_prunes_home_names_from_round_trip_helper_sections(self):
+        office = COMPAT_OFFICE.replace(
+            "# shared comment\n",
+            "g2: {name: helper, proxies: [HomeAll, DIRECT, Shared 3x-ui]}\n"
+            "# shared comment\n",
+        )
+        universal = COMPAT_UNIVERSAL.replace(
+            "# shared comment\n",
+            "g2: {name: helper, proxies: [DIRECT, Shared 3x-ui]}\n"
+            "# shared comment\n",
+        )
+        office_path = _write_source(self.source_root / "Compat-Office-helper.yaml", office)
+        universal_path = _write_source(
+            self.source_root / "Compat-Universal-helper.yaml", universal
+        )
+        initialize_home_scope(self.root, office_path, universal_path)
+        report = run_template_sync(self.root, compat_office=office_path)
+        self.assertIn(PUBLIC_TEMPLATE_FILES[0], report.changed)
+        self.assertNotIn("HomeAll", (self.root / PUBLIC_TEMPLATE_FILES[0]).read_text())
+
+    def test_scope_injection_sequences_do_not_carry_previous_line_positions(self):
+        scope_text = HOME_SCOPE.replace(
+            "inject-home-node-groups: [HomeOnly]\nrules:",
+            "inject-home-node-groups:\n- HomeOnly\n\n\nrules:",
+        )
+        _write_scope(self.root, scope_text)
+        scope = load_home_overlay(self.root / HOME_SCOPE_PATH, 5 * 1024 * 1024)
+
+        copied = template_sync._copy_scope_sequence(
+            scope, "inject-home-node-groups"
+        )
+
+        self.assertEqual(list(copied), list(scope.inject_home_node_groups))
+        self.assertIsNone(copied.lc.line)
+        self.assertEqual(copied.ca.items, {})
+
 
 class TemplateSyncAtomicityTests(unittest.TestCase):
     def setUp(self):
@@ -453,6 +614,18 @@ class TemplateSyncAtomicityTests(unittest.TestCase):
         self.source_root, self.compat_path, self.universal_path, self.balance_path = _source_dir(
             self.directory.name
         )
+
+    def test_candidate_dump_isolated_from_round_trip_serializer_mutation(self):
+        candidate = {"proxies": []}
+
+        def mutating_dump(document):
+            document["proxies"].append("serializer-side-effect")
+            return "proxies: []\n"
+
+        with patch.object(template_sync, "dump_round_trip", side_effect=mutating_dump):
+            self.assertEqual(template_sync._dump_candidate(candidate), "proxies: []\n")
+
+        self.assertEqual(candidate, {"proxies": []})
 
     def test_replacement_failure_at_each_target_restores_bytes_and_modes(self):
         from clash_sub import template_sync

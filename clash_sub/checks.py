@@ -35,7 +35,7 @@ def validate_clash(text, forbidden_values, allowed_provider_url=None):
     as the exact value of ``proxy-providers.AmyTelecom.url``; every other
     field occurrence stays a forbidden value.
     """
-    if not isinstance(text, str) or "{{" in text or "}}" in text:
+    if not isinstance(text, str) or "{{" in text or "{%" in text:
         raise CheckError("rendered config contains invalid template data")
     if allowed_provider_url is not None and (
         not isinstance(allowed_provider_url, str)
@@ -242,7 +242,7 @@ def _rule_target(parts):
     index = len(parts) - 1
     while index > 1 and parts[index] == "no-resolve":
         index -= 1
-    return parts[index]
+    return parts[index] or None
 
 
 def _valid_name(value):

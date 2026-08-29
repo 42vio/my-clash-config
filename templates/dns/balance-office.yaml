@@ -1,0 +1,85 @@
+# 2025/07/05 墨鱼 https://github.com/ddgksf2013/Profile/blob/master/ClashVergeforWindows.yaml  𝐡𝐭𝐭𝐩𝐬://𝐭.𝐦𝐞/𝐝𝐝𝐠𝐤𝐬𝐟𝟐𝟎𝟐𝟏
+# https://github.com/Aethersailor/Custom_OpenClash_Rules/blob/main/cfg/yaml/Custom_Clash_Selfhosted_Provider_Fallback.yaml
+
+# dns 泄漏解决原理
+# https://v2ex.com/t/1137959
+# https://github.com/clash-verge-rev/clash-verge-rev/discussions/2526
+# https://blog.arisa.moe/blog/2025/250814-best-practice-of-anti-dns-leak/#24-dns
+
+
+# 方案3  Balanced
+# 默认海外 DNS + CN Policy 隐私与准确性折中
+
+dns:
+  enable: true
+  ipv6: false
+  prefer-h3: false
+
+  listen: 0.0.0.0:53 # dns 监听
+  enhanced-mode: fake-ip
+  use-system-hosts: false
+  cache-algorithm: arc
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+  - "geosite:private"
+  - "geosite:category-education-cn"
+  - "+.push.apple.com"
+  - "+.market.xiaomi.com"
+  - "*.lan"
+  - localhost.ptlogin2.qq.com
+  - localhost.sec.qq.com
+  - localhost.work.weixin.qq.com
+  - +.srv.nintendo.net
+  - +.stun.playstation.net
+  - +.msftconnecttest.com
+  - +.msftncsi.com
+  - +.xboxlive.com
+  - msftconnecttest.com
+  - xbox.*.microsoft.com
+  - "*.battlenet.com.cn"
+  - "*.battlenet.com"
+  - "*.blzstatic.cn"
+  - "*.battle.net"
+  - "+.hitrontech.com"
+  - "+.42io.cc"
+
+  # 用于解析 DNS 服务器自身域名
+  default-nameserver:
+  - 223.5.5.5
+  - 119.29.29.29
+
+  # 海外dns需要开启，DNS 请求自身遵循 Clash 分流规则
+  respect-rules: true
+
+  # 未命中 policy 的域名
+  nameserver:  # 默认 DNS 服务
+  - https://1.1.1.1/dns-query
+  - https://8.8.8.8/dns-query
+
+  # 特定域名 DNS 分流
+  nameserver-policy:
+    geosite:private,cn:
+    - https://223.5.5.5/dns-query   #阿里DoH
+    - https://doh.pub/dns-query   #腾讯DoH，因腾讯云即将关闭免费版IP访问，故用域名
+
+    "+.hitrontech.com":
+    - 172.28.30.211
+    - 172.28.30.210
+
+    "+.42io.cc":
+    - https://223.5.5.5/dns-query
+    - https://doh.pub/dns-query
+
+  # 代理节点域名
+  proxy-server-nameserver:
+  - https://223.5.5.5/dns-query
+  - https://doh.pub/dns-query
+
+  # 最终走 DIRECT 的域名重新使用国内 DNS
+  direct-nameserver:
+  - https://223.5.5.5/dns-query
+  - https://doh.pub/dns-query
+
+  direct-nameserver-follow-policy: true
+
+#========= 建立锚点 =========#

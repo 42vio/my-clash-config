@@ -1,0 +1,13 @@
+profiles:
+  compat-office:
+    dns: compat
+    home: true
+  compat-universal:
+    dns: compat
+    home: false
+  balance-office:
+    dns: balance-office
+    home: true
+inject-node-groups:
+- 加速线路
+- AI服务

@@ -144,6 +144,7 @@ _HOME_KEYS = (
     "inject-home-node-groups",
     "rules",
 )
+_DROP_PRIVATE_REFERENCE = object()
 
 
 class TemplateSyncError(RuntimeError):
@@ -306,7 +307,7 @@ def _load_source(path):
         text = payload.decode("utf-8")
     except UnicodeError:
         raise TemplateSyncError("template_source_invalid") from None
-    if any(marker in text for marker in ("{{", "}}", "{%", "%}")):
+    if "{{" in text or "{%" in text:
         raise TemplateSyncError("template_source_invalid")
     try:
         document = load_round_trip(payload)
@@ -319,17 +320,67 @@ def _load_source(path):
 
 
 def _validate_source_document(document, text):
+    source_proxy_names = set(_source_names(document, "proxies"))
+    source_group_names = set(_source_names(document, "proxy-groups"))
     providers = document.get("proxy-providers")
     if providers is None:
+        validation_document = document
         provider_url = None
     else:
-        if not isinstance(providers, Mapping) or set(providers) != {_PROVIDER_NAME}:
+        if not isinstance(providers, Mapping) or len(providers) != 1:
             raise TemplateSyncError("template_source_invalid")
-        provider = providers.get(_PROVIDER_NAME)
-        provider_url = provider.get("url") if isinstance(provider, Mapping) else None
-        if not isinstance(provider_url, str) or not provider_url.startswith("https://"):
+        provider_name, provider = next(iter(providers.items()))
+        if not isinstance(provider_name, str) or not provider_name.strip():
+            raise TemplateSyncError("template_source_invalid")
+        if provider_name == _PROVIDER_NAME:
+            provider_url = provider.get("url") if isinstance(provider, Mapping) else None
+            if not isinstance(provider_url, str) or not provider_url.startswith("https://"):
+                raise TemplateSyncError("template_source_invalid")
+            validation_document = document
+        elif (
+            isinstance(provider, Mapping)
+            and set(provider) == {"type", "path"}
+            and provider.get("type") == "file"
+            and isinstance(provider.get("path"), str)
+            and bool(provider.get("path").strip())
+        ):
+            validation_document = clone_round_trip(document)
+            validation_document["proxy-providers"] = CommentedMap(
+                {_PROVIDER_NAME: clone_round_trip(_PROBE_PROVIDER)}
+            )
+            groups = validation_document.get("proxy-groups")
+            if not isinstance(groups, list):
+                raise TemplateSyncError("template_source_invalid")
+            for group in groups:
+                if not isinstance(group, Mapping):
+                    raise TemplateSyncError("template_source_invalid")
+                uses = _group_uses(group)
+                if uses is None:
+                    continue
+                if not isinstance(uses, list) or any(
+                    use != provider_name for use in uses
+                ):
+                    raise TemplateSyncError("template_source_invalid")
+                _drop_merged_provider_use(group)
+                group["use"] = CommentedSeq([_PROVIDER_NAME] * len(uses))
+                if "proxies" not in group and group.get("include-all") is not True:
+                    group["proxies"] = CommentedSeq()
+            external_names = _external_provider_members(
+                document, source_proxy_names, source_group_names
+            )
+            if external_names:
+                for group in groups:
+                    members = group.get("proxies")
+                    if isinstance(members, list):
+                        group["proxies"] = CommentedSeq(
+                            member for member in members if member not in external_names
+                        )
+            provider_url = _PROBE_PROVIDER_URL
+        else:
             raise TemplateSyncError("template_source_invalid")
     try:
+        if validation_document is not document:
+            text = dump_round_trip(validation_document)
         validate_clash(text, (), allowed_provider_url=provider_url)
     except CheckError:
         raise TemplateSyncError("template_source_invalid") from None
@@ -341,7 +392,7 @@ def _load_current_candidate(root, relative):
     )
     try:
         text = payload.decode("utf-8")
-        if any(marker in text for marker in ("{{", "}}", "{%", "%}")):
+        if "{{" in text or "{%" in text:
             raise ValueError
         document = load_round_trip(payload)
     except (UnicodeError, RoundTripYamlError, ValueError):
@@ -366,6 +417,63 @@ def _source_names(document, key):
     return tuple(names)
 
 
+def _source_file_provider_name(document):
+    providers = document.get("proxy-providers")
+    if not isinstance(providers, Mapping) or len(providers) != 1:
+        return None
+    provider_name, provider = next(iter(providers.items()))
+    if (
+        not isinstance(provider_name, str)
+        or not provider_name.strip()
+        or not isinstance(provider, Mapping)
+        or set(provider) != {"type", "path"}
+        or provider.get("type") != "file"
+        or not isinstance(provider.get("path"), str)
+        or not provider.get("path").strip()
+    ):
+        return None
+    return provider_name
+
+
+def _external_provider_members(document, proxy_names, group_names):
+    if _source_file_provider_name(document) is None:
+        return frozenset()
+    builtins = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL"}
+    external = set()
+    for group in document.get("proxy-groups", []) or []:
+        if not isinstance(group, Mapping):
+            continue
+        members = group.get("proxies")
+        if not isinstance(members, list):
+            continue
+        external.update(
+            member
+            for member in members
+            if isinstance(member, str)
+            and member not in proxy_names | group_names | builtins
+        )
+    return frozenset(external)
+
+
+def _prune_private_references(node, names):
+    if isinstance(node, Mapping):
+        if node.get("name") in names:
+            return _DROP_PRIVATE_REFERENCE
+        for key in tuple(node):
+            child = _prune_private_references(node[key], names)
+            if child is _DROP_PRIVATE_REFERENCE:
+                del node[key]
+        return node
+    if isinstance(node, list):
+        for index in range(len(node) - 1, -1, -1):
+            if _prune_private_references(node[index], names) is _DROP_PRIVATE_REFERENCE:
+                del node[index]
+        return node
+    if isinstance(node, str) and node in names:
+        return _DROP_PRIVATE_REFERENCE
+    return node
+
+
 def _split_source(
     source,
     scope,
@@ -388,6 +496,9 @@ def _split_source(
         if not home_group_names.issubset(source_group_names):
             raise TemplateSyncError("template_source_invalid")
     dynamic_names = frozenset(set(source_proxy_names) - home_proxy_names)
+    external_provider_names = _external_provider_members(
+        source, set(source_proxy_names), set(source_group_names)
+    )
     all_inline = set(source_proxy_names)
     home_inline = set(source_proxy_names) & home_proxy_names
     all_injected = set(scope.inject_node_groups)
@@ -425,6 +536,8 @@ def _split_source(
                     # extension, but it cannot restore a home node embedded
                     # directly in a public group.  Reject rather than lose it.
                     raise TemplateSyncError("template_source_invalid")
+                elif isinstance(member, str) and member in external_provider_names:
+                    continue
                 elif isinstance(member, str) and member in all_inline:
                     continue
                 else:
@@ -432,6 +545,8 @@ def _split_source(
             public["proxies"] = _select_sequence(members, kept_indices)
             if extension_indices:
                 extensions[name] = _select_sequence(members, extension_indices)
+        elif _group_uses(group) is not None and "include-all" not in group:
+            public["proxies"] = CommentedSeq()
         public_group_indices.append(index)
         public_group_values.append(public)
 
@@ -455,6 +570,23 @@ def _split_source(
     public["rules"] = _select_sequence(public_rules, public_rule_indices)
     if "proxy-providers" in public:
         del public["proxy-providers"]
+    private_names = (
+        set(source_proxy_names)
+        | home_group_names
+        | set(external_provider_names)
+        | {_PROVIDER_NAME}
+    )
+    for key in tuple(public):
+        if key in {
+            "dns",
+            "proxies",
+            "proxy-groups",
+            "rule-providers",
+            "rules",
+        }:
+            continue
+        if _prune_private_references(public[key], private_names) is _DROP_PRIVATE_REFERENCE:
+            del public[key]
 
     home = None
     if build_home:
@@ -513,6 +645,29 @@ def _strip_private_group(group, name, all_injected, home_injected, all_inline, h
 def _drop_provider_use(group):
     if "use" in group:
         del group["use"]
+    _drop_merged_provider_use(group)
+
+
+def _group_uses(group):
+    """Return a group's direct or YAML-merge-inherited provider uses."""
+    uses = group.get("use")
+    if uses is not None:
+        return uses
+    merged = getattr(group, "merge", None)
+    if merged:
+        for item in merged:
+            if isinstance(item, Mapping) and "use" in item:
+                return item.get("use")
+    return None
+
+
+def _drop_merged_provider_use(group):
+    merged = getattr(group, "merge", None)
+    if not merged:
+        return
+    for item in merged:
+        if isinstance(item, Mapping) and "use" in item:
+            del item["use"]
 
 
 def _build_home_document(
@@ -559,8 +714,26 @@ def _build_home_document(
 def _copy_scope_sequence(scope, key):
     scope_document = getattr(scope, "document", None)
     if isinstance(scope_document, Mapping) and isinstance(scope_document.get(key), list):
-        return clone_round_trip(scope_document[key])
+        source = scope_document[key]
+        result = CommentedSeq(clone_round_trip(list(source)))
+        if getattr(source, "fa", None) is not None and source.fa.flow_style():
+            result.fa.set_flow_style()
+        for index, comments in getattr(getattr(source, "ca", None), "items", {}).items():
+            if _has_visible_comment(comments):
+                result.ca.items[index] = copy.deepcopy(comments)
+        if _has_visible_comment(getattr(getattr(source, "ca", None), "comment", None)):
+            result.ca.comment = copy.deepcopy(source.ca.comment)
+        if _has_visible_comment(getattr(getattr(source, "ca", None), "end", None)):
+            result.ca.end = copy.deepcopy(source.ca.end)
+        return result
     return CommentedSeq(list(getattr(scope, "inject_node_groups" if key == "inject-node-groups" else "inject_home_node_groups")))
+
+
+def _has_visible_comment(value):
+    if isinstance(value, (list, tuple)):
+        return any(_has_visible_comment(item) for item in value)
+    text = getattr(value, "value", None)
+    return isinstance(text, str) and bool(text.strip())
 
 
 def _select_sequence(source, indices):
@@ -960,8 +1133,13 @@ def _load_scanner(root):
 
 
 def _forbidden_values(sources, scope):
+    sources = tuple(sources)
     names = set()
     values = set()
+    source_names = set()
+    for source in sources:
+        source_names.update(_source_names(source, "proxies"))
+        source_names.update(_source_names(source, "proxy-groups"))
     home_names = {
         item.get("name")
         for item in scope.proxies
@@ -979,7 +1157,11 @@ def _forbidden_values(sources, scope):
     for group in scope.proxy_groups:
         if isinstance(group, Mapping):
             for member in group.get("proxies", []) or []:
-                if isinstance(member, str) and member not in {"DIRECT", "REJECT", "GLOBAL"}:
+                if (
+                    isinstance(member, str)
+                    and member not in {"DIRECT", "REJECT", "GLOBAL"}
+                    and member not in source_names
+                ):
                     names.add(member)
     values.update(scope.rules)
 
@@ -995,7 +1177,11 @@ def _forbidden_values(sources, scope):
             if name in home_group_names:
                 names.add(name)
                 for member in group.get("proxies", []) or []:
-                    if isinstance(member, str) and member not in {"DIRECT", "REJECT", "GLOBAL"}:
+                    if (
+                        isinstance(member, str)
+                        and member not in {"DIRECT", "REJECT", "GLOBAL"}
+                        and member not in source_names
+                    ):
                         names.add(member)
         providers = source.get("proxy-providers")
         if isinstance(providers, Mapping):
@@ -1066,7 +1252,7 @@ def _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scan
         if findings:
             raise TemplateSyncError("template_secret_leak")
         for value in forbidden_values:
-            if value and value in text:
+            if value and len(value) >= 16 and value in text:
                 raise TemplateSyncError("template_secret_leak")
         try:
             document = load_round_trip(text)
@@ -1164,7 +1350,7 @@ def _serialize_candidates(candidates):
 
 def _dump_candidate(document):
     try:
-        return dump_round_trip(document)
+        return dump_round_trip(clone_round_trip(document))
     except RoundTripYamlError:
         raise TemplateSyncError("template_candidate_invalid") from None
 

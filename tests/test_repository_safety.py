@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,6 +33,12 @@ FORBIDDEN_SUBSTRINGS = (
 )
 
 TRACKED_DOCUMENT_PATHS = (
+    "templates/base/compat-office.yaml",
+    "templates/dns/balance-office.yaml",
+    "templates/profiles.yaml",
+)
+
+SUPERSEDED_TEMPLATE_PATHS = (
     "templates/clash.yaml",
     "templates/variants/manifest.yaml",
     "templates/variants/privacy-dns.yaml",
@@ -85,8 +93,9 @@ ACTIVE_RUNTIME_PATHS = (
     "deploy",
     "scripts/check_reality_target.py",
     "scripts/scan_tracked_secrets.py",
-    "templates/clash.yaml",
-    "templates/variants",
+    "templates/base",
+    "templates/dns",
+    "templates/profiles.yaml",
     "requirements.txt",
 )
 
@@ -287,6 +296,59 @@ class RepositorySafetyTests(unittest.TestCase):
                 self.assertNotIn(
                     forbidden.lower(), lowered, f"{relative} leaks {forbidden!r}"
                 )
+
+    def test_shipped_template_tree_replaces_superseded_templates_safely(self):
+        for relative in TRACKED_DOCUMENT_PATHS:
+            self.assertTrue((ROOT / relative).is_file(), relative)
+        for relative in SUPERSEDED_TEMPLATE_PATHS:
+            self.assertFalse((ROOT / relative).exists(), relative)
+
+        compat = yaml.safe_load(
+            (ROOT / "templates/base/compat-office.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(compat.get("proxies"), [])
+        self.assertNotIn("proxy-providers", compat)
+
+        tracked_text = "\n".join(
+            (ROOT / relative).read_text(encoding="utf-8")
+            for relative in TRACKED_DOCUMENT_PATHS
+        )
+        self.assertNotIn("AmyTelecom", tracked_text)
+
+        home_path = ROOT / "private/home.yaml"
+        if home_path.is_file():
+            home = yaml.safe_load(home_path.read_text(encoding="utf-8"))
+            private_values = {
+                item.get("name")
+                for key in ("proxies", "proxy-groups")
+                for item in home.get(key, [])
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            }
+            private_values.update(
+                rule for rule in home.get("rules", []) if isinstance(rule, str)
+            )
+
+            tracked_scalars = set()
+
+            def collect_scalars(node):
+                if isinstance(node, dict):
+                    for key, value in node.items():
+                        collect_scalars(key)
+                        collect_scalars(value)
+                elif isinstance(node, list):
+                    for value in node:
+                        collect_scalars(value)
+                elif isinstance(node, str):
+                    tracked_scalars.add(node)
+
+            for relative in TRACKED_DOCUMENT_PATHS:
+                collect_scalars(
+                    yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
+                )
+            self.assertFalse(
+                private_values & tracked_scalars,
+                "tracked templates contain private home content",
+            )
 
     def test_legacy_trojan_topology_is_isolated_and_explicitly_historical(self):
         legacy = ROOT / "docs" / "legacy-trojan-topology.md"
