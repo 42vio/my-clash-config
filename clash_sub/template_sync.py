@@ -116,7 +116,6 @@ _CREDENTIAL_QUERY_KEYS = {
     "signature",
     "token",
 }
-_MIN_FORBIDDEN_CHARS = 4
 _RULE_OPTION_TOKENS = frozenset(("no-resolve", "src"))
 _HOME_RULE_POLICIES = frozenset(
     ("DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL")
@@ -201,7 +200,6 @@ def run_template_sync(
 
     compat_source = None
     balance_source = None
-    split = None
     if compat_selected:
         compat_source = _load_source(Path(compat_office))
         split = _split_source(compat_source, scope)
@@ -351,19 +349,6 @@ def _load_current_candidate(root, relative):
     if any(str(key).startswith("_") for key in document):
         raise TemplateSyncError("template_candidate_invalid")
     return document
-
-
-def _provider_url(document):
-    providers = document.get("proxy-providers")
-    if providers is None:
-        return None
-    if not isinstance(providers, Mapping) or set(providers) != {_PROVIDER_NAME}:
-        raise TemplateSyncError("template_source_invalid")
-    provider = providers.get(_PROVIDER_NAME)
-    url = provider.get("url") if isinstance(provider, Mapping) else None
-    if not isinstance(url, str) or not url.startswith("https://"):
-        raise TemplateSyncError("template_source_invalid")
-    return url
 
 
 def _source_names(document, key):
@@ -607,10 +592,6 @@ def _rule_targets_private(rule, private_names):
     if target in _RULE_OPTION_TOKENS and len(parts) >= 3:
         target = parts[-2]
     return target in private_names
-
-
-def _rule_targets_home_group(rule, home_group_names):
-    return _rule_targets_private(rule, home_group_names)
 
 
 def _build_profiles(inject_node_groups):
@@ -1018,6 +999,7 @@ def _forbidden_values(sources, scope):
                         names.add(member)
         providers = source.get("proxy-providers")
         if isinstance(providers, Mapping):
+            names.add(_PROVIDER_NAME)
             provider = providers.get(_PROVIDER_NAME)
             _collect_provider_sensitive_values(provider, values)
         rules = source.get("rules")
@@ -1086,9 +1068,6 @@ def _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scan
         for value in forbidden_values:
             if value and value in text:
                 raise TemplateSyncError("template_secret_leak")
-        for name in forbidden_names:
-            if len(name) >= _MIN_FORBIDDEN_CHARS and name in text:
-                raise TemplateSyncError("template_secret_leak")
         try:
             document = load_round_trip(text)
         except RoundTripYamlError:
@@ -1098,13 +1077,7 @@ def _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scan
         if scalars & forbidden_values:
             raise TemplateSyncError("template_secret_leak")
         for scalar in scalars:
-            if scalar in forbidden_names or (
-                "://" in scalar
-                and any(
-                    len(name) >= _MIN_FORBIDDEN_CHARS and name in scalar
-                    for name in forbidden_names
-                )
-            ):
+            if any(name and name in scalar for name in forbidden_names):
                 raise TemplateSyncError("template_secret_leak")
         for group in document.get("proxy-groups", []) or []:
             if isinstance(group, Mapping):
@@ -1313,9 +1286,12 @@ def _atomic_replace_outputs(root, payloads):
             _write_file_atomically(
                 target, payloads[relative], OUTPUT_MODES[relative]
             )
-    except (OSError, ValueError):
-        _restore_files(root, previous, attempted)
-        raise TemplateSyncError("template_write_failed") from None
+    except (OSError, ValueError) as write_error:
+        try:
+            _restore_files(root, previous, attempted)
+        except (OSError, ValueError):
+            raise TemplateSyncError("template_rollback_failed") from write_error
+        raise TemplateSyncError("template_write_failed") from write_error
 
 
 def _write_file_atomically(target, payload, mode):
@@ -1346,6 +1322,7 @@ def _write_file_atomically(target, payload, mode):
 
 def _restore_files(root, previous, attempted):
     attempted_set = set(attempted)
+    restore_failed = False
     for relative, payload, mode in previous:
         if relative not in attempted_set:
             continue
@@ -1360,5 +1337,7 @@ def _restore_files(root, previous, attempted):
                     payload,
                     mode if mode is not None else OUTPUT_MODES[relative],
                 )
-        except OSError:
-            pass
+        except (OSError, ValueError):
+            restore_failed = True
+    if restore_failed:
+        raise OSError("template rollback failed")

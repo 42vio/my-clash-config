@@ -363,6 +363,52 @@ class TemplateSyncSplitTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), "template_secret_leak")
         self.assertEqual(_outputs(self.root), before)
 
+    def test_short_private_name_in_yaml_scalar_is_rejected(self):
+        short_name = "Q"
+        leaked = COMPAT_OFFICE.replace("Shared 3x-ui", short_name).replace(
+            "  - +.example.test\n",
+            "  - +.example.test\n  - +.%s.example.test\n" % short_name,
+            1,
+        )
+        path = _write_source(self.source_root / "Compat-Office.yaml", leaked)
+        with self.assertRaises(TemplateSyncError) as caught:
+            run_template_sync(self.root, compat_office=path)
+        self.assertEqual(str(caught.exception), "template_secret_leak")
+
+    def test_private_provider_name_in_yaml_scalar_is_rejected(self):
+        provider_name = "AmyTelecom"
+        leaked = COMPAT_OFFICE.replace(
+            "  - +.example.test\n",
+            "  - +.example.test\n  - +.%s.example.test\n" % provider_name,
+            1,
+        )
+        path = _write_source(self.source_root / "Compat-Office.yaml", leaked)
+        with self.assertRaises(TemplateSyncError) as caught:
+            run_template_sync(self.root, compat_office=path)
+        self.assertEqual(str(caught.exception), "template_secret_leak")
+
+    def test_short_private_name_in_comment_is_preserved(self):
+        short_name = "Q"
+        commented = COMPAT_OFFICE.replace("Shared 3x-ui", short_name).replace(
+            "# shared comment\n",
+            "# shared comment\n# %s\n" % short_name,
+            1,
+        )
+        path = _write_source(self.source_root / "Compat-Office.yaml", commented)
+        run_template_sync(self.root, compat_office=path)
+        self.assertIn("# %s\n" % short_name, (self.root / PUBLIC_TEMPLATE_FILES[0]).read_text())
+
+    def test_private_name_in_comment_is_preserved(self):
+        private_name = "Shared 3x-ui"
+        commented = COMPAT_OFFICE.replace(
+            "# shared comment\n",
+            "# shared comment\n# %s\n" % private_name,
+            1,
+        )
+        path = _write_source(self.source_root / "Compat-Office.yaml", commented)
+        run_template_sync(self.root, compat_office=path)
+        self.assertIn("# %s\n" % private_name, (self.root / PUBLIC_TEMPLATE_FILES[0]).read_text())
+
 
 class HomeScopeBootstrapTests(unittest.TestCase):
     def setUp(self):
@@ -433,6 +479,40 @@ class TemplateSyncAtomicityTests(unittest.TestCase):
                             run_template_sync(root, compat_office=compat, balance_office=balance)
                     self.assertEqual(str(caught.exception), "template_write_failed")
                     self.assertEqual(_outputs(root), before)
+
+    def test_restore_failure_is_explicit_after_partial_replacement(self):
+        from clash_sub import template_sync
+
+        original_replace = template_sync._os_replace
+        with TemporaryDirectory() as directory:
+            root = _make_repo(directory)
+            _source_dir(directory)
+            compat = Path(directory) / "Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents/Compat-Office.yaml"
+            balance = Path(directory) / "Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents/Balance-Office.yaml"
+            before = _outputs(root)
+            state = {"write_failed": False, "restore_failed": False}
+
+            def fail_write_then_restore(source, target):
+                if not state["write_failed"] and target == root / TEMPLATE_OUTPUT_PATHS[1]:
+                    original_replace(source, target)
+                    state["write_failed"] = True
+                    raise OSError("injected replacement failure")
+                if state["write_failed"] and not state["restore_failed"]:
+                    state["restore_failed"] = True
+                    raise OSError("injected rollback failure")
+                original_replace(source, target)
+
+            with patch.object(
+                template_sync, "_os_replace", side_effect=fail_write_then_restore
+            ):
+                with self.assertRaises(TemplateSyncError) as caught:
+                    run_template_sync(
+                        root, compat_office=compat, balance_office=balance
+                    )
+            self.assertEqual(str(caught.exception), "template_rollback_failed")
+            self.assertIsInstance(caught.exception.__cause__, OSError)
+            self.assertEqual(str(caught.exception.__cause__), "injected replacement failure")
+            self.assertNotEqual(_outputs(root), before)
 
     def test_identical_runs_are_byte_stable(self):
         first = run_template_sync(
