@@ -1,15 +1,11 @@
-"""Promote a private local balanced workbench into tracked and private outputs.
+"""Build tracked Clash templates from synthetic-safe local ClashX inputs.
 
-``clash-sub template-sync`` is a development-machine command: it reads the
-ignored ``private/workbench/balanced.yaml`` and the existing
-``private/home.yaml`` ownership scope, splits the composed workbench back
-into the public template candidates and the private home overlay candidate,
-re-validates every candidate with synthetic probes, and only then atomically
-replaces all three outputs.  The command performs no network access, no
-server actions, no git operations, and no external binary validation.
-
-Every failure raises :class:`TemplateSyncError` with one stable code and
-never echoes workbench content, node names, or credentials.
+The updater is deliberately local and deterministic.  It reads the two
+explicitly named ClashX profiles, removes dynamic and home-owned objects from
+the tracked Compat candidate, stores the complete Balance ``dns`` mapping as
+its own round-trip document, and atomically replaces only the selected output
+files.  All failures use short stable error codes; source values are never
+included in exceptions or reports.
 """
 
 import copy
@@ -18,67 +14,62 @@ import os
 import re
 import stat
 import tempfile
+from collections import Counter
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
-import yaml
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from clash_sub.checks import CheckError, validate_clash
-from clash_sub.domain import AirportProvider, HomeOverlay
-from clash_sub.generator import render_user_bundle
+from clash_sub.domain import HomeOverlay
 from clash_sub.sources import (
     HomeSourceError,
     dump_home_overlay,
     load_home_overlay,
     parse_home_overlay,
 )
+from clash_sub.yaml_rt import (
+    RoundTripYamlError,
+    clone_round_trip,
+    copy_key_comments,
+    dump_round_trip,
+    load_round_trip,
+    plain_data,
+)
 
 
-WORKBENCH_RELATIVE_PATH = ("private", "workbench", "balanced.yaml")
-HOME_SCOPE_RELATIVE_PATH = "private/home.yaml"
-MAX_WORKBENCH_BYTES = 5 * 1024 * 1024
+ICLOUD_RELATIVE_ROOT = Path(
+    "Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents"
+)
+COMPAT_SOURCE_NAME = "Compat-Office.yaml"
+BALANCE_SOURCE_NAME = "Balance-Office.yaml"
 
+PUBLIC_TEMPLATE_FILES = (
+    "templates/base/compat-office.yaml",
+    "templates/dns/balance-office.yaml",
+    "templates/profiles.yaml",
+)
+HOME_SCOPE_PATH = "private/home.yaml"
+TEMPLATE_OUTPUT_PATHS = PUBLIC_TEMPLATE_FILES + (HOME_SCOPE_PATH,)
 OUTPUT_MODES = {
-    "templates/clash.yaml": 0o644,
-    "templates/variants/manifest.yaml": 0o644,
+    "templates/base/compat-office.yaml": 0o644,
+    "templates/dns/balance-office.yaml": 0o644,
+    "templates/profiles.yaml": 0o644,
     "private/home.yaml": 0o600,
 }
-TEMPLATE_OUTPUT_PATHS = tuple(OUTPUT_MODES)
-# The tracked, world-readable template outputs; the private home overlay is
-# the remaining output and is always written 0600.
-_PUBLIC_TEMPLATE_OUTPUTS = TEMPLATE_OUTPUT_PATHS[:2]
+MAX_SOURCE_BYTES = 5 * 1024 * 1024
 
-# Proxy fields whose values are protocol structure, not secrets: they may
-# legitimately appear in rendered output (e.g. the synthetic probe nodes)
-# and are therefore exempt from the forbidden-value set.  Everything else
-# under a proxy -- including every nested protocol option such as
-# plugin-opts, ws-opts headers, sni, or reality-opts -- is treated as
-# private, so no field-name allowlist has to be maintained.
-_STRUCTURAL_PROXY_KEYS = {
-    "name",
-    "type",
-    "network",
-    "cipher",
-    "flow",
-    "plugin",
-    "client-fingerprint",
-    "skip-cert-verify",
-    "alpn",
-    "interval",
-    "enabled",
-    "port",
-    "tls",
-    "udp",
-}
-
-# Synthetic probes used only to exercise candidate composition; none of
-# these values may ever collide with workbench content.
-_PROBE_PREFIX = "template-sync-probe-"
 _PROBE_PROVIDER_URL = "https://template-sync.invalid/s/probe/AmyTelecom.yaml"
 _PROBE_PROVIDER_DIGEST = "5" * 64
-_PROBE_REALITY = {
+_PROBE_NAME = "template-sync-probe-3xui"
+_PROBE_PROXY = {
+    "name": _PROBE_NAME,
     "type": "vless",
+    "server": "192.0.2.10",
     "port": 443,
+    "uuid": "55555555-5555-4555-8555-555555555555",
     "network": "tcp",
     "tls": True,
     "flow": "xtls-rprx-vision",
@@ -89,7 +80,14 @@ _PROBE_REALITY = {
         "short-id": "5555555555555555",
     },
 }
+_PROBE_PROVIDER = {
+    "type": "http",
+    "url": _PROBE_PROVIDER_URL,
+    "interval": 0,
+    "path": "./proxy_providers/AmyTelecom-%s.yaml" % _PROBE_PROVIDER_DIGEST,
+}
 
+_PROVIDER_NAME = "AmyTelecom"
 _PRIVATE_FIELD_KEYS = {
     "server",
     "uuid",
@@ -103,6 +101,7 @@ _PRIVATE_FIELD_KEYS = {
     "servername",
     "username",
     "authentication",
+    "authorization",
 }
 _CREDENTIAL_QUERY_KEYS = {
     "apikey",
@@ -118,390 +117,986 @@ _CREDENTIAL_QUERY_KEYS = {
     "token",
 }
 _MIN_FORBIDDEN_CHARS = 4
-
-# Clash rule options that may trail the policy target of a rule line.
 _RULE_OPTION_TOKENS = frozenset(("no-resolve", "src"))
+_HOME_RULE_POLICIES = frozenset(
+    ("DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL")
+)
+_PROXY_STRUCTURAL_KEYS = {
+    "name",
+    "type",
+    "network",
+    "cipher",
+    "flow",
+    "plugin",
+    "client-fingerprint",
+    "skip-cert-verify",
+    "alpn",
+    "interval",
+    "enabled",
+    "port",
+    "tls",
+    "udp",
+}
+_HOME_KEYS = (
+    "proxies",
+    "proxy-groups",
+    "extend-proxy-groups",
+    "inject-node-groups",
+    "inject-home-node-groups",
+    "rules",
+)
 
 
 class TemplateSyncError(RuntimeError):
+    """A redacted, stable template-sync failure."""
+
     def __init__(self, code):
         self.code = code
         super().__init__(code)
+
+
+@dataclass(frozen=True)
+class TemplateSyncReport:
+    changed: tuple[str, ...]
+    lines: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _SplitResult:
+    public: Mapping
+    home: HomeOverlay | None
+    inject_node_groups: tuple[str, ...]
+    dynamic_names: frozenset[str]
 
 
 def _os_replace(source, target):
     os.replace(source, target)
 
 
-def run_template_sync(repo_root):
-    """Synchronize the workbench into the outputs; return changed paths."""
+def default_source_paths(home: Path | None = None) -> tuple[Path, Path]:
+    """Return the fixed ClashX Compat and Balance source paths."""
+    home_root = Path.home() if home is None else Path(home)
+    source_root = home_root / ICLOUD_RELATIVE_ROOT
+    return source_root / COMPAT_SOURCE_NAME, source_root / BALANCE_SOURCE_NAME
+
+
+def run_template_sync(
+    repo_root: Path,
+    compat_office: Path | None = None,
+    balance_office: Path | None = None,
+) -> TemplateSyncReport:
+    """Synchronize the explicitly selected Compat and/or Balance source.
+
+    With no source arguments both default ClashX files are read.  Supplying
+    one argument selects exactly that source and leaves the other outputs
+    untouched.
+    """
     root = Path(repo_root)
-    workbench = _load_workbench(root)
-    home_scope = _load_home_scope(root)
-    scanner = _load_scanner(root)
-    candidate_public, candidate_manifest, candidate_home = _split_workbench(
-        root, workbench, home_scope
+    if compat_office is None and balance_office is None:
+        compat_office, balance_office = default_source_paths()
+
+    compat_selected = compat_office is not None
+    balance_selected = balance_office is not None
+    scope = _load_home_scope(root)
+
+    compat_source = None
+    balance_source = None
+    split = None
+    if compat_selected:
+        compat_source = _load_source(Path(compat_office))
+        split = _split_source(compat_source, scope)
+        compat_candidate = split.public
+        home_candidate = split.home
+        profiles_candidate = _build_profiles(split.inject_node_groups)
+    else:
+        compat_candidate = _load_current_candidate(root, PUBLIC_TEMPLATE_FILES[0])
+        home_candidate = scope
+        profiles_candidate = _load_current_candidate(root, PUBLIC_TEMPLATE_FILES[2])
+        _validate_profiles_document(profiles_candidate)
+
+    balance_candidate = None
+    if balance_selected:
+        balance_source = _load_source(Path(balance_office))
+        balance_candidate = _extract_balance_dns(
+            balance_source, compat_candidate, scope
+        )
+
+    candidates = {}
+    if compat_selected:
+        candidates[PUBLIC_TEMPLATE_FILES[0]] = compat_candidate
+        candidates[PUBLIC_TEMPLATE_FILES[2]] = profiles_candidate
+        candidates[HOME_SCOPE_PATH] = dump_home_overlay(home_candidate)
+    if balance_selected:
+        candidates[PUBLIC_TEMPLATE_FILES[1]] = balance_candidate
+
+    forbidden_names, forbidden_values = _forbidden_values(
+        (source for source in (compat_source, balance_source) if source is not None),
+        scope,
     )
-    forbidden_names, forbidden_values = _forbidden_values(workbench)
-    home_names, home_values = _forbidden_home_values(candidate_home)
-    forbidden_names |= home_names
-    forbidden_values |= home_values
+    _validate_candidates(
+        root,
+        compat_candidate,
+        profiles_candidate,
+        balance_candidate,
+        home_candidate,
+        forbidden_names,
+        forbidden_values,
+    )
 
-    with tempfile.TemporaryDirectory(prefix="clash-sub-template-sync.") as scratch:
-        candidate_root = Path(scratch)
-        _materialize_candidates(
-            candidate_root, candidate_public, candidate_manifest, candidate_home, root
-        )
-        _validate_candidates(
-            candidate_root, forbidden_names, forbidden_values, scanner
-        )
-
-    payloads = _candidate_bytes(candidate_public, candidate_manifest, candidate_home)
+    payloads = _serialize_candidates(candidates)
+    selected = tuple(relative for relative in TEMPLATE_OUTPUT_PATHS if relative in payloads)
+    previous = _snapshot_targets(root, selected)
+    report = _build_report(
+        root,
+        payloads,
+        previous,
+        compat_selected,
+        balance_selected,
+        compat_candidate,
+        home_candidate,
+        scope,
+    )
     _atomic_replace_outputs(root, payloads)
-    return {"changed": TEMPLATE_OUTPUT_PATHS}
+    return report
 
 
-def _load_scanner(root):
-    path = root / "scripts" / "scan_tracked_secrets.py"
+def initialize_home_scope(
+    repo_root: Path, compat_office: Path, compat_universal: Path
+) -> Path:
+    """Derive and atomically write the initial private home scope."""
+    office = _load_source(Path(compat_office))
+    universal = _load_source(Path(compat_universal))
+    home = _derive_home_from_pair(office, universal)
     try:
-        spec = importlib.util.spec_from_file_location(
-            "clash_sub._template_sync_scanner", path
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    except Exception:
+        payload = dump_home_overlay(home)
+    except HomeSourceError:
         raise TemplateSyncError("template_candidate_invalid") from None
-    return module
-
-
-def _load_workbench(root):
-    path = root.joinpath(*WORKBENCH_RELATIVE_PATH)
-    try:
-        details = path.lstat()
-        if (
-            not stat.S_ISREG(details.st_mode)
-            or stat.S_ISLNK(details.st_mode)
-            or stat.S_IMODE(details.st_mode) != 0o600
-            or details.st_uid != (0 if os.geteuid() == 0 else os.geteuid())
-            or details.st_nlink != 1
-        ):
-            raise OSError
-        payload = path.read_bytes()
-    except OSError:
-        raise TemplateSyncError("template_source_invalid") from None
-    if len(payload) > MAX_WORKBENCH_BYTES:
-        raise TemplateSyncError("template_source_invalid")
-    try:
-        text = payload.decode("utf-8")
-        document = yaml.safe_load(text)
-    except (UnicodeError, yaml.YAMLError):
-        raise TemplateSyncError("template_source_invalid") from None
-    if not isinstance(document, dict):
-        raise TemplateSyncError("template_source_invalid")
-    if any(str(key).startswith("_") for key in document):
-        raise TemplateSyncError("template_source_invalid")
-    try:
-        validate_clash(text, (), allowed_provider_url=_workbench_provider_url(document))
-    except CheckError:
-        raise TemplateSyncError("template_source_invalid") from None
-    return document
+    root = Path(repo_root)
+    _atomic_replace_outputs(root, {HOME_SCOPE_PATH: payload})
+    return root / HOME_SCOPE_PATH
 
 
 def _load_home_scope(root):
-    """Load the ownership scope; it is also the private output target."""
     try:
-        return load_home_overlay(root / HOME_SCOPE_RELATIVE_PATH, MAX_WORKBENCH_BYTES)
+        return load_home_overlay(root / HOME_SCOPE_PATH, MAX_SOURCE_BYTES)
     except HomeSourceError as error:
         raise TemplateSyncError(error.code) from None
 
 
-def _workbench_provider_url(document):
-    """Authorize the workbench's own airport provider mapping, if present.
+def _read_regular(path, *, require_mode=None, error_code="template_source_invalid"):
+    try:
+        details = Path(path).lstat()
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or stat.S_ISLNK(details.st_mode)
+            or details.st_nlink != 1
+            or (require_mode is not None and stat.S_IMODE(details.st_mode) != require_mode)
+        ):
+            raise OSError
+        with Path(path).open("rb") as handle:
+            payload = handle.read(MAX_SOURCE_BYTES + 1)
+    except OSError:
+        raise TemplateSyncError(error_code) from None
+    if len(payload) > MAX_SOURCE_BYTES:
+        raise TemplateSyncError(error_code)
+    return payload
 
-    A workbench rendered from the current generator carries exactly the
-    synthetic AmyTelecom provider; any other provider shape stays rejected.
-    """
+
+def _load_source(path):
+    payload = _read_regular(path)
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeError:
+        raise TemplateSyncError("template_source_invalid") from None
+    if any(marker in text for marker in ("{{", "}}", "{%", "%}")):
+        raise TemplateSyncError("template_source_invalid")
+    try:
+        document = load_round_trip(payload)
+    except RoundTripYamlError:
+        raise TemplateSyncError("template_source_invalid") from None
+    if any(str(key).startswith("_") for key in document):
+        raise TemplateSyncError("template_source_invalid")
+    _validate_source_document(document, text)
+    return document
+
+
+def _validate_source_document(document, text):
     providers = document.get("proxy-providers")
-    if not isinstance(providers, dict) or set(providers) != {"AmyTelecom"}:
+    if providers is None:
+        provider_url = None
+    else:
+        if not isinstance(providers, Mapping) or set(providers) != {_PROVIDER_NAME}:
+            raise TemplateSyncError("template_source_invalid")
+        provider = providers.get(_PROVIDER_NAME)
+        provider_url = provider.get("url") if isinstance(provider, Mapping) else None
+        if not isinstance(provider_url, str) or not provider_url.startswith("https://"):
+            raise TemplateSyncError("template_source_invalid")
+    try:
+        validate_clash(text, (), allowed_provider_url=provider_url)
+    except CheckError:
+        raise TemplateSyncError("template_source_invalid") from None
+
+
+def _load_current_candidate(root, relative):
+    payload = _read_regular(
+        root / relative, error_code="template_candidate_invalid"
+    )
+    try:
+        text = payload.decode("utf-8")
+        if any(marker in text for marker in ("{{", "}}", "{%", "%}")):
+            raise ValueError
+        document = load_round_trip(payload)
+    except (UnicodeError, RoundTripYamlError, ValueError):
+        raise TemplateSyncError("template_candidate_invalid") from None
+    if any(str(key).startswith("_") for key in document):
+        raise TemplateSyncError("template_candidate_invalid")
+    return document
+
+
+def _provider_url(document):
+    providers = document.get("proxy-providers")
+    if providers is None:
         return None
-    url = providers["AmyTelecom"].get("url") if isinstance(providers["AmyTelecom"], dict) else None
+    if not isinstance(providers, Mapping) or set(providers) != {_PROVIDER_NAME}:
+        raise TemplateSyncError("template_source_invalid")
+    provider = providers.get(_PROVIDER_NAME)
+    url = provider.get("url") if isinstance(provider, Mapping) else None
     if not isinstance(url, str) or not url.startswith("https://"):
-        return None
+        raise TemplateSyncError("template_source_invalid")
     return url
 
 
-def _split_workbench(root, workbench, home_scope):
-    """Split one composed workbench into public, manifest, and home candidates.
-
-    The scope's declared group names own the workbench's home groups; every
-    undeclared group stays public.  The split is deterministic: home proxies
-    are collected only from ``inject-home-node-groups`` members, copied home
-    groups lose their runtime-injected members and provider ``use``, public
-    groups lose home group members (recorded as extensions) and dynamic
-    inline members, and rules follow their parsed policy target.
-    """
-    candidate = copy.deepcopy(workbench)
-    inline_names = [proxy["name"] for proxy in candidate["proxies"]]
-    inline = set(inline_names)
-    groups = candidate["proxy-groups"]
-
-    declared_order = [
-        group.get("name")
-        for group in home_scope.proxy_groups
-        if isinstance(group, dict)
-    ]
-    declared = set(declared_order)
-    counts = {}
-    for group in groups:
-        if isinstance(group, dict):
-            name = group.get("name")
-            counts[name] = counts.get(name, 0) + 1
-    for name in declared_order:
-        if counts.get(name, 0) != 1:
-            # A declared home group that is missing (or was duplicated
-            # before validation tightened) may never be silently dropped.
+def _source_names(document, key):
+    entries = document.get(key)
+    if not isinstance(entries, list):
+        raise TemplateSyncError("template_source_invalid")
+    names = []
+    for entry in entries:
+        name = entry.get("name") if isinstance(entry, Mapping) else None
+        if not isinstance(name, str) or not name.strip():
             raise TemplateSyncError("template_source_invalid")
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise TemplateSyncError("template_source_invalid")
+    return tuple(names)
 
-    home_injected = set(home_scope.inject_home_node_groups)
-    home_member_names = set()
-    for group in groups:
-        if (
-            isinstance(group, dict)
-            and group.get("name") in home_injected
-            and isinstance(group.get("proxies"), list)
-        ):
-            for member in group["proxies"]:
-                if isinstance(member, str) and member in inline:
-                    home_member_names.add(member)
-    home_proxies = [
-        copy.deepcopy(proxy)
-        for proxy in candidate["proxies"]
-        if proxy["name"] in home_member_names
-    ]
-    home_inline = {proxy["name"] for proxy in home_proxies}
 
-    all_injected = set(home_scope.inject_node_groups)
-    private_groups = []
-    public_groups = []
-    node_injected_names = []
-    extensions = {}
-    for group in groups:
-        if not isinstance(group, dict):
+def _split_source(
+    source,
+    scope,
+    *,
+    allow_missing_home=False,
+    build_home=True,
+):
+    """Split one full profile into a sanitized public candidate and home."""
+    source_proxy_names = _source_names(source, "proxies")
+    source_group_names = _source_names(source, "proxy-groups")
+    home_proxy_names = {
+        item["name"] for item in scope.proxies if isinstance(item, Mapping)
+    }
+    home_group_names = {
+        item["name"] for item in scope.proxy_groups if isinstance(item, Mapping)
+    }
+    if not allow_missing_home:
+        if not home_proxy_names.issubset(source_proxy_names):
+            raise TemplateSyncError("template_source_invalid")
+        if not home_group_names.issubset(source_group_names):
+            raise TemplateSyncError("template_source_invalid")
+    dynamic_names = frozenset(set(source_proxy_names) - home_proxy_names)
+    all_inline = set(source_proxy_names)
+    home_inline = set(source_proxy_names) & home_proxy_names
+    all_injected = set(scope.inject_node_groups)
+    home_injected = set(scope.inject_home_node_groups)
+
+    groups = source["proxy-groups"]
+    private_group_values = []
+    private_group_indices = []
+    public_group_values = []
+    public_group_indices = []
+    inject_node_groups = []
+    extensions = CommentedMap()
+    for index, group in enumerate(groups):
+        if not isinstance(group, Mapping):
             raise TemplateSyncError("template_source_invalid")
         name = group.get("name")
-        if name in declared:
-            private_groups.append(
-                _stripped_home_group(
-                    group, name, all_injected, home_injected, inline, home_inline
-                )
-            )
+        if name in home_group_names:
+            private = _strip_private_group(group, name, all_injected, home_injected, all_inline, home_inline)
+            private_group_indices.append(index)
+            private_group_values.append(private)
             continue
-        public_groups.append(
-            _split_public_group(group, name, inline, declared, node_injected_names, extensions)
-        )
-    private_rules = []
-    public_rules = []
-    for rule in candidate["rules"]:
-        if _rule_targets_home_group(rule, declared):
-            private_rules.append(rule)
-        else:
-            public_rules.append(rule)
-    candidate["rules"] = public_rules
-    candidate["proxies"] = []
-    # The provider mapping and the injected provider use lists are composed
-    # at render time; the shared templates must stay free of both.
-    candidate.pop("proxy-providers", None)
-    candidate["proxy-groups"] = public_groups
+        public = clone_round_trip(group)
+        _drop_provider_use(public)
+        members = group.get("proxies")
+        if isinstance(members, list):
+            kept_indices = []
+            extension_indices = []
+            if any(isinstance(member, str) and member in dynamic_names for member in members):
+                inject_node_groups.append(name)
+            for member_index, member in enumerate(members):
+                if isinstance(member, str) and member in home_group_names:
+                    extension_indices.append(member_index)
+                elif isinstance(member, str) and member in home_proxy_names:
+                    # HomeOverlay can restore private groups through an
+                    # extension, but it cannot restore a home node embedded
+                    # directly in a public group.  Reject rather than lose it.
+                    raise TemplateSyncError("template_source_invalid")
+                elif isinstance(member, str) and member in all_inline:
+                    continue
+                else:
+                    kept_indices.append(member_index)
+            public["proxies"] = _select_sequence(members, kept_indices)
+            if extension_indices:
+                extensions[name] = _select_sequence(members, extension_indices)
+        public_group_indices.append(index)
+        public_group_values.append(public)
 
-    manifest_path = root / "templates" / "variants" / "manifest.yaml"
-    try:
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError, UnicodeError):
-        raise TemplateSyncError("template_candidate_invalid") from None
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("variants"), dict):
-        raise TemplateSyncError("template_candidate_invalid")
-    new_manifest = {
-        "variants": manifest["variants"],
-        "inject-node-groups": node_injected_names,
-    }
-    home = HomeOverlay(
-        proxies=tuple(home_proxies),
-        proxy_groups=tuple(private_groups),
-        extend_proxy_groups=extensions,
-        inject_node_groups=tuple(home_scope.inject_node_groups),
-        inject_home_node_groups=tuple(home_scope.inject_home_node_groups),
-        rules=tuple(private_rules),
+    public = clone_round_trip(source)
+    public["proxies"] = CommentedSeq()
+    public["proxy-groups"] = _sequence_with_values(
+        groups, public_group_indices, public_group_values
     )
-    return candidate, new_manifest, home
+    public_rules = source.get("rules")
+    if not isinstance(public_rules, list):
+        raise TemplateSyncError("template_source_invalid")
+    private_rule_indices = [
+        index
+        for index, rule in enumerate(public_rules)
+        if _rule_targets_private(rule, home_group_names | home_proxy_names)
+    ]
+    private_rule_index_set = set(private_rule_indices)
+    public_rule_indices = [
+        index for index in range(len(public_rules)) if index not in private_rule_index_set
+    ]
+    public["rules"] = _select_sequence(public_rules, public_rule_indices)
+    if "proxy-providers" in public:
+        del public["proxy-providers"]
+
+    home = None
+    if build_home:
+        home_proxy_indices = [
+            index
+            for index, proxy in enumerate(source["proxies"])
+            if isinstance(proxy, Mapping) and proxy.get("name") in home_proxy_names
+        ]
+        home_document = _build_home_document(
+            source,
+            scope,
+            home_proxy_indices,
+            private_group_indices,
+            private_group_values,
+            extensions,
+            private_rule_indices,
+        )
+        try:
+            home = parse_home_overlay(
+                dump_round_trip(home_document).encode("utf-8"), MAX_SOURCE_BYTES
+            )
+        except (HomeSourceError, RoundTripYamlError):
+            raise TemplateSyncError("template_candidate_invalid") from None
+
+    return _SplitResult(
+        public=public,
+        home=home,
+        inject_node_groups=tuple(inject_node_groups),
+        dynamic_names=dynamic_names,
+    )
 
 
-def _stripped_home_group(group, name, all_injected, home_injected, inline, home_inline):
-    """Copy one home group without its runtime-injected members and use."""
-    copied = _without_provider_use(group)
-    members = copied.get("proxies")
+def _strip_private_group(group, name, all_injected, home_injected, all_inline, home_inline):
+    copied = clone_round_trip(group)
+    _drop_provider_use(copied)
+    members = group.get("proxies")
     if not isinstance(members, list):
         return copied
     if name in all_injected:
-        injected = inline
+        injected = all_inline
     elif name in home_injected:
         injected = home_inline
     else:
-        # A declared home group outside both injection lists receives no
-        # runtime members at all, so none of its members are stripped.
         injected = set()
-    stripped = [
-        member
-        for member in members
-        if not (isinstance(member, str) and member in injected)
-    ]
-    return dict(copied, proxies=stripped)
-
-
-def _split_public_group(group, name, inline, declared, node_injected_names, extensions):
-    """Copy one public group, recording home extensions and node injection."""
-    copied = _without_provider_use(group)
-    proxies = copied.get("proxies")
-    if not isinstance(proxies, list):
-        return copied
-    if any(isinstance(member, str) and member in inline for member in proxies):
-        node_injected_names.append(name)
-    kept = []
-    removed_home = []
-    for member in proxies:
-        if isinstance(member, str) and member in declared:
-            removed_home.append(member)
-        else:
-            kept.append(member)
-    if removed_home:
-        extensions[name] = removed_home
-    stripped = [member for member in kept if not (isinstance(member, str) and member in inline)]
-    if stripped != proxies:
-        copied = dict(copied, proxies=stripped)
+    copied["proxies"] = _select_sequence(
+        members,
+        [
+            index
+            for index, member in enumerate(members)
+            if not (isinstance(member, str) and member in injected)
+        ],
+    )
     return copied
 
 
-def _without_provider_use(group):
-    """Drop the render-time provider use list from one split group copy."""
-    if "use" not in group:
-        return group
-    stripped = dict(group)
-    stripped.pop("use")
-    return stripped
+def _drop_provider_use(group):
+    if "use" in group:
+        del group["use"]
 
 
-def _rule_targets_home_group(rule, home_group_names):
+def _build_home_document(
+    source,
+    scope,
+    home_proxy_indices,
+    private_group_indices,
+    private_group_values,
+    extensions,
+    private_rule_indices,
+):
+    document = CommentedMap()
+    if getattr(source, "ca", None) is not None:
+        document.ca.comment = copy.deepcopy(source.ca.comment)
+    proxies = _select_sequence(source["proxies"], home_proxy_indices)
+    groups = _sequence_with_values(
+        source["proxy-groups"], private_group_indices, private_group_values
+    )
+    rules = _select_sequence(source["rules"], private_rule_indices)
+    document["proxies"] = proxies
+    document["proxy-groups"] = groups
+    document["extend-proxy-groups"] = extensions
+    document["inject-node-groups"] = _copy_scope_sequence(
+        scope, "inject-node-groups"
+    )
+    document["inject-home-node-groups"] = _copy_scope_sequence(
+        scope, "inject-home-node-groups"
+    )
+    document["rules"] = rules
+    for key in ("proxies", "proxy-groups", "rules"):
+        if key in source:
+            copy_key_comments(source, key, document, key)
+    for key in (
+        "extend-proxy-groups",
+        "inject-node-groups",
+        "inject-home-node-groups",
+    ):
+        scope_document = getattr(scope, "document", None)
+        if isinstance(scope_document, Mapping) and key in scope_document:
+            copy_key_comments(scope_document, key, document, key)
+    return document
+
+
+def _copy_scope_sequence(scope, key):
+    scope_document = getattr(scope, "document", None)
+    if isinstance(scope_document, Mapping) and isinstance(scope_document.get(key), list):
+        return clone_round_trip(scope_document[key])
+    return CommentedSeq(list(getattr(scope, "inject_node_groups" if key == "inject-node-groups" else "inject_home_node_groups")))
+
+
+def _select_sequence(source, indices):
+    values = [source[index] for index in indices]
+    return _sequence_with_values(source, indices, values)
+
+
+def _sequence_with_values(source, indices, values):
+    result = CommentedSeq()
+    if getattr(source, "ca", None) is not None and indices and indices[0] == 0:
+        result.ca.comment = copy.deepcopy(source.ca.comment)
+        result.ca.end = copy.deepcopy(source.ca.end)
+    for new_index, (old_index, value) in enumerate(zip(indices, values)):
+        result.append(clone_round_trip(value))
+        source_comments = getattr(getattr(source, "ca", None), "items", {})
+        comments = source_comments.get(old_index)
+        if comments is not None:
+            result.ca.items[new_index] = copy.deepcopy(comments)
+    return result
+
+
+def _rule_targets_private(rule, private_names):
     if not isinstance(rule, str):
         return False
-    parts = rule.strip().split(",")
-    if not parts:
+    parts = [part.strip() for part in rule.strip().split(",")]
+    if len(parts) < 2:
         return False
     target = parts[-1]
     if target in _RULE_OPTION_TOKENS and len(parts) >= 3:
         target = parts[-2]
-    return target in home_group_names
+    return target in private_names
 
 
-def _materialize_candidates(candidate_root, candidate_public, candidate_manifest, candidate_home, root):
-    templates = candidate_root / "templates"
-    (templates / "variants").mkdir(parents=True)
-    _write_yaml(templates / "clash.yaml", candidate_public)
-    _write_yaml(templates / "variants" / "manifest.yaml", candidate_manifest)
-    (candidate_root / "private").mkdir()
-    (candidate_root / "private" / "home.yaml").write_bytes(dump_home_overlay(candidate_home))
-    try:
-        source = root / "templates" / "variants" / "privacy-dns.yaml"
-        (templates / "variants" / "privacy-dns.yaml").write_bytes(source.read_bytes())
-    except OSError:
-        raise TemplateSyncError("template_candidate_invalid") from None
+def _rule_targets_home_group(rule, home_group_names):
+    return _rule_targets_private(rule, home_group_names)
 
 
-def _write_yaml(path, document):
-    try:
-        path.write_text(
-            yaml.safe_dump(document, allow_unicode=True, sort_keys=False, default_flow_style=False),
-            encoding="utf-8",
-        )
-    except (OSError, yaml.YAMLError):
-        raise TemplateSyncError("template_candidate_invalid") from None
-
-
-def _probe_proxy():
-    probe = dict(_PROBE_REALITY)
-    probe.update(
-        {
-            "name": _PROBE_PREFIX + "3xui",
-            "server": "192.0.2.10",
-            "uuid": "55555555-5555-4555-8555-555555555555",
-        }
+def _build_profiles(inject_node_groups):
+    profiles = CommentedMap()
+    profiles["compat-office"] = CommentedMap({"dns": "compat", "home": True})
+    profiles["compat-universal"] = CommentedMap({"dns": "compat", "home": False})
+    profiles["balance-office"] = CommentedMap(
+        {"dns": "balance-office", "home": True}
     )
-    return probe
+    document = CommentedMap()
+    document["profiles"] = profiles
+    document["inject-node-groups"] = CommentedSeq(list(inject_node_groups))
+    return document
 
 
-def _validate_candidates(candidate_root, forbidden_names, forbidden_values, scanner):
-    xui = _probe_proxy()
-    provider = AirportProvider(_PROBE_PROVIDER_URL, _PROBE_PROVIDER_DIGEST)
+def _extract_balance_dns(balance_source, compat_candidate, scope):
+    if "dns" not in balance_source or not isinstance(balance_source["dns"], Mapping):
+        raise TemplateSyncError("template_candidate_invalid")
+    balance_split = _split_source(balance_source, scope)
+    if _without_key(plain_data(balance_split.public), "dns") != _without_key(
+        plain_data(compat_candidate), "dns"
+    ):
+        raise TemplateSyncError("balance_profile_mismatch")
+    result = CommentedMap()
+    if getattr(balance_source, "ca", None) is not None:
+        result.ca.comment = copy.deepcopy(balance_source.ca.comment)
+    result["dns"] = clone_round_trip(balance_source["dns"])
+    copy_key_comments(balance_source, "dns", result, "dns")
+    return result
+
+
+def _without_key(document, key):
+    copied = dict(document)
+    copied.pop(key, None)
+    return copied
+
+
+def _derive_home_from_pair(office, universal):
+    office_proxy_names = set(_source_names(office, "proxies"))
+    universal_proxy_names = set(_source_names(universal, "proxies"))
+    office_group_names = set(_source_names(office, "proxy-groups"))
+    universal_group_names = set(_source_names(universal, "proxy-groups"))
+    if not universal_proxy_names.issubset(office_proxy_names):
+        raise TemplateSyncError("template_source_invalid")
+    if not universal_group_names.issubset(office_group_names):
+        raise TemplateSyncError("template_source_invalid")
+    home_proxy_names = office_proxy_names - universal_proxy_names
+    home_group_names = office_group_names - universal_group_names
+    if not home_proxy_names or not home_group_names:
+        raise TemplateSyncError("template_source_invalid")
+
+    dynamic_names = office_proxy_names - home_proxy_names
+    private_group_entries = [
+        group
+        for group in office["proxy-groups"]
+        if isinstance(group, Mapping) and group.get("name") in home_group_names
+    ]
+    inject_node = []
+    inject_home = []
+    for group in private_group_entries:
+        members = group.get("proxies")
+        if not isinstance(members, list):
+            continue
+        member_names = {member for member in members if isinstance(member, str)}
+        if member_names & dynamic_names:
+            inject_node.append(group["name"])
+        elif member_names & home_proxy_names:
+            inject_home.append(group["name"])
+
+    extensions = {}
+    for group in office["proxy-groups"]:
+        if not isinstance(group, Mapping) or group.get("name") in home_group_names:
+            continue
+        members = group.get("proxies")
+        if isinstance(members, list):
+            removed = [member for member in members if member in home_group_names]
+            if removed:
+                extensions[group["name"]] = removed
+
+    private_rule_indices, _universal_rule_indices = _pair_rule_indices(
+        office.get("rules"), universal.get("rules")
+    )
+    scope = HomeOverlay(
+        proxies=tuple(
+            clone_round_trip(proxy)
+            for proxy in office["proxies"]
+            if isinstance(proxy, Mapping) and proxy.get("name") in home_proxy_names
+        ),
+        proxy_groups=tuple(clone_round_trip(group) for group in private_group_entries),
+        extend_proxy_groups=extensions,
+        inject_node_groups=tuple(inject_node),
+        inject_home_node_groups=tuple(inject_home),
+        rules=tuple(
+            office["rules"][index]
+            for index in private_rule_indices
+            if isinstance(office.get("rules"), list)
+        ),
+    )
+    _validate_derived_universal(office, universal, scope)
+    split = _split_source(office, scope)
+    if split.home is None:
+        raise TemplateSyncError("template_candidate_invalid")
+    return split.home
+
+
+def _pair_rule_indices(office_rules, universal_rules):
+    if not isinstance(office_rules, list) or not isinstance(universal_rules, list):
+        raise TemplateSyncError("template_source_invalid")
+    used = set()
+    universal_indices = []
+    cursor = 0
+    for universal_rule in universal_rules:
+        found = None
+        for index in range(cursor, len(office_rules)):
+            if office_rules[index] == universal_rule:
+                found = index
+                break
+        if found is None:
+            raise TemplateSyncError("template_source_invalid")
+        universal_indices.append(found)
+        used.add(found)
+        cursor = found + 1
+    private_indices = [index for index in range(len(office_rules)) if index not in used]
+    return private_indices, universal_indices
+
+
+def _validate_derived_universal(office, universal, scope):
+    office_proxy_names = set(_source_names(office, "proxies"))
+    universal_proxy_names = set(_source_names(universal, "proxies"))
+    home_proxy_names = {
+        proxy["name"] for proxy in scope.proxies if isinstance(proxy, Mapping)
+    }
+    home_group_names = {
+        group["name"] for group in scope.proxy_groups if isinstance(group, Mapping)
+    }
+    if office_proxy_names & home_proxy_names != home_proxy_names:
+        raise TemplateSyncError("template_source_invalid")
+    if universal_proxy_names & home_proxy_names:
+        raise TemplateSyncError("template_source_invalid")
+    universal_groups = universal.get("proxy-groups")
+    if not isinstance(universal_groups, list):
+        raise TemplateSyncError("template_source_invalid")
+    for group in universal_groups:
+        if not isinstance(group, Mapping):
+            raise TemplateSyncError("template_source_invalid")
+        if group.get("name") in home_group_names:
+            raise TemplateSyncError("template_source_invalid")
+        members = group.get("proxies")
+        if isinstance(members, list) and any(
+            isinstance(member, str) and member in (home_proxy_names | home_group_names)
+            for member in members
+        ):
+            raise TemplateSyncError("template_source_invalid")
+    universal_rules = universal.get("rules")
+    if isinstance(universal_rules, list) and any(
+        _rule_targets_private(rule, home_proxy_names | home_group_names)
+        for rule in universal_rules
+    ):
+        raise TemplateSyncError("template_source_invalid")
+
+    office_public = _split_source(office, scope).public
+    universal_public = _split_source(
+        universal, scope, allow_missing_home=True, build_home=False
+    ).public
+    if plain_data(office_public) != plain_data(universal_public):
+        raise TemplateSyncError("template_source_invalid")
+
+
+def _validate_profiles_document(document):
+    if not isinstance(document, Mapping) or set(document) != {
+        "profiles",
+        "inject-node-groups",
+    }:
+        raise TemplateSyncError("template_candidate_invalid")
+    profiles = document.get("profiles")
+    if not isinstance(profiles, Mapping) or set(profiles) != {
+        "compat-office",
+        "compat-universal",
+        "balance-office",
+    }:
+        raise TemplateSyncError("template_candidate_invalid")
+    expected = {
+        "compat-office": ("compat", True),
+        "compat-universal": ("compat", False),
+        "balance-office": ("balance-office", True),
+    }
+    for name, (dns, home) in expected.items():
+        recipe = profiles.get(name)
+        if (
+            not isinstance(recipe, Mapping)
+            or set(recipe) != {"dns", "home"}
+            or recipe.get("dns") != dns
+            or type(recipe.get("home")) is not bool
+            or recipe.get("home") is not home
+        ):
+            raise TemplateSyncError("template_candidate_invalid")
+    inject = document.get("inject-node-groups")
+    if not isinstance(inject, list) or any(
+        not isinstance(name, str) or not name.strip() for name in inject
+    ):
+        raise TemplateSyncError("template_candidate_invalid")
+    if len(set(inject)) != len(inject):
+        raise TemplateSyncError("template_candidate_invalid")
+
+
+def _validate_candidates(
+    root,
+    compat_candidate,
+    profiles_candidate,
+    balance_candidate,
+    home_candidate,
+    forbidden_names,
+    forbidden_values,
+):
+    _validate_profiles_document(profiles_candidate)
+    if not isinstance(compat_candidate, Mapping):
+        raise TemplateSyncError("template_candidate_invalid")
+    # A public candidate must never retain source nodes.
+    if not isinstance(compat_candidate.get("proxies"), list) or compat_candidate.get(
+        "proxies"
+    ):
+        raise TemplateSyncError("template_candidate_invalid")
+    if "proxy-providers" in compat_candidate:
+        raise TemplateSyncError("template_candidate_invalid")
+    if not isinstance(home_candidate, HomeOverlay):
+        raise TemplateSyncError("template_candidate_invalid")
+    profile_injections = profiles_candidate["inject-node-groups"]
+    public_group_names = {
+        group.get("name")
+        for group in compat_candidate.get("proxy-groups", [])
+        if isinstance(group, Mapping)
+    }
+    home_group_names = {
+        group.get("name")
+        for group in home_candidate.proxy_groups
+        if isinstance(group, Mapping)
+    }
+    if any(name not in public_group_names for name in profile_injections):
+        raise TemplateSyncError("template_candidate_invalid")
+    if set(profile_injections) & home_group_names:
+        raise TemplateSyncError("template_candidate_invalid")
+
+    scanner = _load_scanner(root)
+    texts = [(PUBLIC_TEMPLATE_FILES[0], _dump_candidate(compat_candidate))]
+    if balance_candidate is not None:
+        if set(balance_candidate) != {"dns"} or not isinstance(
+            balance_candidate.get("dns"), Mapping
+        ):
+            raise TemplateSyncError("template_candidate_invalid")
+        texts.append((PUBLIC_TEMPLATE_FILES[1], _dump_candidate(balance_candidate)))
+    texts.append((PUBLIC_TEMPLATE_FILES[2], _dump_candidate(profiles_candidate)))
+    _scan_for_secrets(texts, forbidden_names, forbidden_values, scanner)
+
     try:
-        home = parse_home_overlay(
-            (candidate_root / "private" / "home.yaml").read_bytes(), MAX_WORKBENCH_BYTES
+        compat_owner = _compose_for_validation(
+            compat_candidate, profiles_candidate, home_candidate, use_home=True, owner=True
         )
-        # All four authorization cases are composed from the candidates with
-        # synthetic node sources; the private overlay candidate proves the
-        # new public templates still accept the real home composition.
-        owner = render_user_bundle(
-            True, [copy.deepcopy(xui)], provider, home, candidate_root / "templates"
+        compat_universal_owner = _compose_for_validation(
+            compat_candidate, profiles_candidate, home_candidate, use_home=False, owner=True
         )
-        member = render_user_bundle(
-            False, [copy.deepcopy(xui)], None, None, candidate_root / "templates"
+        compat_member = _compose_for_validation(
+            compat_candidate, profiles_candidate, home_candidate, use_home=False, owner=False
         )
-    except (ValueError, HomeSourceError, OSError, yaml.YAMLError, UnicodeError):
+        _validate_rendered(compat_owner, _PROBE_PROVIDER_URL)
+        _validate_rendered(compat_universal_owner, _PROBE_PROVIDER_URL)
+        _validate_rendered(compat_member, None)
+        if balance_candidate is not None:
+            balance_full = clone_round_trip(compat_candidate)
+            balance_full["dns"] = clone_round_trip(balance_candidate["dns"])
+            balance_owner = _compose_for_validation(
+                balance_full,
+                profiles_candidate,
+                home_candidate,
+                use_home=True,
+                owner=True,
+            )
+            _validate_rendered(balance_owner, _PROBE_PROVIDER_URL)
+    except Exception:
         raise TemplateSyncError("template_candidate_invalid") from None
 
-    outputs = [owner["balanced"], owner["standard"], owner["privacy"], member["standard"]]
-    for index, text in enumerate(outputs):
-        try:
-            if index < 3:
-                validate_clash(text, (), allowed_provider_url=_PROBE_PROVIDER_URL)
-            else:
-                validate_clash(text, ())
-        except CheckError:
-            raise TemplateSyncError("template_candidate_invalid") from None
 
-    public_candidates = [
-        (relative, (candidate_root / relative).read_text(encoding="utf-8"))
-        for relative in _PUBLIC_TEMPLATE_OUTPUTS
-    ]
-    _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scanner)
+def _compose_for_validation(base, profiles, home, *, use_home, owner):
+    document = clone_round_trip(base)
+    document["proxies"] = CommentedSeq([clone_round_trip(_PROBE_PROXY)])
+    if use_home:
+        document["proxies"].extend(
+            clone_round_trip(proxy) for proxy in home.proxies
+        )
+        groups = document.get("proxy-groups")
+        if not isinstance(groups, list):
+            raise ValueError
+        groups.extend(clone_round_trip(group) for group in home.proxy_groups)
+        by_name = {
+            group.get("name"): group for group in groups if isinstance(group, Mapping)
+        }
+        for group_name, members in home.extend_proxy_groups.items():
+            target = by_name.get(group_name)
+            if not isinstance(target, Mapping) or not isinstance(target.get("proxies"), list):
+                raise ValueError
+            target["proxies"].extend(clone_round_trip(member) for member in members)
+        public_rules = document.get("rules")
+        if not isinstance(public_rules, list):
+            raise ValueError
+        document["rules"] = CommentedSeq(
+            list(clone_round_trip(rule) for rule in home.rules)
+            + list(clone_round_trip(rule) for rule in public_rules)
+        )
+    injections = profiles["inject-node-groups"]
+    for name in injections:
+        target = next(
+            (
+                group
+                for group in document.get("proxy-groups", [])
+                if isinstance(group, Mapping) and group.get("name") == name
+            ),
+            None,
+        )
+        if not isinstance(target, Mapping):
+            raise ValueError
+        members = target.get("proxies")
+        if isinstance(members, list) and _PROBE_NAME not in members:
+            members.append(_PROBE_NAME)
+    if use_home:
+        all_groups = set(home.inject_node_groups)
+        home_groups = set(home.inject_home_node_groups)
+        home_names = [proxy.get("name") for proxy in home.proxies]
+        for group in document.get("proxy-groups", []):
+            name = group.get("name") if isinstance(group, Mapping) else None
+            members = group.get("proxies") if isinstance(group, Mapping) else None
+            if not isinstance(members, list):
+                continue
+            if name in all_groups:
+                for member in [_PROBE_NAME] + home_names:
+                    if member not in members:
+                        members.append(member)
+            elif name in home_groups:
+                for member in home_names:
+                    if member not in members:
+                        members.append(member)
+    if owner:
+        document["proxy-providers"] = CommentedMap({_PROVIDER_NAME: _PROBE_PROVIDER})
+    elif "proxy-providers" in document:
+        del document["proxy-providers"]
+    return _dump_candidate(document)
+
+
+def _validate_rendered(text, provider_url):
+    validate_clash(text, (), allowed_provider_url=provider_url)
+
+
+def _load_scanner(root):
+    path = Path(root) / "scripts" / "scan_tracked_secrets.py"
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "clash_sub._template_sync_scanner", path
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not callable(getattr(module, "find_content_findings", None)):
+            raise ImportError
+        return module
+    except Exception:
+        raise TemplateSyncError("template_candidate_invalid") from None
+
+
+def _forbidden_values(sources, scope):
+    names = set()
+    values = set()
+    home_names = {
+        item.get("name")
+        for item in scope.proxies
+        if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+    }
+    home_group_names = {
+        item.get("name")
+        for item in scope.proxy_groups
+        if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+    }
+    names.update(home_names)
+    names.update(home_group_names)
+    for proxy in scope.proxies:
+        _collect_proxy_sensitive_values(proxy, values)
+    for group in scope.proxy_groups:
+        if isinstance(group, Mapping):
+            for member in group.get("proxies", []) or []:
+                if isinstance(member, str) and member not in {"DIRECT", "REJECT", "GLOBAL"}:
+                    names.add(member)
+    values.update(scope.rules)
+
+    for source in sources:
+        source_proxy_names = set(_source_names(source, "proxies"))
+        names.update(source_proxy_names)
+        for proxy in source.get("proxies", []) or []:
+            _collect_proxy_sensitive_values(proxy, values)
+        for group in source.get("proxy-groups", []) or []:
+            if not isinstance(group, Mapping):
+                continue
+            name = group.get("name")
+            if name in home_group_names:
+                names.add(name)
+                for member in group.get("proxies", []) or []:
+                    if isinstance(member, str) and member not in {"DIRECT", "REJECT", "GLOBAL"}:
+                        names.add(member)
+        providers = source.get("proxy-providers")
+        if isinstance(providers, Mapping):
+            provider = providers.get(_PROVIDER_NAME)
+            _collect_provider_sensitive_values(provider, values)
+        rules = source.get("rules")
+        if isinstance(rules, list):
+            for rule in rules:
+                if _rule_targets_private(rule, home_names | home_group_names):
+                    if isinstance(rule, str):
+                        values.add(rule)
+        _collect_credential_like_values(source, values)
+    return names, values
+
+
+def _collect_proxy_sensitive_values(proxy, values):
+    if not isinstance(proxy, Mapping):
+        return
+    for key, value in proxy.items():
+        if key in _PROXY_STRUCTURAL_KEYS:
+            continue
+        _collect_all_strings(value, values)
+
+
+def _collect_provider_sensitive_values(provider, values):
+    if not isinstance(provider, Mapping):
+        return
+    for key in ("url", "username", "password", "token", "secret"):
+        value = provider.get(key)
+        if isinstance(value, str) and value:
+            values.add(value)
+
+
+def _collect_all_strings(node, values):
+    if isinstance(node, Mapping):
+        for value in node.values():
+            _collect_all_strings(value, values)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            _collect_all_strings(value, values)
+    elif isinstance(node, str) and node:
+        values.add(node)
+
+
+def _collect_credential_like_values(node, values, key=""):
+    if isinstance(node, Mapping):
+        for child_key, child in node.items():
+            _collect_credential_like_values(child, values, str(child_key))
+    elif isinstance(node, (list, tuple)):
+        for child in node:
+            _collect_credential_like_values(child, values, key)
+    elif isinstance(node, str) and node:
+        if (
+            str(key).lower() in _PRIVATE_FIELD_KEYS
+            or _looks_credential_like(key, node)
+            or _url_has_credentials(node)
+        ):
+            values.add(node)
 
 
 def _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scanner):
     for relative, text in public_candidates:
-        if scanner.find_content_findings(text, relative):
+        try:
+            findings = scanner.find_content_findings(text, relative)
+        except Exception:
+            raise TemplateSyncError("template_candidate_invalid") from None
+        if findings:
             raise TemplateSyncError("template_secret_leak")
-
-    # Private field values (server/uuid/password/credential-like) are so
-    # distinctive that any substring occurrence is a leak.  Node names are
-    # deliberately excluded here: a similarly-named static group is legal,
-    # and the real leak channel for names is exact list membership, which
-    # the member check below covers.
-    for _relative, text in public_candidates:
         for value in forbidden_values:
-            if len(value) >= _MIN_FORBIDDEN_CHARS and value in text:
+            if value and value in text:
                 raise TemplateSyncError("template_secret_leak")
-
-    # Scalar-exact layer: a forbidden value appearing as a COMPLETE scalar
-    # anywhere in a candidate document is a leak at any length, so short
-    # credentials (secret: abc) cannot slip under the substring threshold.
-    for _relative, text in public_candidates:
-        document = yaml.safe_load(text)
-        if not isinstance(document, dict):
-            continue
+        for name in forbidden_names:
+            if len(name) >= _MIN_FORBIDDEN_CHARS and name in text:
+                raise TemplateSyncError("template_secret_leak")
+        try:
+            document = load_round_trip(text)
+        except RoundTripYamlError:
+            raise TemplateSyncError("template_candidate_invalid") from None
         scalars = set()
         _collect_string_scalars(document, scalars)
         if scalars & forbidden_values:
             raise TemplateSyncError("template_secret_leak")
-
-        # Exact member check: no dynamic proxy name may survive as a group
-        # member anywhere in the tracked candidates.
         for scalar in scalars:
             if scalar in forbidden_names or (
                 "://" in scalar
@@ -512,86 +1107,23 @@ def _scan_for_secrets(public_candidates, forbidden_names, forbidden_values, scan
             ):
                 raise TemplateSyncError("template_secret_leak")
         for group in document.get("proxy-groups", []) or []:
-            if isinstance(group, dict):
+            if isinstance(group, Mapping):
                 for member in group.get("proxies", []) or []:
                     if member in forbidden_names:
                         raise TemplateSyncError("template_secret_leak")
 
 
 def _collect_string_scalars(node, out):
-    if isinstance(node, dict):
+    if isinstance(node, Mapping):
         for key, value in node.items():
             if isinstance(key, str):
                 out.add(key)
             _collect_string_scalars(value, out)
-    elif isinstance(node, list):
+    elif isinstance(node, (list, tuple)):
         for item in node:
             _collect_string_scalars(item, out)
     elif isinstance(node, str):
         out.add(node)
-
-
-def _forbidden_values(workbench):
-    names = []
-    values = set()
-    for proxy in workbench["proxies"]:
-        for path, value in _iter_scalar_paths(proxy):
-            key = path[-1] if path else ""
-            if path == ("name",):
-                if isinstance(value, str) and value:
-                    names.append(value)
-                continue
-            if len(path) == 1 and key in _STRUCTURAL_PROXY_KEYS:
-                continue
-            if isinstance(value, str) and value:
-                values.add(value)
-    # Credential-like scalars anywhere OUTSIDE proxies (top-level runtime
-    # secrets such as `secret`/`authentication`, or nested auth fields) are
-    # copied verbatim into the public template.  Every one of them is
-    # therefore a forbidden value: the candidate scan rejects the whole sync
-    # instead of promoting them into tracked content.
-    without_proxies = {key: value for key, value in workbench.items() if key != "proxies"}
-    for key, value in _iter_scalars(without_proxies):
-        if isinstance(value, str) and value and (
-            str(key).lower() in _PRIVATE_FIELD_KEYS
-            or _looks_credential_like(key, value)
-            or _url_has_credentials(value)
-        ):
-            values.add(value)
-    return set(names), values
-
-
-def _forbidden_home_values(home):
-    """The candidate's own home names and rules may never surface publicly."""
-    names = {
-        entry["name"]
-        for entries in (home.proxies, home.proxy_groups)
-        for entry in entries
-        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
-    }
-    return names, set(home.rules)
-
-
-def _iter_scalar_paths(node, path=()):
-    if isinstance(node, dict):
-        for child_key, value in node.items():
-            yield from _iter_scalar_paths(value, path + (str(child_key),))
-    elif isinstance(node, list):
-        for item in node:
-            yield from _iter_scalar_paths(item, path)
-    else:
-        yield path, node
-
-
-def _iter_scalars(node, key=""):
-    if isinstance(node, dict):
-        for child_key, value in node.items():
-            yield from _iter_scalars(value, str(child_key))
-    elif isinstance(node, list):
-        for item in node:
-            yield from _iter_scalars(item, key)
-    else:
-        yield key, node
 
 
 def _looks_credential_like(key, value):
@@ -613,17 +1145,21 @@ def _looks_credential_like(key, value):
     )
     if normalized == "auth" or any(fragment in normalized for fragment in fragments):
         return True
-    if len(value) < 16:
+    if not isinstance(value, str) or len(value) < 16:
         return False
     if re.fullmatch(r"[0-9a-fA-F]{32,}", value):
         return True
-    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", value):
+    if re.fullmatch(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        value,
+    ):
         return True
     return False
 
 
 def _url_has_credentials(value):
-    if "://" not in value:
+    if not isinstance(value, str) or "://" not in value:
         return False
     try:
         parsed = urlsplit(value)
@@ -643,39 +1179,141 @@ def _url_has_credentials(value):
     return False
 
 
-def _candidate_bytes(candidate_public, candidate_manifest, candidate_home):
-    return {
-        "templates/clash.yaml": _dump_yaml(candidate_public),
-        "templates/variants/manifest.yaml": _dump_yaml(candidate_manifest),
-        "private/home.yaml": dump_home_overlay(candidate_home),
-    }
+def _serialize_candidates(candidates):
+    payloads = {}
+    for relative, candidate in candidates.items():
+        if isinstance(candidate, bytes):
+            payloads[relative] = candidate
+            continue
+        payloads[relative] = _dump_candidate(candidate).encode("utf-8")
+    return payloads
 
 
-def _dump_yaml(document):
-    return (
-        yaml.safe_dump(document, allow_unicode=True, sort_keys=False, default_flow_style=False)
-    ).encode("utf-8")
+def _dump_candidate(document):
+    try:
+        return dump_round_trip(document)
+    except RoundTripYamlError:
+        raise TemplateSyncError("template_candidate_invalid") from None
+
+
+def _snapshot_one(root, relative):
+    target = Path(root) / relative
+    try:
+        details = target.lstat()
+    except FileNotFoundError:
+        return None, None
+    except OSError:
+        raise TemplateSyncError("template_write_failed") from None
+    if not stat.S_ISREG(details.st_mode) or stat.S_ISLNK(details.st_mode):
+        raise TemplateSyncError("template_write_failed")
+    try:
+        return target.read_bytes(), stat.S_IMODE(details.st_mode)
+    except OSError:
+        raise TemplateSyncError("template_write_failed") from None
+
+
+def _snapshot_targets(root, relatives):
+    return {relative: _snapshot_one(root, relative) for relative in relatives}
+
+
+def _build_report(
+    root,
+    payloads,
+    previous,
+    compat_selected,
+    balance_selected,
+    compat_candidate,
+    home_candidate,
+    old_home,
+):
+    changed = tuple(
+        relative
+        for relative in TEMPLATE_OUTPUT_PATHS
+        if relative in payloads
+        and (
+            previous[relative][0] != payloads[relative]
+            or previous[relative][1] != OUTPUT_MODES[relative]
+        )
+    )
+    lines = []
+    if compat_selected:
+        compat_changed = PUBLIC_TEMPLATE_FILES[0] in changed
+        lines.append("Compat 基础：%s" % ("已更新" if compat_changed else "无变化"))
+        old_compat = _previous_document(root, PUBLIC_TEMPLATE_FILES[0], previous)
+        added, deleted, modified = _sequence_diff_counts(
+            old_compat.get("rules", []) if isinstance(old_compat, Mapping) else [],
+            compat_candidate.get("rules", []) if isinstance(compat_candidate, Mapping) else [],
+        )
+        lines.append("  - rules：新增 %d，删除 %d，修改 %d" % (added, deleted, modified))
+        home_changed = HOME_SCOPE_PATH in changed
+        lines.append("家庭覆盖层：%s" % ("已更新" if home_changed else "无变化"))
+        lines.append(
+            "  - 节点数量：%d → %d"
+            % (len(old_home.proxies), len(home_candidate.proxies))
+        )
+        lines.append(
+            "  - 策略组数量：%d → %d"
+            % (len(old_home.proxy_groups), len(home_candidate.proxy_groups))
+        )
+        lines.append(
+            "  - 规则数量：%d → %d" % (len(old_home.rules), len(home_candidate.rules))
+        )
+    if balance_selected:
+        balance_changed = PUBLIC_TEMPLATE_FILES[1] in changed
+        lines.append("Balance DNS：%s" % ("已更新" if balance_changed else "无变化"))
+    for relative in changed:
+        if relative == HOME_SCOPE_PATH:
+            continue
+        lines.append("写入：%s" % relative)
+    for relative in payloads:
+        if relative == HOME_SCOPE_PATH:
+            continue
+        if relative not in changed:
+            lines.append("保持：%s" % relative)
+    return TemplateSyncReport(changed=changed, lines=tuple(lines))
+
+
+def _previous_document(root, relative, previous):
+    payload, _mode = previous.get(relative, (None, None))
+    if payload is None:
+        return None
+    try:
+        return load_round_trip(payload)
+    except RoundTripYamlError:
+        return None
+
+
+def _sequence_diff_counts(old, new):
+    old_list = list(old) if isinstance(old, (list, tuple)) else []
+    new_list = list(new) if isinstance(new, (list, tuple)) else []
+    common = sum((Counter(old_list) & Counter(new_list)).values())
+    deleted = len(old_list) - common
+    added = len(new_list) - common
+    modified = min(added, deleted)
+    return added - modified, deleted - modified, modified
 
 
 def _atomic_replace_outputs(root, payloads):
+    selected = tuple(relative for relative in TEMPLATE_OUTPUT_PATHS if relative in payloads)
     previous = []
     attempted = []
     try:
-        for relative in TEMPLATE_OUTPUT_PATHS:
-            target = root / relative
+        for relative in selected:
+            payload, mode = _snapshot_one(root, relative)
+            previous.append((relative, payload, mode))
+        for relative, old_payload, old_mode in previous:
+            if (
+                old_payload == payloads[relative]
+                and old_mode == OUTPUT_MODES[relative]
+            ):
+                continue
+            target = Path(root) / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                previous.append((relative, target.read_bytes(), stat.S_IMODE(target.stat().st_mode)))
-            else:
-                previous.append((relative, None, None))
-        for relative in TEMPLATE_OUTPUT_PATHS:
-            # Record intent BEFORE writing: a target whose os.replace already
-            # took effect when the failure lands must be restored as well.
             attempted.append(relative)
-            _write_file_atomically(root / relative, payloads[relative], OUTPUT_MODES[relative])
-    except OSError:
-        # Snapshot failures leave attempted empty (nothing written, nothing
-        # to restore); write failures restore every attempted target.
+            _write_file_atomically(
+                target, payloads[relative], OUTPUT_MODES[relative]
+            )
+    except (OSError, ValueError):
         _restore_files(root, previous, attempted)
         raise TemplateSyncError("template_write_failed") from None
 
@@ -687,14 +1325,23 @@ def _write_file_atomically(target, payload, mode):
     try:
         os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "wb") as output:
+            descriptor = None
             output.write(payload)
             output.flush()
             os.fsync(output.fileno())
         _os_replace(temporary, target)
         temporary = None
     finally:
-        if temporary is not None and os.path.exists(temporary):
-            os.unlink(temporary)
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def _restore_files(root, previous, attempted):
@@ -702,13 +1349,16 @@ def _restore_files(root, previous, attempted):
     for relative, payload, mode in previous:
         if relative not in attempted_set:
             continue
-        target = root / relative
+        target = Path(root) / relative
         try:
             if payload is None:
                 target.unlink(missing_ok=True)
             else:
+                target.parent.mkdir(parents=True, exist_ok=True)
                 _write_file_atomically(
-                    target, payload, mode if mode is not None else OUTPUT_MODES[relative]
+                    target,
+                    payload,
+                    mode if mode is not None else OUTPUT_MODES[relative],
                 )
         except OSError:
             pass
