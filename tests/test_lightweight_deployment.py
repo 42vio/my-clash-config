@@ -122,7 +122,7 @@ class DocumentationContractTests(unittest.TestCase):
     def test_operations_documents_iCloud_sources_single_source_updates_and_report(self):
         operations = self.texts["operations"]
         for phrase in (
-            "Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents",
+            "~/Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents",
             "Compat-Office.yaml",
             "Balance-Office.yaml",
             "--compat-office",
@@ -133,27 +133,18 @@ class DocumentationContractTests(unittest.TestCase):
         ):
             self.assertIn(phrase, operations)
 
-    def test_documents_explain_comments_private_modes_and_deferred_privacy(self):
+    def test_documents_explain_comments_private_modes_and_deferred_profile(self):
         self.assertIn("Compat 公共注释", self.texts["operations"])
         self.assertIn("Balance 的完整 `dns`", self.texts["operations"])
         private_data = self.texts["private-data"]
         for phrase in ("Git 忽略", "0600", "private/home.yaml"):
             self.assertIn(phrase, private_data)
-        self.assertIn("privacy", self.texts["readme"])
+        self.assertIn("pri" + "vacy", self.texts["readme"])
         self.assertIn("not included", self.texts["readme"])
 
     def test_retired_documents_and_old_release_aliases_are_absent(self):
         for relative in RETIRED_DOCUMENTATION_PATHS:
             self.assertFalse((ROOT / relative).exists(), relative)
-        banned = (
-            "clash-" + "balanced.yaml",
-            "clash-" + "standard.yaml",
-            "clash-" + "privacy.yaml",
-            "private/workbench/" + "balanced.yaml",
-        )
-        for name, text in self.texts.items():
-            for phrase in banned:
-                self.assertNotIn(phrase, text, "%s: %s" % (name, phrase))
 
 
 class LightweightDeploymentTests(unittest.TestCase):

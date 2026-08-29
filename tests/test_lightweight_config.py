@@ -58,9 +58,12 @@ class LightweightConfigTests(unittest.TestCase):
 
         self.assertEqual(config.owner_email, "owner-example")
         self.assertEqual(config.subscription_authority, "sub.example.com:443")
-        self.assertEqual(VARIANTS, ("balanced", "standard", "privacy"))
+        self.assertEqual(
+            VARIANTS,
+            ("compat-office", "compat-universal", "balance-office"),
+        )
         self.assertEqual(OWNER_VARIANTS, VARIANTS)
-        self.assertEqual(MEMBER_VARIANTS, ("standard",))
+        self.assertEqual(MEMBER_VARIANTS, ("compat-universal",))
         self.assertEqual(config.template_root, self.root / "templates")
 
     def test_domain_records_are_immutable_dataclasses(self):
@@ -91,17 +94,19 @@ class LightweightConfigTests(unittest.TestCase):
             state.users[2] = users[2]
 
     def test_prepared_release_paths_are_defensively_immutable(self):
-        public_paths = {"standard": Path("/public/clash-standard.yaml")}
+        public_paths = {
+            "compat-universal": Path("/public/clash-compat-universal.yaml")
+        }
         release = PreparedRelease(
             "2026-08-23T00-00-00Z-deadbeef",
             public_paths,
             Path("/private/manifest.json"),
         )
-        public_paths["privacy"] = Path("/public/clash-privacy.yaml")
+        public_paths["balance-office"] = Path("/public/clash-balance-office.yaml")
 
-        self.assertEqual(tuple(release.public_paths), ("standard",))
+        self.assertEqual(tuple(release.public_paths), ("compat-universal",))
         with self.assertRaises(TypeError):
-            release.public_paths["privacy"] = public_paths["privacy"]
+            release.public_paths["balance-office"] = public_paths["balance-office"]
 
     def test_rejects_unknown_key(self):
         self.write_config(extra="publisher-port: 25501\n")

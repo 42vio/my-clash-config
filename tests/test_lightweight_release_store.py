@@ -613,13 +613,13 @@ class ReleaseStoreTests(unittest.TestCase):
             ("clash-compat-office.yaml", "clash-compat-universal.yaml", "clash-balance-office.yaml"),
         )
 
-    def test_rejects_legacy_profile_keys_as_an_invalid_fixed_set(self):
+    def test_rejects_non_matrix_profile_keys_as_an_invalid_fixed_set(self):
         for bundle in (
-            {"standard": "standard\n"},
+            {"unexpected": "unexpected\n"},
             {
-                "balanced": "balanced\n",
-                "standard": "standard\n",
-                "privacy": "privacy\n",
+                "compat-office": "compat-office\n",
+                "compat-universal": "compat-universal\n",
+                "unexpected": "unexpected\n",
             },
         ):
             with self.subTest(bundle=tuple(bundle)):

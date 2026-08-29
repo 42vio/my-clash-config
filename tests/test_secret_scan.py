@@ -150,7 +150,7 @@ class TrackedPathRuleTests(ScannerTestCase):
                 ".env": "tracked-env-file",
                 "server.key": "tracked-private-key-file",
                 "releases/user/rel/manifest.json": "tracked-runtime-manifest",
-                "1/My-Clash_Balanced.yaml": "tracked-legacy-path",
+                "1/private-source.yaml": "tracked-legacy-path",
             }
             for relative in forbidden:
                 self.stage(repository, relative, "synthetic\n")
@@ -185,8 +185,8 @@ class TrackedContentRuleTests(ScannerTestCase):
         token_path = "/s/%s" % SUBSCRIPTION_TOKEN
         leaks = {
             "bare-token.txt": token_path,
-            "wrong-suffix.txt": token_path + "/clash-balanced.yaml.bak",
-            "wrong-extension.txt": token_path + "/clash-balanced.yml",
+            "wrong-suffix.txt": token_path + "/clash-compat-universal.yaml.bak",
+            "wrong-extension.txt": token_path + "/clash-compat-universal.yml",
             "unknown-variant.txt": token_path + "/clash-other.yaml",
         }
         with TemporaryDirectory() as directory:
@@ -285,9 +285,9 @@ class TrackedContentRuleTests(ScannerTestCase):
     def test_route_and_url_documentation_placeholders_remain_allowed(self):
         documentation = "\n".join(
             (
-                "route: /s/<token>/clash-balanced.yaml",
-                "alternate: /s/<other>/clash-standard.yaml",
-                "https://user:pass@192.0.2.9/s/<token>/clash-privacy.yaml",
+                "route: /s/<token>/clash-compat-office.yaml",
+                "alternate: /s/<other>/clash-compat-universal.yaml",
+                "https://user:pass@192.0.2.9/s/<token>/clash-balance-office.yaml",
                 "11111111-1111-4111-8111-111111111111",
             )
         )
@@ -310,7 +310,7 @@ class TrackedContentRuleTests(ScannerTestCase):
             self.stage(
                 repository,
                 "links.txt",
-                "https://sub.example.com:8443/s/%s/clash-standard.yaml\n"
+                "https://sub.example.com:8443/s/%s/clash-compat-universal.yaml\n"
                 % SUBSCRIPTION_TOKEN,
             )
             self.stage(repository, "ids.txt", "client id %s\n" % RANDOM_UUID_TEXT)
@@ -532,12 +532,12 @@ class PrivateValueComparisonTests(ScannerTestCase):
             self.assertNotIn(PRIVATE_PASSWORD, report)
             self.assertNotIn(PRIVATE_TOKEN_HASH_TEXT, report)
 
-    def test_tracked_workbench_path_is_always_forbidden(self):
+    def test_tracked_home_overlay_path_is_always_forbidden(self):
         with TemporaryDirectory() as directory:
             repository = self.make_repository(Path(directory))
             self.stage(
                 repository,
-                "private/workbench/balanced.yaml",
+                "private/home.yaml",
                 "proxies: []\n",
             )
 
@@ -545,36 +545,28 @@ class PrivateValueComparisonTests(ScannerTestCase):
 
             self.assertEqual(exit_code, 1)
             self.assertIn(
-                "tracked-private-data: private/workbench/balanced.yaml",
+                "tracked-private-data: private/home.yaml",
                 self.captured_report,
             )
 
-    def test_workbench_values_are_extracted_by_private_root_comparison(self):
-        # A value that exists ONLY in the workbench proves the extraction
-        # range includes it (the other private files use different canaries).
-        workbench_password = "workbench-only-password-0123456789abcdef"
+    def test_home_values_are_extracted_by_private_root_comparison(self):
+        home_password = "home-only-password-0123456789abcdef"
         with TemporaryDirectory() as directory:
             repository = self.make_repository(Path(directory))
             private_root = repository / "private"
             self.write_private_files(private_root)
-            workbench = private_root / "workbench"
-            workbench.mkdir(parents=True, exist_ok=True)
-            (workbench / "balanced.yaml").write_text(
-                "proxies:\n  - name: synthetic-workbench-node\n"
-                "    password: %s\n" % workbench_password,
-                encoding="utf-8",
-            )
+            write_home(private_root, password=home_password)
             self.stage(
                 repository,
                 "templates/clash.yaml",
-                "rule: pasted %s by accident\n" % workbench_password,
+                "rule: pasted %s by accident\n" % home_password,
             )
 
             exit_code = self.scan(repository, private_root=private_root)
 
             self.assertEqual(exit_code, 1)
             self.assertIn("tracked-private-value: templates/clash.yaml", self.captured_report)
-            self.assertNotIn(workbench_password, self.captured_report)
+            self.assertNotIn(home_password, self.captured_report)
 
     def test_clean_repository_with_private_root_passes(self):
         with TemporaryDirectory() as directory:

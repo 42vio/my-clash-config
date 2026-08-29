@@ -41,7 +41,6 @@ TRACKED_DOCUMENT_PATHS = (
 SUPERSEDED_TEMPLATE_PATHS = (
     "templates/clash.yaml",
     "templates/variants/manifest.yaml",
-    "templates/variants/privacy-dns.yaml",
 )
 
 LEGACY_RUNTIME_PATHS = (
@@ -62,7 +61,6 @@ LEGACY_RUNTIME_PATHS = (
     "clash_sub/settings.py",
     "clash_sub/traffic.py",
     "clash_sub/validation.py",
-    "templates/variants/balanced-win.yaml",
     "scripts/check_certificate.py",
     "scripts/install-server.sh",
     "scripts/install_server.py",
@@ -102,7 +100,6 @@ ACTIVE_RUNTIME_PATHS = (
 FORBIDDEN_RUNTIME_REFERENCES = (
     "publisher",
     "subconverter",
-    "balanced-win",
     "refresh",
     "Certbot",
     "Docker",
@@ -246,9 +243,7 @@ class RepositorySafetyTests(unittest.TestCase):
             "private/home.yaml",
             "private/config/service.yaml",
             "private/config/users.yaml",
-            "private/reference-configs/2026-08-21/My-Clash_Balanced.yaml",
-            "private/reference-configs/2026-08-21/My-Clash_Balanced_Win.yaml",
-            "private/reference-configs/2026-08-21/My-Clash_Privacy.yaml",
+            "private/reference-configs/2026-08-21/private-source.yaml",
             "private/sources/owner/airport.yaml",
             "private/sources/owner/home.yaml",
             "private/staging/op/user/config.yaml",
@@ -273,13 +268,10 @@ class RepositorySafetyTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('"home.yaml"', source)
+        self.assertNotIn("workbench", source)
 
     def test_reference_sources_are_not_tracked(self):
-        for name in (
-            "My-Clash_Balanced.yaml",
-            "My-Clash_Balanced_Win.yaml",
-            "My-Clash_Privacy.yaml",
-        ):
+        for name in ("private-source.yaml",):
             result = subprocess.run(
                 ["git", "ls-files", "--error-unmatch", f"1/{name}"],
                 cwd=ROOT,

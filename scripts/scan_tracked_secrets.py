@@ -14,8 +14,8 @@ private data?  It checks three things:
    repeated-digit UUIDs/hex, and hex embedded in rule-provider URLs
    stay allowed.
 3. With ``--private-root``: credential-like scalar values extracted in
-   memory from the ignored ``private/config``, ``private/sources``, and
-   ``private/workbench`` trees -- and from the exact root
+   memory from the ignored ``private/config`` and ``private/sources``
+   trees -- and from the exact root
    ``private/home.yaml`` overlay, whose complete rules also join the
    comparison unless tracked documentation already publishes them --
    must not occur, byte for byte, in any tracked file.
@@ -53,7 +53,6 @@ MIN_PRIVATE_VALUE_CHARS = 16
 PRIVATE_RUNTIME_DIRECTORIES = (
     "private/config",
     "private/sources",
-    "private/workbench",
     "private/releases",
     "private/current",
     "private/staging",
@@ -142,7 +141,7 @@ _CREDENTIAL_KEY_FRAGMENTS = (
     "psk",
     "credential",
 )
-_PRIVATE_SCAN_DIRECTORIES = ("config", "sources", "workbench")
+_PRIVATE_SCAN_DIRECTORIES = ("config", "sources")
 # The ignored root home overlay joins the private-value comparison as
 # one exact filename, never a recursed directory.
 _HOME_OVERLAY_FILENAME = "home.yaml"
@@ -203,6 +202,8 @@ def forbidden_path_category(relative_path: str) -> Optional[str]:
     for directory in PRIVATE_RUNTIME_DIRECTORIES:
         if normalized == directory or normalized.startswith(directory + "/"):
             return "tracked-private-data"
+    if normalized == "private/home.yaml":
+        return "tracked-private-data"
     name = normalized.rsplit("/", 1)[-1]
     if normalized.startswith("generated/") and normalized.endswith((".yaml", ".yml")):
         return "tracked-generated-yaml"
@@ -395,8 +396,8 @@ def extract_private_values(
 ) -> Set[bytes]:
     """Extract private scalar bytes from ignored private YAML.
 
-    The ``private/config``, ``private/sources``, and ``private/workbench``
-    trees and the exact root ``private/home.yaml`` overlay file are read,
+    The ``private/config`` and ``private/sources`` trees and the exact root
+    ``private/home.yaml`` overlay file are read,
     entirely in memory; nothing is written and no value is ever printed.
     Malformed YAML is skipped silently: a parser error message would
     embed the offending source line, which may itself carry a private
@@ -518,7 +519,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--private-root",
         type=Path,
         default=None,
-        help="ignored private root whose config/sources/workbench and root home.yaml values must not appear tracked",
+        help="ignored private root whose config/sources and root home.yaml values must not appear tracked",
     )
     return parser.parse_args(argv)
 

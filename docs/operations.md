@@ -12,7 +12,7 @@ after completion.
 By default, `template-sync` reads these two iCloud files:
 
 ```text
-Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents/
+~/Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents/
 ├── Compat-Office.yaml
 └── Balance-Office.yaml
 ```
