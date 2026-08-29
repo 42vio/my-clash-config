@@ -330,7 +330,15 @@ class PrivateHomeWorkflowDocumentationTests(unittest.TestCase):
             self._assert_documented("private-data", phrase)
 
     def test_workflow_documents_sanitized_home_errors(self):
-        self._assert_documented("operations", "home_yaml_invalid")
+        operations = self.flattened["operations"]
+        self.assertIn(_unwrapped("home_yaml_invalid"), operations)
+        # Scope-file failures keep their home_* codes inside the
+        # template-sync error catalog itself, not only in the server
+        # sync section further down.
+        template_sync_semantics = operations.split(
+            _unwrapped("`template-sync` 的安全语义：")
+        )[1].split(_unwrapped("## 家庭覆盖层上传与服务器发布"))[0]
+        self.assertIn(_unwrapped("home_source_invalid"), template_sync_semantics)
 
     def test_operational_docs_do_not_advertise_removed_upload_surfaces(self):
         banned = (

@@ -160,7 +160,10 @@ clash-sub sync
   固定由服务器 `clash-sub sync` 执行。
 - 成功只打印变更文件路径与下一步提示，不打印 diff；错误只有稳定代码
   （`template_source_invalid` / `template_candidate_invalid` /
-  `template_secret_leak` / `template_write_failed`）。
+  `template_secret_leak` / `template_write_failed`）。家庭 scope 文件
+  （现有 `private/home.yaml`）的读取与结构失败沿用 `home_*` 系列稳定
+  代码——如文件缺失或权限不符时返回 `home_source_invalid`，坏 YAML 时
+  返回 `home_yaml_invalid`。
 - 无网络、无服务器副作用、无 git 写操作；工作稿永远不进入 Git（`private/`
   被全量忽略），也永远不上传服务器。
 

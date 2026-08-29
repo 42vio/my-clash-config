@@ -32,7 +32,8 @@ Nginx worker 恰好可读发布文件、无法进入私有树。
 
 这是**开发机上**维护的完整、私密 balanced 工作稿（含真实节点、服务器
 地址、UUID、密码与 REALITY 密钥），是 `clash-sub template-sync` 的唯一
-输入。它不是永久原稿，而是**滚动的本地工作副本**：每轮修改前先从服务器
+完整配置输入（另一个输入是现有 `private/home.yaml` 家庭 scope）。它不是
+永久原稿，而是**滚动的本地工作副本**：每轮修改前先从服务器
 下载最新已发布的 `clash-balanced.yaml`，保存为
 `private/workbench/balanced.yaml`（`chmod 600`），再修改并在本机 Clash
 实测。
@@ -57,6 +58,13 @@ Nginx worker 恰好可读发布文件、无法进入私有树。
 `inject-home-node-groups`、`rules`）；它不是可独立导入客户端的完整配置。
 两份副本——开发机 `private/home.yaml`（`template-sync` 的输出之一）与
 服务器 `<private-root>/home.yaml`——敏感性相同，均永不进入 Git。
+
+首次引导：`template-sync` 把现有 `private/home.yaml` 同时当作家庭 scope
+输入，全新环境没有这份文件（或权限不符）时会以 `home_source_invalid`
+失败。初次可手工编写一份最小的合法 scope——六个字段齐全、`proxies` 与
+`proxy-groups` 非空、injection 列表只引用其中存在的组——或从服务器备份
+中的 `<private-root>/home.yaml` 恢复一份（保持 `0600`），再重新运行
+`./bin/clash-sub template-sync`。
 
 - 隔离保证：家庭覆盖层只进入 owner 的 `balanced` 与 `privacy`；owner
   standard 与 member standard 不含任何家庭节点、家庭组、家庭规则或

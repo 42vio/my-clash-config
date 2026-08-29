@@ -74,7 +74,7 @@ owner 或其他任何用户的节点、名称、机场 URL 或凭据。
 公共策略只有一个事实来源：`templates/clash.yaml`（公共 DNS、策略组、
 rule-provider 与 rules，`proxies` 恒为空）。差异按层组合：
 
-- `private/home.yaml`——私有家庭覆盖层（六个顶层字段：`HomeServer`/
+- `private/home.yaml`——六个顶层字段的私有家庭覆盖层（`HomeServer`/
   `ProxyServer` 组、家庭网段规则、向公共组追加的成员与节点注入声明），
   只进入 owner 的 `balanced` 与 `privacy`，由运行时组合而非公共模板携带；
 - `templates/variants/privacy-dns.yaml`——privacy 独有的最小 DNS 覆盖
