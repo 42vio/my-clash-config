@@ -144,6 +144,15 @@ DOCUMENTED_CLI_COMMANDS = frozenset(
 
 
 class RepositorySafetyTests(unittest.TestCase):
+    def test_requirements_pin_exactly_one_ruamel_yaml_version(self):
+        lines = [
+            line.strip()
+            for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip().lower().startswith("ruamel.yaml")
+        ]
+
+        self.assertEqual(lines, ["ruamel.yaml==0.19.1"])
+
     def test_only_retained_script_entry_points_compile_without_execution(self):
         scripts = ROOT / "scripts"
         self.assertEqual(

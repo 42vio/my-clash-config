@@ -12,6 +12,7 @@ from urllib.request import HTTPRedirectHandler, Request
 import yaml
 
 from clash_sub.domain import HomeOverlay, Traffic
+from clash_sub.yaml_rt import RoundTripYamlError, clone_round_trip, dump_round_trip, load_round_trip
 
 
 class SourceError(RuntimeError):
@@ -534,18 +535,26 @@ def _read_home_bytes(descriptor, max_bytes):
 
 def dump_home_overlay(home):
     """Serialize one home overlay back to canonical overlay bytes."""
-    document = {
-        "proxies": [dict(proxy) for proxy in home.proxies],
-        "proxy-groups": [dict(group) for group in home.proxy_groups],
-        "extend-proxy-groups": {
-            key: list(value) for key, value in home.extend_proxy_groups.items()
-        },
-        "inject-node-groups": list(home.inject_node_groups),
-        "inject-home-node-groups": list(home.inject_home_node_groups),
-        "rules": list(home.rules),
-    }
-    text = yaml.safe_dump(document, allow_unicode=True, sort_keys=False)
-    return (text.rstrip("\n") + "\n").encode("utf-8")
+    if home.document is not None:
+        document = clone_round_trip(home.document)
+    else:
+        document = {
+            "proxies": [clone_round_trip(proxy) for proxy in home.proxies],
+            "proxy-groups": [
+                clone_round_trip(group) for group in home.proxy_groups
+            ],
+            "extend-proxy-groups": {
+                key: list(value) for key, value in home.extend_proxy_groups.items()
+            },
+            "inject-node-groups": list(home.inject_node_groups),
+            "inject-home-node-groups": list(home.inject_home_node_groups),
+            "rules": list(home.rules),
+        }
+    try:
+        text = dump_round_trip(document)
+    except RoundTripYamlError:
+        _home_fail("home_yaml_invalid")
+    return text.encode("utf-8")
 
 
 def home_overlay_digest(home):
@@ -571,9 +580,10 @@ def _load_home_document(payload):
     if not payload or b"{{" in payload or b"{%" in payload:
         _home_fail("home_yaml_invalid")
     try:
-        return yaml.safe_load(payload.decode("utf-8"))
-    except (UnicodeDecodeError, yaml.YAMLError, RecursionError):
-        pass
+        return load_round_trip(payload)
+    except RoundTripYamlError as error:
+        if str(error) == "yaml root must be a mapping":
+            return None
     _home_fail("home_yaml_invalid")
 
 
@@ -599,6 +609,7 @@ def _build_home_overlay(document):
         inject_node_groups=inject_node,
         inject_home_node_groups=inject_home,
         rules=_home_rules(document["rules"], group_names),
+        document=document,
     )
 
 

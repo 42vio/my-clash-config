@@ -528,6 +528,34 @@ class EndpointNormalizationTests(unittest.TestCase):
 class HomeOverlaySourceTests(unittest.TestCase):
     max_bytes = 5 * 1024 * 1024
 
+    def test_home_round_trip_preserves_comments_anchor_and_order(self):
+        payload = b"""# home header
+proxies:
+- &home
+  name: Home
+  type: ss  # proxy type
+  server: 192.0.2.10
+  port: 443
+  cipher: aes-256-gcm
+  password: synthetic-password
+proxy-groups:
+- name: HomeServer
+  type: select
+  proxies: [Home]
+extend-proxy-groups: {}
+inject-node-groups: []
+inject-home-node-groups: [HomeServer]
+rules:
+- IP-CIDR,192.168.2.0/24,HomeServer,no-resolve
+"""
+
+        home = parse_home_overlay(payload, 1024 * 1024)
+        rendered = dump_home_overlay(home).decode("utf-8")
+
+        self.assertIn("# home header", rendered)
+        self.assertIn("# proxy type", rendered)
+        self.assertLess(rendered.index("proxies:"), rendered.index("proxy-groups:"))
+
     def assertHomeCode(self, payload, code):
         with self.assertRaises(HomeSourceError) as caught:
             parse_home_overlay(payload, self.max_bytes)
