@@ -458,7 +458,7 @@ def normalize_server_home(path, max_bytes, expected_uid=0):
     and rechecks the descriptor identity before parsing.  Uploaded source
     bytes are never rewritten, moved, or journaled here; only the mode of
     an already-safe file changes.  ``load_home_overlay`` remains the strict
-    non-mutating boundary for the Mac workbench.
+    non-mutating boundary for the Mac template source.
     """
     if (
         type(max_bytes) is not int

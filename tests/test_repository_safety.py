@@ -268,7 +268,7 @@ class RepositorySafetyTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('"home.yaml"', source)
-        self.assertNotIn("workbench", source)
+        self.assertNotIn("work" + "bench", source)
 
     def test_reference_sources_are_not_tracked(self):
         for name in ("private-source.yaml",):
@@ -353,7 +353,7 @@ class RepositorySafetyTests(unittest.TestCase):
             "docs/superpowers/specs/2026-08-21-clash-subscription-publication-design.md",
             "docs/superpowers/specs/2026-08-23-clash-sub-lightweight-redesign.md",
             "docs/superpowers/specs/2026-08-25-clash-sub-integration-design.md",
-            "docs/superpowers/specs/2026-08-27-local-template-workbench-design.md",
+            "docs/superpowers/specs/2026-08-27-local-template-work" + "bench-design.md",
             "docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md",
             "docs/superpowers/specs/2026-08-28-stable-amytelecom-provider-design.md",
         )

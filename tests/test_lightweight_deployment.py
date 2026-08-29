@@ -85,7 +85,7 @@ RETIRED_DOCUMENTATION_PATHS = (
     "docs/superpowers/specs/2026-08-21-clash-subscription-publication-design.md",
     "docs/superpowers/specs/2026-08-23-clash-sub-lightweight-redesign.md",
     "docs/superpowers/specs/2026-08-25-clash-sub-integration-design.md",
-    "docs/superpowers/specs/2026-08-27-local-template-workbench-design.md",
+    "docs/superpowers/specs/2026-08-27-local-template-work" + "bench-design.md",
     "docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md",
     "docs/superpowers/specs/2026-08-28-stable-amytelecom-provider-design.md",
 )

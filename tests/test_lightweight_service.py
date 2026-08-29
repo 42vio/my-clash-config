@@ -166,7 +166,7 @@ class ServiceTests(unittest.TestCase):
             inject_home_node_groups=("HomeServer",),
             rules=(),
         )
-        # The official server home file, planted exactly as the workbench
+        # The official server home file, planted exactly as the local
         # template-sync boundary would leave it behind.
         self.home_path = Path(self.config.private_root) / "home.yaml"
         self.home_path.write_bytes(dump_home_overlay(self.home))
