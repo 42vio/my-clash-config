@@ -33,7 +33,7 @@
 4. 接入本项目之前确认面板设置：
    - **Web 根路径（webBasePath）**：设为随机串（如 `/xui7k2m/`）。preflight 会校验它非 `/`，
      installer 直接读取该值作为面板反代路径——不再单独生成。
-   - **面板监听**：设为 127.0.0.1（上游默认监听 0.0.0.0，会裸奔公网端口；本方案经
+   - **面板监听/订阅监听**：设为 127.0.0.1（上游默认监听 0.0.0.0，会裸奔公网端口；本方案经
      nginx 反代访问，无需公网直连）。
    - **面板证书**：清空 `webCertFile` 与 `webKeyFile`，或在终端 `x-ui` 菜单执行
      **Revoke & Remove Certificate**。Nginx 以 HTTP 回源并统一终止公网 TLS；证书仍启用时
@@ -90,8 +90,6 @@ ss -tlnp | grep -E '443|10443|30443'
 - `clash-sub cert` / `clash-sub cert --renew`：证书状态 / 强制续期
 - `clash-sub rollback --install`：回滚整合安装——移除 nginx 配置与 stream include（仅精确移除 installer 写入的块）、停用 systemd 资产、恢复默认站点（注：收口后 Reality 监听 127.0.0.1，回滚需同时在 3x-ui 面板把入站 listen 改回 0.0.0.0 才能恢复公网直连）
 - 模板维护（`clash-sub template-sync`）是**开发机本地命令**，在维护者的 Mac 上把私密工作稿提升为公共模板；服务器不运行它，也永远不上传 `private/workbench/` 工作稿——服务器只通过 Git 与 `clash-sub update && clash-sub sync` 获得模板变更。
-
-一次性升级说明：已在运行的旧版本（≤ 2026-08-26 之前部署）的 update 不会自动拉起新进程；首次升级请手动 `git pull` 后再运行 `clash-sub update`（或连续运行两次 update）。此后升级均为单命令。
 
 日常运维（机场更新、流量、历史、版本回滚、轮换）见 [docs/operations.md](docs/operations.md)；
 重装恢复与域名变更见 [docs/recovery.md](docs/recovery.md)。
