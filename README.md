@@ -54,7 +54,7 @@ owner 或其他任何用户的节点、名称、机场 URL 或凭据。
 3x-ui SQLite（只读发现客户端）──┐
 3x-ui 回环 Clash 订阅（每人 subId）─┤
 机场原件（仅 owner，release 内逐字节保存）┤
-家庭节点（仅 owner，私有文件）──────┤
+家庭覆盖层（仅 owner，私有文件）─────┤
 基础模板 + variant 差异────────────┤
                                   ▼
               clash-sub 手动同步（渲染 + 结构/泄漏校验）
@@ -74,13 +74,13 @@ owner 或其他任何用户的节点、名称、机场 URL 或凭据。
 公共策略只有一个事实来源：`templates/clash.yaml`（公共 DNS、策略组、
 rule-provider 与 rules，`proxies` 恒为空）。差异按层组合：
 
-- `templates/features/home.yaml`——家庭功能差异（`HomeServer`/`ProxyServer`
-  组、家庭网段规则、向公共组追加的成员与节点注入目标），只进入
-  `balanced` 与 `privacy`；
+- `private/home.yaml`——私有家庭覆盖层（六个顶层字段：`HomeServer`/
+  `ProxyServer` 组、家庭网段规则、向公共组追加的成员与节点注入声明），
+  只进入 owner 的 `balanced` 与 `privacy`，由运行时组合而非公共模板携带；
 - `templates/variants/privacy-dns.yaml`——privacy 独有的最小 DNS 覆盖
   （递归合并，列表整体替换）；
 - `templates/variants/manifest.yaml`——声明每个 variant 组合哪些
-  feature/override，以及全局节点注入组（`加速线路`、`AI服务`）。
+  override，以及全局节点注入组（`加速线路`、`AI服务`）。
   组合授权由代码锁定，manifest 不能扩大任何数据源权限。
 
 | 输出 | owner 节点范围 | 普通用户 | 用途 |
@@ -192,13 +192,28 @@ python3 -m venv .venv && .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python scripts/scan_tracked_secrets.py --private-root private
 ```
 
-模板数据流：在 Mac 上维护一份**完整私密工作稿**
-`private/workbench/balanced.yaml`（`0600`，被 Git 忽略），在本机 Clash
-导入实测通过后，运行本地命令 `clash-sub template-sync` 把公共策略安全提升
-进 `templates/`（剥离全部动态节点、拆出家庭差异、合成节点重渲染 +
-Mihomo + 泄漏校验全部通过后才原子替换）。之后查看 `git diff`、跑测试、
-提交并 push；服务器照常只执行 `clash-sub update && clash-sub sync`，
-工作稿永远不上传服务器。详见 [docs/operations.md](docs/operations.md)
+模板数据流：`private/workbench/balanced.yaml` 不是永久原稿，而是**滚动的
+本地工作副本**——每轮先从服务器下载最新已发布的 `clash-balanced.yaml`
+保存为该文件（`0600`，被 Git 忽略），再在本机 Clash 导入、修改并实测。
+固定命令序列（本地一条、SFTP 一次、服务器一条）：
+
+```bash
+./bin/clash-sub template-sync
+# 使用 SFTP：private/home.yaml → /var/lib/clash-sub/private/home.yaml
+clash-sub sync
+```
+
+`./bin/clash-sub template-sync` 只做结构、隔离与泄漏校验——本机不需要安装
+Mihomo，也不需要全局安装 `clash-sub`——把公共策略提升进 `templates/` 的
+同时，把家庭覆盖层提取为 `private/home.yaml`（六个顶层字段）。之后只查看
+tracked 公共模板的 `git diff`、跑测试与两种 secret scan；若 tracked 模板
+有变更，先提交并 push，服务器**只**执行 `clash-sub update` 拉取代码
+（不要提前运行组合的 update+sync）。接着用 SFTP 把 `private/home.yaml`
+直接覆盖服务器固定正式路径 `/var/lib/clash-sub/private/home.yaml`，最后
+在服务器执行一次 `clash-sub sync`：校验与发布固定发生在服务器，失败时旧
+owner release 继续服务，已被覆盖的正式 `home.yaml` 不会恢复，需要修正后
+重新上传。owner standard 与 member standard 始终不含任何家庭内容；工作稿
+与私有覆盖层永远不进入 Git。详见 [docs/operations.md](docs/operations.md)
 的「本地模板工作流」一节。
 
 安全约定：真实订阅 URL、令牌、UUID、节点密码、REALITY 密钥、机场临时 URL、

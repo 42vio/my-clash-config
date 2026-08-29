@@ -230,6 +230,130 @@ class DocumentationCoverageTests(unittest.TestCase):
                 self.assertNotIn(phrase, self.texts[name], "%s: %s" % (name, phrase))
 
 
+PRIVATE_HOME_WORKFLOW_DOCS = ("readme", "operations", "private-data")
+PRIVATE_HOME_SIX_FIELDS = (
+    "proxies",
+    "proxy-groups",
+    "extend-proxy-groups",
+    "inject-node-groups",
+    "inject-home-node-groups",
+    "rules",
+)
+
+
+def _unwrapped(text):
+    """Collapse hard line wraps so phrase assertions survive markdown reflow."""
+    return re.sub(r"\s+", "", text)
+
+
+class PrivateHomeWorkflowDocumentationTests(unittest.TestCase):
+    """Coverage: the private home overlay upload workflow stays documented."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.texts = {
+            name: DOCUMENTATION_PATHS[name].read_text(encoding="utf-8")
+            for name in PRIVATE_HOME_WORKFLOW_DOCS
+        }
+        cls.flattened = {
+            name: _unwrapped(text) for name, text in cls.texts.items()
+        }
+
+    def _assert_documented(self, name, phrase):
+        self.assertIn(_unwrapped(phrase), self.flattened[name], "%s: %s" % (name, phrase))
+
+    def _assert_not_documented(self, name, phrase):
+        self.assertNotIn(
+            _unwrapped(phrase), self.flattened[name], "%s: %s" % (name, phrase)
+        )
+
+    def test_workflow_documents_the_three_fixed_elements(self):
+        for name in ("readme", "operations"):
+            with self.subTest(document=name):
+                for phrase in (
+                    "./bin/clash-sub template-sync",
+                    "private/home.yaml → /var/lib/clash-sub/private/home.yaml",
+                    "clash-sub sync",
+                ):
+                    self._assert_documented(name, phrase)
+
+    def test_private_data_documents_the_fixed_sftp_target(self):
+        self._assert_documented(
+            "private-data",
+            "private/home.yaml → /var/lib/clash-sub/private/home.yaml",
+        )
+
+    def test_documented_remote_targets_are_only_the_fixed_home_path(self):
+        for name in PRIVATE_HOME_WORKFLOW_DOCS:
+            with self.subTest(document=name):
+                for line in self.texts[name].splitlines():
+                    if "→ /var/lib/clash-sub" in line:
+                        self.assertIn(
+                            "/var/lib/clash-sub/private/home.yaml",
+                            line,
+                            "%s: %s" % (name, line.strip()),
+                        )
+
+    def test_workflow_documents_the_rolling_workbench_origin(self):
+        for name in PRIVATE_HOME_WORKFLOW_DOCS:
+            with self.subTest(document=name):
+                for phrase in ("clash-balanced.yaml", "滚动"):
+                    self._assert_documented(name, phrase)
+
+    def test_workflow_documents_the_six_private_home_fields(self):
+        for name in ("operations", "private-data"):
+            with self.subTest(document=name):
+                self._assert_documented(name, "六个顶层字段")
+                for field in PRIVATE_HOME_SIX_FIELDS:
+                    self._assert_documented(name, field)
+
+    def test_workflow_documents_owner_variant_isolation(self):
+        for name in PRIVATE_HOME_WORKFLOW_DOCS:
+            with self.subTest(document=name):
+                for phrase in ("owner standard", "member standard"):
+                    self._assert_documented(name, phrase)
+
+    def test_workflow_documents_server_only_mihomo_validation(self):
+        for name in PRIVATE_HOME_WORKFLOW_DOCS:
+            with self.subTest(document=name):
+                self._assert_documented(name, "本机不需要安装 Mihomo")
+
+    def test_workflow_documents_asymmetric_failure_rule(self):
+        for name in PRIVATE_HOME_WORKFLOW_DOCS:
+            with self.subTest(document=name):
+                for phrase in ("旧 owner release 继续服务", "不会恢复"):
+                    self._assert_documented(name, phrase)
+        self._assert_documented("private-data", "不是源文件备份")
+
+    def test_workflow_documents_backup_boundaries(self):
+        for phrase in ("`home.yaml`（家庭覆盖层）", "加密备份", "永不进入 Git"):
+            self._assert_documented("private-data", phrase)
+
+    def test_workflow_documents_sanitized_home_errors(self):
+        self._assert_documented("operations", "home_yaml_invalid")
+
+    def test_operational_docs_do_not_advertise_removed_upload_surfaces(self):
+        banned = (
+            "MIHOMO_BIN",
+            "mihomo_binary_missing",
+            "mihomo_validation_failed",
+            "本地 Mihomo",
+            "本机 Mihomo",
+            "inbox",
+            "home-import",
+            "templates/features/home.yaml",
+            "上传脚本",
+        )
+        for name in PRIVATE_HOME_WORKFLOW_DOCS:
+            with self.subTest(document=name):
+                text = self.texts[name]
+                for phrase in banned:
+                    self._assert_not_documented(name, phrase)
+                # Word boundaries keep the SFTP recommendation itself legal.
+                self.assertNotRegex(text, r"(?i)\bscp\b")
+                self.assertNotRegex(text, r"(?i)\bftp\b")
+
+
 class LightweightDeploymentTests(unittest.TestCase):
     def test_stream_template_routes_default_to_reality(self):
         text = NGINX_STREAM_TEMPLATE.read_text(encoding="utf-8")

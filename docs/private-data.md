@@ -10,13 +10,14 @@
 | --- | --- | --- |
 | `/opt/my-clash-config/private/config/service.yaml` | 全局私有设置（owner email、订阅主机名、数据库与二进制路径） | `0600` root:root |
 | `<private-root>/state.json` | 用户映射与**明文令牌**（静态 Nginx 架构的有意取舍，见下） | `0600` root:root |
-| `<private-root>/home.yaml` | owner 自维护家庭节点 | `0600` root:root |
+| `<private-root>/home.yaml` | owner 家庭覆盖层（六个顶层字段的私有 overlay，SFTP 直接覆盖的正式源文件） | `0600` root:root |
 | `<private-root>/releases/<user>/…` | 每用户最近五个成功版本（manifest + 来源哈希；owner 版本另含逐字节原样的 `AmyTelecom.yaml` 机场原件） | 目录 `0700` |
 | `<private-root>/operation.lock` | 同步互斥锁 | root:root |
 | `<private-root>/.activation-journal.json` | 仅在运行时激活被中断时存在的旧工件快照；必须先由 `clash-sub recover` 处理 | `0600` root:root |
 | `<private-root>/reference-configs/…` | 三份原始参考配置，**永久记录**，永不参与版本清理 | `0600` root:root |
 | `<public-root>/releases/<user>/…` | 当前静态发布 YAML（Nginx 直接读取；owner 版本含 `AmyTelecom.yaml` 稳定机场端点的 alias 目标） | 目录 `2750` root:www-data，文件 `0640` |
 | `private/workbench/balanced.yaml`（开发机仓库内） | **本地模板工作稿**：含真实节点的完整 balanced 配置，仅存在于维护它的 Mac 上 | `0600` 当前用户 |
+| `private/home.yaml`（开发机仓库内） | `template-sync` 从工作稿提取的私有家庭覆盖层，SFTP 上传的源文件 | `0600` 当前用户 |
 
 机场原件不再有独立的可变快照文件：`update-airport` 下载的响应字节
 **逐字节不改写**地存入当次 owner release（私有 `0600` 与公共 `0640`
@@ -31,18 +32,47 @@ Nginx worker 恰好可读发布文件、无法进入私有树。
 
 这是**开发机上**维护的完整、私密 balanced 工作稿（含真实节点、服务器
 地址、UUID、密码与 REALITY 密钥），是 `clash-sub template-sync` 的唯一
-输入：
+输入。它不是永久原稿，而是**滚动的本地工作副本**：每轮修改前先从服务器
+下载最新已发布的 `clash-balanced.yaml`，保存为
+`private/workbench/balanced.yaml`（`chmod 600`），再修改并在本机 Clash
+实测。
 
-- 敏感性与 `<private-root>/home.yaml` 相同：链接即密码级。永远不进入
-  Git（`private/` 被全量忽略）、不上传服务器、不进入任何备份介质；
-  `template-sync` 的校验失败与错误输出也绝不回显其内容。
+- 敏感性与服务器 `<private-root>/home.yaml` 相同：链接即密码级。永远不
+  进入 Git（`private/` 被全量忽略）、本身不上传服务器、不进入任何备份
+  介质；`template-sync` 的校验失败与错误输出也绝不回显其内容。
 - 权限要求：普通文件（非 symlink、单硬链接）、当前用户所有、`0600`、
   不超过 5 MiB；不满足时 `template-sync` 直接拒绝。
 - 备份范围：它**不在**服务器备份清单里（服务器没有这份文件）；需要备份
   时随开发机自身的加密备份策略处理，与服务器私有数据备份互不相关。
-- 服务器侧的唯一数据流仍是 `clash-sub update && clash-sub sync`——工作稿
-  提升为公共模板后经由 Git 分发，私密值在 `template-sync` 内被剥离并
-  校验。
+- 数据流：公共模板经由 Git 分发（服务器 `clash-sub update` 拉取）；家庭
+  覆盖层由 `template-sync` 生成为 `private/home.yaml` 后，经 SFTP 覆盖
+  服务器正式文件，再由 `clash-sub sync` 校验并发布。`template-sync` 在
+  本机完成结构、隔离与泄漏校验——本机不需要安装 Mihomo，最终 Mihomo
+  校验固定由服务器 `clash-sub sync` 执行。
+
+## 家庭覆盖层（`private/home.yaml` 与 `<private-root>/home.yaml`）
+
+家庭配置以私有覆盖层形式维护，顶层只允许且必须包含六个顶层字段
+（`proxies`、`proxy-groups`、`extend-proxy-groups`、`inject-node-groups`、
+`inject-home-node-groups`、`rules`）；它不是可独立导入客户端的完整配置。
+两份副本——开发机 `private/home.yaml`（`template-sync` 的输出之一）与
+服务器 `<private-root>/home.yaml`——敏感性相同，均永不进入 Git。
+
+- 隔离保证：家庭覆盖层只进入 owner 的 `balanced` 与 `privacy`；owner
+  standard 与 member standard 不含任何家庭节点、家庭组、家庭规则或
+  相关名称痕迹。
+- 上传方式唯一：用支持 SFTP 的客户端把开发机 `private/home.yaml` 直接
+  覆盖服务器固定正式文件
+  （`private/home.yaml → /var/lib/clash-sub/private/home.yaml`），随后在
+  服务器执行 `clash-sub sync` 完成校验与发布；不存在其他文档化的传输
+  方式或上传入口，程序也不管理 SFTP 凭据。`sync` 会把安全到达的文件
+  规范为 `0600 root:root`。
+- 失败不对称：覆盖中断或坏 YAML 可能让正式源文件失效——旧 owner release
+  继续服务，但已被覆盖的正式源文件不会恢复，后续 owner 同步持续失败，
+  直到重新上传修正文件；旧内容只能从覆盖前另行保留的备份恢复，运行时
+  release 不是源文件备份。错误输出只有稳定脱敏代码，不含内容或名称。
+- 备份边界：服务器副本包含在 `<private-root>` 全树备份里（见下）；开发
+  机副本（`private/home.yaml` 与工作稿）由用户自身的加密备份策略负责。
 
 ## 为什么令牌是明文
 
@@ -53,9 +83,9 @@ root-only 的 `state.json` 中即等价于「文件系统权限保护」， Git�
 ## 备份与恢复
 
 - 必须备份两个独立来源：`/opt/my-clash-config/private/config/service.yaml` 与配置的
-  `<private-root>` 全树（含 `state.json`、`home.yaml`、releases——owner release
-  里已含机场原件——与 `reference-configs/` 原件）。前者不在 `<private-root>` 内，漏掉
-  它将无法恢复服务设置。
+  `<private-root>` 全树（含 `state.json`、`home.yaml`（家庭覆盖层）、
+  releases——owner release 里已含机场原件——与 `reference-configs/` 原件）。前者不在
+  `<private-root>` 内，漏掉它将无法恢复服务设置。
 - 备份和恢复只在管理员控制的加密存储之间进行，且备份副本同样 root-only；不得把
   这两项写入 Git、普通备份介质或公开云盘。恢复前先保留当前两项的只读副本，恢复后
   核对 `service.yaml` 为 `0600 root:root`、`<private-root>` 为 `0700 root:root`，

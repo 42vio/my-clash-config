@@ -84,7 +84,7 @@ Mihomo 最新稳定版。升级前
 ## 非交互子命令（systemd 与排错用）
 
 ```text
-clash-sub sync                    # 重新读取 3x-ui/模板/机场原件（当前 release）/家庭节点并发布（菜单 2 等价）
+clash-sub sync                    # 重新读取 3x-ui/模板/机场原件（当前 release）/家庭覆盖层并发布（菜单 2 等价）
 clash-sub traffic-update          # 仅更新流量响应头（每日 timer 调用）
 clash-sub status                  # 最后成功时间、每用户当前版本、待同步来源、最近错误
 clash-sub links                   # 全部有效订阅地址（按 email 分组 + 六位识别码）
@@ -99,57 +99,107 @@ clash-sub cert [--renew]          # 证书状态 / 强制续期
 clash-sub backup                  # 全量备份
 clash-sub install                 # root-only 整合安装（见 DEPLOYMENT.md）
 clash-sub rollback --install      # 回滚整合安装（二次确认）
-clash-sub template-sync           # 开发机本地命令：工作稿 → templates/（见下节）
+clash-sub template-sync           # 开发机本地命令：工作稿 → templates/ + private/home.yaml（见下节）
 ```
 
 失败时输出只有稳定错误代码（如 `操作失败（错误代码：xui_snapshot_failed）`），
 不含敏感值。没有 `refresh` 命令，也没有兼容别名。
 
-## 本地模板工作流（开发机，不碰服务器）
+## 本地模板工作流（开发机）
 
-公共策略只有一个事实来源 `templates/clash.yaml`；家庭差异在
-`templates/features/home.yaml`，privacy 的 DNS 覆盖在
-`templates/variants/privacy-dns.yaml`，组合关系在
-`templates/variants/manifest.yaml`。在 Mac 上修改公共规则/策略组/DNS 的
-日常流程：
+公共策略只有一个事实来源 `templates/clash.yaml`；家庭差异在私有覆盖层
+`private/home.yaml`（六个顶层字段：`proxies`、`proxy-groups`、
+`extend-proxy-groups`、`inject-node-groups`、`inject-home-node-groups`、
+`rules`），privacy 的 DNS 覆盖在 `templates/variants/privacy-dns.yaml`，
+组合关系在 `templates/variants/manifest.yaml`。在 Mac 上修改公共规则/
+策略组/DNS 的日常流程：
 
 ```text
-1. 编辑 private/workbench/balanced.yaml（完整、私密的工作稿，0600）
-2. 在本机 Clash 导入并实际测试
-3. 运行 clash-sub template-sync
-4. 查看 git diff
-5. 运行测试（.venv/bin/python -m unittest discover -s tests）
-6. 提交 templates/ 与相应代码并 push
-7. 服务器执行 clash-sub update && clash-sub sync
+1. 从服务器下载最新已发布的 clash-balanced.yaml，保存为 private/workbench/balanced.yaml（0600）
+2. 在工作稿上修改，并在本机 Clash 导入实测
+3. 在仓库内运行 ./bin/clash-sub template-sync
+4. 只查看 tracked 公共模板的 git diff，运行测试与两种 secret scan
+5. 若 tracked 模板有变更：提交并 push，服务器只执行 clash-sub update
+6. 用 SFTP 把 private/home.yaml 直接覆盖 /var/lib/clash-sub/private/home.yaml
+7. 在服务器执行 clash-sub sync（独立的校验与发布步骤）
 ```
+
+固定命令序列（本地一条、SFTP 一次、服务器一条）：
+
+```bash
+./bin/clash-sub template-sync
+# 使用 SFTP：private/home.yaml → /var/lib/clash-sub/private/home.yaml
+clash-sub sync
+```
+
+工作稿不是永久原稿：`private/workbench/balanced.yaml` 是每轮直接下载
+服务器最新 `clash-balanced.yaml` 后保存、修改并实测的**滚动本地工作
+副本**（`chmod 600`）。工作稿中的注释、锚点与排版不属于同步数据（解析
+再输出会规范化）；策略组与规则的语义顺序保持。
 
 `template-sync` 的安全语义：
 
 - 只读固定路径 `private/workbench/balanced.yaml`（不接收私密路径参数）；
   拒绝 symlink、硬链接、非 `0600`、非当前用户、超限（5 MiB）、坏
   UTF-8/YAML、Jinja 标记与 `_` 前缀控制字段。
-- 剥离全部动态节点（proxy 对象与组内**完全相等**的成员名）；home feature
-  已拥有的组继续由 feature 管理，新出现且含动态节点的公共组默认进入
-  manifest 全局注入，不猜测新的家庭归属。
+- 输出固定为双路三个目标：公共 `templates/clash.yaml` 与
+  `templates/variants/manifest.yaml`（`0644`），以及私有家庭覆盖层
+  `private/home.yaml`（`0600`，被 Git 忽略）；任一步失败保持全部目标
+  原字节。
+- 家庭 scope 由现有 `private/home.yaml` 声明：其 `proxy-groups` 名称集合
+  声明哪些工作稿策略组属于家庭；未声明的新组按公共候选处理，不会把机场
+  或 3x-ui 节点猜测成家庭节点；scope 缺失或悬空直接失败，不静默删除
+  家庭行为。
+- 剥离全部动态节点（proxy 对象与组内**完全相等**的成员名）；新出现且含
+  动态节点的公共组默认进入 manifest 全局注入。
 - 候选先写临时目录，用合成节点重渲染 owner 三 variant 与 member
-  standard，通过结构校验、Mihomo 校验（`MIHOMO_BIN` 必须指向固定版本
-  二进制，缺失返回 `mihomo_binary_missing`，不降级为成功）与泄漏比对
-  （工作稿私密标量、节点名成员匹配、tracked secret scan）后才原子替换
-  `templates/` 三个目标文件；任一步失败保持 `templates/` 原字节。
+  standard，通过结构校验、隔离校验（owner standard 与 member standard
+  不含任何家庭对象或名称）与泄漏比对（工作稿私密标量、家庭名称与规则、
+  tracked secret scan）后才原子替换。
+- 本机不需要安装 Mihomo，也不需要全局安装 `clash-sub`；最终 Mihomo 校验
+  固定由服务器 `clash-sub sync` 执行。
 - 成功只打印变更文件路径与下一步提示，不打印 diff；错误只有稳定代码
-  （`template_source_invalid` / `template_feature_invalid` /
-  `template_rule_order_invalid` / `template_candidate_invalid` /
-  `mihomo_binary_missing` / `mihomo_validation_failed` /
-  `template_secret_leak` / `template_write_failed`）。家庭规则在工作稿中
-  必须构成**连续的前缀块**：与公共规则交错时返回
-  `template_rule_order_invalid`（本期 feature 只有 prepend 语义，不静默
-  重排公共规则）。
+  （`template_source_invalid` / `template_candidate_invalid` /
+  `template_secret_leak` / `template_write_failed`）。
 - 无网络、无服务器副作用、无 git 写操作；工作稿永远不进入 Git（`private/`
-  被全量忽略），服务器上永远不需要这个文件。
+  被全量忽略），也永远不上传服务器。
 
-一次性准备：从本机 Clash 导出当前可用的完整 balanced 配置，保存为
-`private/workbench/balanced.yaml` 并 `chmod 600`。工作稿中的注释、锚点与
-排版不属于同步数据（解析再输出会规范化）；策略组与规则的语义顺序保持。
+## 家庭覆盖层上传与服务器发布（SFTP + sync）
+
+家庭覆盖层的正式源文件在服务器固定为
+`/var/lib/clash-sub/private/home.yaml`。唯一文档化的上传方式是用支持
+SFTP 的客户端把本机 `private/home.yaml` **直接覆盖**这个固定正式路径：
+SFTP 连接、认证与覆盖动作由维护者自行完成，程序不管理 SFTP 凭据，也
+不存在任何其他文档化的传输方式或上传入口。SFTP 只完成源文件覆盖，
+必须另外在服务器执行现有命令才算校验并发布：
+
+```bash
+clash-sub sync
+```
+
+`sync` 安全读取已被替换的正式 `home.yaml`（检查私有根与路径、拒绝
+symlink/硬链接/错误所有者/空文件/超限文件，并把安全文件规范为 `0600`），
+渲染 owner balanced/privacy 与 owner standard、member standard，用服务器
+已有 Mihomo 验证候选 owner 配置，通过后才按正常激活事务发布新 release。
+owner standard 与 member standard 不使用家庭覆盖层，也不含任何家庭节点、
+家庭组、家庭规则或相关名称痕迹；owner 家庭源失败不影响 member 的既有
+隔离语义。
+
+失败语义是**不对称**的：Mihomo、生成或激活失败时不发布新 owner release，
+旧 owner release 继续服务，但 SFTP 已经完成的覆盖**不会恢复**——坏 YAML、
+传输截断或语义无效的正式 `home.yaml` 会留在服务器上，后续 owner 同步
+持续失败，直到维护者修正本机文件并重新覆盖；旧内容只能从覆盖前另行
+保留的备份恢复。错误输出只有稳定脱敏代码（如 `home_yaml_invalid`、
+`home_schema_invalid`），不含 YAML 内容或任何 proxy/group 名称。
+
+### 与 tracked 模板变更的先后顺序
+
+若 `template-sync` 改动了 tracked 公共模板：先提交并 push，服务器**只**
+执行 `clash-sub update` 拉取代码——在匹配的 `private/home.yaml` 就位前，
+不要运行组合的 update+sync。随后 SFTP 覆盖 home，最后执行一次
+`clash-sub sync`，使公共模板与家庭覆盖层在同一批校验中生效。若本次只有
+`private/home.yaml` 变化而 tracked 模板未变，无需 `update`，直接覆盖后
+`sync`。
 
 ## 机场更新（手机 SSH 完整流程）
 
@@ -330,8 +380,8 @@ done < <(
   重签证书 → `clash-sub update` → `clash-sub sync`）；旧订阅 URL 随之失效，
   完成后把新链接发给每位用户一次。
 - **更换 VPS / IP**：在新 VPS 上按 [DEPLOYMENT.md](../DEPLOYMENT.md) 重新
-  部署；迁移 `<private-root>`（含 state.json、家庭快照与 releases——owner
-  release 里已含机场原件）后重新签发
+  部署；迁移 `<private-root>`（含 state.json、家庭覆盖层（`home.yaml`）与
+  releases——owner release 里已含机场原件）后重新签发
   证书、重建 3x-ui 客户端凭据；DNS A 记录指向新 IP；订阅地址不变（域名
   未换时）。旧 VPS 上的令牌与节点凭据全部作废。
 - IP 被封时订阅与 REALITY 同时失效（同机部署）；按预先保留的离线恢复
@@ -352,8 +402,8 @@ done < <(
 ## 私有数据备份
 
 `/opt/my-clash-config/private/config/service.yaml` 与配置的 `<private-root>` 是必须
-一起备份的两项私有数据：后者包含 state.json、家庭快照、releases（owner release
-内含逐字节原样的机场原件）与参考
+一起备份的两项私有数据：后者包含 state.json、家庭覆盖层（`home.yaml`）、
+releases（owner release 内含逐字节原样的机场原件）与参考
 原件，前者包含服务设置且不位于 private root 内。备份与恢复只在管理员控制的
 加密存储之间进行，两个副本均保持 root-only；恢复前保留当前副本，恢复后核对
 service.yaml 为 `0600 root:root`、private root 为 `0700 root:root` 和内部私有
