@@ -373,6 +373,31 @@ class TemplateSyncInputTests(unittest.TestCase):
             )
         )
 
+    def test_rejects_unknown_member_in_group_unrelated_to_local_provider(self):
+        source_provider = (
+            "proxy-providers: {SourceNodes: {type: file, "
+            "path: ./proxy_providers/source.yaml}}\n"
+        )
+        source = COMPAT_OFFICE.replace(
+            "proxy-providers:\n"
+            "  AmyTelecom:\n"
+            "    type: http\n"
+            "    url: %s\n"
+            "    interval: 0\n"
+            "    path: ./proxy_providers/AmyTelecom-%s.yaml\n"
+            % (PROVIDER_URL, PROVIDER_DIGEST),
+            source_provider,
+        ).replace(
+            "- name: Public\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, HomeAll]\n",
+            "- name: Public\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, HomeAll, Synthetic Unknown]\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-unrelated.yaml", source)
+
+        with self.assertRaises(TemplateSyncError) as caught:
+            run_template_sync(self.root, compat_office=path)
+
+        self.assertEqual(str(caught.exception), "template_source_invalid")
+
     def test_candidate_validation_does_not_mutate_yaml_merge_state(self):
         source_provider = (
             "proxy-providers: {SourceNodes: {type: file, "
@@ -395,6 +420,10 @@ class TemplateSyncInputTests(unittest.TestCase):
         ).replace(
             "- name: Public\n  type: select\n",
             "- name: Public\n  type: select\n  <<: *provider-group\n",
+        ).replace(
+            "  proxies: [DIRECT, Shared 3x-ui, HomeAll]\n",
+            "  proxies: [DIRECT, Shared 3x-ui, HomeAll, Synthetic Provider Member]\n",
+            1,
         ).replace(
             "- name: HomeAll\n  type: select\n",
             "- name: HomeAll\n  type: select\n  <<: *provider-group\n",

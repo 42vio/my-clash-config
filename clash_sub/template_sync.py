@@ -436,12 +436,16 @@ def _source_file_provider_name(document):
 
 
 def _external_provider_members(document, proxy_names, group_names):
-    if _source_file_provider_name(document) is None:
+    provider_name = _source_file_provider_name(document)
+    if provider_name is None:
         return frozenset()
     builtins = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL"}
     external = set()
     for group in document.get("proxy-groups", []) or []:
         if not isinstance(group, Mapping):
+            continue
+        uses = _group_uses(group)
+        if not isinstance(uses, list) or provider_name not in uses:
             continue
         members = group.get("proxies")
         if not isinstance(members, list):
