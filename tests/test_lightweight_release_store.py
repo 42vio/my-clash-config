@@ -45,11 +45,11 @@ class ReleaseStoreTests(unittest.TestCase):
             )
         )
         self.store = self.make_store()
-        self.member_bundle = {"standard": "proxies: []\n"}
+        self.member_bundle = {"compat-universal": "proxies: []\n"}
         self.owner_bundle = {
-            "balanced": "proxies: [balanced]\n",
-            "standard": "proxies: [standard]\n",
-            "privacy": "proxies: [privacy]\n",
+            "compat-office": "proxies: [compat-office]\n",
+            "compat-universal": "proxies: [compat-universal]\n",
+            "balance-office": "proxies: [balance-office]\n",
         }
 
     def tearDown(self):
@@ -71,7 +71,7 @@ class ReleaseStoreTests(unittest.TestCase):
         )
 
     def prepare_member(self, text="proxies: []\n"):
-        release = self.store.prepare(7, {"standard": text}, {"xui": "a" * 64})
+        release = self.store.prepare(7, {"compat-universal": text}, {"xui": "a" * 64})
         self.assertIsNotNone(release)
         return release
 
@@ -130,7 +130,7 @@ class ReleaseStoreTests(unittest.TestCase):
     def test_finalize_public_stage_syncs_final_yaml_metadata_before_stage_directory(self):
         stage = Path(self.tempdir.name) / "public-stage"
         stage.mkdir()
-        public_yaml = stage / "clash-standard.yaml"
+        public_yaml = stage / "clash-compat-universal.yaml"
         public_yaml.write_bytes(b"proxies: []\n")
         os.chmod(public_yaml, 0o600)
         opened_paths = {}
@@ -150,7 +150,7 @@ class ReleaseStoreTests(unittest.TestCase):
         with patch("clash_sub.release_store.os.open", side_effect=record_open), patch(
             "clash_sub.release_store.os.fsync", side_effect=record_fsync
         ):
-            release_store_module._finalize_public_stage(stage, ("standard",))
+            release_store_module._finalize_public_stage(stage, ("compat-universal",))
 
         self.assertEqual(stat.S_IMODE(public_yaml.stat().st_mode), 0o640)
         self.assertEqual(fsynced_paths, [public_yaml, stage])
@@ -236,11 +236,11 @@ class ReleaseStoreTests(unittest.TestCase):
         self.assertEqual(
             release.public_paths,
             {
-                "standard": self.public_root
+                "compat-universal": self.public_root
                 / "releases"
                 / "7"
                 / release.release_id
-                / "clash-standard.yaml"
+                / "clash-compat-universal.yaml"
             },
         )
         self.assertEqual(
@@ -252,7 +252,7 @@ class ReleaseStoreTests(unittest.TestCase):
             0o600,
         )
         self.assertEqual(
-            stat.S_IMODE(release.public_paths["standard"].stat().st_mode),
+            stat.S_IMODE(release.public_paths["compat-universal"].stat().st_mode),
             0o640,
         )
         self.assertFalse((self.public_root / "current").exists())
@@ -273,11 +273,11 @@ class ReleaseStoreTests(unittest.TestCase):
         )
         self.assertEqual(manifest["client_id"], 7)
         self.assertEqual(manifest["release_id"], release.release_id)
-        self.assertEqual(manifest["variants"], ["standard"])
+        self.assertEqual(manifest["variants"], ["compat-universal"])
         self.assertEqual(manifest["input_hashes"], {"xui": "a" * 64})
         self.assertEqual(
             manifest["output_hashes"],
-            {"standard": hashlib.sha256(b"proxies: []\n").hexdigest()},
+            {"compat-universal": hashlib.sha256(b"proxies: []\n").hexdigest()},
         )
         self.assertNotIn("proxies", json.dumps(manifest))
         self.assertEqual(
@@ -309,11 +309,11 @@ class ReleaseStoreTests(unittest.TestCase):
 
         self.assertEqual(observed_modes, [0o600])
         self.assertEqual(observed_groups, [self.public_root.stat().st_gid])
-        self.assertEqual(stat.S_IMODE(release.public_paths["standard"].stat().st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE(release.public_paths["compat-universal"].stat().st_mode), 0o640)
 
     def test_public_release_descendants_preserve_nginx_group_and_setgid_access(self):
         release = self.prepare_member()
-        release_root = release.public_paths["standard"].parent
+        release_root = release.public_paths["compat-universal"].parent
         directories = (
             self.public_root,
             self.public_root / "releases",
@@ -327,12 +327,12 @@ class ReleaseStoreTests(unittest.TestCase):
             (0o2750, 0o2750, 0o2750, 0o2750),
         )
         self.assertEqual(tuple(path.stat().st_gid for path in directories), (public_gid,) * 4)
-        self.assertEqual(release.public_paths["standard"].stat().st_gid, public_gid)
-        self.assertEqual(stat.S_IMODE(release.public_paths["standard"].stat().st_mode), 0o640)
+        self.assertEqual(release.public_paths["compat-universal"].stat().st_gid, public_gid)
+        self.assertEqual(stat.S_IMODE(release.public_paths["compat-universal"].stat().st_mode), 0o640)
 
     def test_verify_release_rejects_public_ancestors_without_setgid_group_access(self):
         release = self.prepare_member()
-        release_root = release.public_paths["standard"].parent
+        release_root = release.public_paths["compat-universal"].parent
         directories = (
             self.public_root,
             self.public_root / "releases",
@@ -349,7 +349,7 @@ class ReleaseStoreTests(unittest.TestCase):
 
     def test_verify_release_rejects_public_ancestor_with_different_group(self):
         release = self.prepare_member()
-        client_root = release.public_paths["standard"].parent.parent
+        client_root = release.public_paths["compat-universal"].parent.parent
         public_gid = self.public_root.stat().st_gid
         alternate_gid = next((gid for gid in os.getgroups() if gid != public_gid), None)
         if alternate_gid is None:
@@ -381,8 +381,8 @@ class ReleaseStoreTests(unittest.TestCase):
 
     def test_verify_release_rejects_a_hard_linked_public_yaml(self):
         release = self.prepare_member()
-        linked = release.public_paths["standard"].with_name("linked.yaml")
-        os.link(release.public_paths["standard"], linked)
+        linked = release.public_paths["compat-universal"].with_name("linked.yaml")
+        os.link(release.public_paths["compat-universal"], linked)
 
         with self.assertRaisesRegex(ReleaseStoreError, "release"):
             self.store.verify_release(7, release.release_id)
@@ -411,7 +411,7 @@ class ReleaseStoreTests(unittest.TestCase):
             release_store_module._preflight_space(
                 private,
                 public,
-                {"standard": "x"},
+                {"compat-universal": "x"},
                 (private / "state.json", private / "current"),
             )
 
@@ -431,7 +431,7 @@ class ReleaseStoreTests(unittest.TestCase):
             release_store_module._preflight_space(
                 private,
                 public,
-                {"standard": "x"},
+                {"compat-universal": "x"},
                 (private / "state.json", private / "current"),
             )
 
@@ -508,8 +508,8 @@ class ReleaseStoreTests(unittest.TestCase):
 
     def test_current_artifact_verifies_release_integrity(self):
         release = self.prepare_member()
-        release.public_paths["standard"].write_text("tampered\n", encoding="utf-8")
-        os.chmod(release.public_paths["standard"], 0o640)
+        release.public_paths["compat-universal"].write_text("tampered\n", encoding="utf-8")
+        os.chmod(release.public_paths["compat-universal"], 0o640)
 
         with self.assertRaisesRegex(ReleaseStoreError, "hash"):
             self.store.current_artifact(7, release.release_id)
@@ -537,7 +537,7 @@ class ReleaseStoreTests(unittest.TestCase):
         self.now += timedelta(seconds=1)
         candidate = self.prepare_member("proxies: [candidate]\n")
         candidate_private = candidate.manifest_path.parent
-        candidate_public = candidate.public_paths["standard"].parent
+        candidate_public = candidate.public_paths["compat-universal"].parent
 
         self.store.discard_unreferenced(7, candidate.release_id)
 
@@ -570,8 +570,8 @@ class ReleaseStoreTests(unittest.TestCase):
         self.now += timedelta(seconds=1)
         candidate = self.prepare_member("proxies: [candidate]\n")
         candidate_private = candidate.manifest_path.parent
-        candidate_public = candidate.public_paths["standard"].parent
-        public_yaml = candidate.public_paths["standard"]
+        candidate_public = candidate.public_paths["compat-universal"].parent
+        public_yaml = candidate.public_paths["compat-universal"]
         original_yaml = public_yaml.read_bytes()
 
         public_yaml.write_bytes(b"tampered\n")
@@ -601,17 +601,30 @@ class ReleaseStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseStoreError, "variants"):
             self.store.prepare(
                 7,
-                {"balanced": "balanced\n", "standard": "standard\n"},
+                {"compat-office": "compat-office\n", "compat-universal": "compat-universal\n"},
                 {"xui": "a" * 64},
             )
 
         release = self.store.prepare(7, self.owner_bundle, {"xui": "a" * 64})
 
-        self.assertEqual(tuple(release.public_paths), ("balanced", "standard", "privacy"))
+        self.assertEqual(tuple(release.public_paths), ("compat-office", "compat-universal", "balance-office"))
         self.assertEqual(
             tuple(path.name for path in release.public_paths.values()),
-            ("clash-balanced.yaml", "clash-standard.yaml", "clash-privacy.yaml"),
+            ("clash-compat-office.yaml", "clash-compat-universal.yaml", "clash-balance-office.yaml"),
         )
+
+    def test_rejects_legacy_profile_keys_as_an_invalid_fixed_set(self):
+        for bundle in (
+            {"standard": "standard\n"},
+            {
+                "balanced": "balanced\n",
+                "standard": "standard\n",
+                "privacy": "privacy\n",
+            },
+        ):
+            with self.subTest(bundle=tuple(bundle)):
+                with self.assertRaisesRegex(ReleaseStoreError, "variants"):
+                    self.store.prepare(7, bundle, {"xui": "a" * 64})
 
     def test_rejects_unsafe_client_and_release_ids_before_path_construction(self):
         for unsafe_client_id in (0, -1, "7", True):
@@ -688,7 +701,7 @@ class ReleaseStoreTests(unittest.TestCase):
 
         with patch("clash_sub.release_store.os.replace", side_effect=OSError("disk error")):
             with self.assertRaisesRegex(ReleaseStoreError, "prepare"):
-                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+                self.store.prepare(7, {"compat-universal": "proxies: [new]\n"}, {"xui": "b" * 64})
 
         current = self.store.current_release_id(7)
         self.assertEqual(current, first.release_id)
@@ -723,7 +736,7 @@ class ReleaseStoreTests(unittest.TestCase):
         upcoming_stage.mkdir()
 
         with self.assertRaises(ReleaseStoreError):
-            self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+            self.store.prepare(7, {"compat-universal": "proxies: [new]\n"}, {"xui": "b" * 64})
 
         self.assert_prior_release_survives(first)
         self.assertEqual(tuple((self.private_root / "staging").iterdir()), ())
@@ -738,7 +751,7 @@ class ReleaseStoreTests(unittest.TestCase):
             side_effect=ReleaseStoreError("verification failed"),
         ):
             with self.assertRaises(ReleaseStoreError):
-                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+                self.store.prepare(7, {"compat-universal": "proxies: [new]\n"}, {"xui": "b" * 64})
 
         self.assert_prior_release_survives(first)
         self.assert_no_uncommitted_candidates()
@@ -755,7 +768,7 @@ class ReleaseStoreTests(unittest.TestCase):
 
         with patch("clash_sub.release_store.os.replace", side_effect=fail_private_publish):
             with self.assertRaises(ReleaseStoreError):
-                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+                self.store.prepare(7, {"compat-universal": "proxies: [new]\n"}, {"xui": "b" * 64})
 
         self.assert_prior_release_survives(first)
         self.assert_no_uncommitted_candidates()
@@ -785,7 +798,7 @@ class ReleaseStoreTests(unittest.TestCase):
             self.store.mark_current(7, first.release_id)
 
             with self.assertRaisesRegex(ReleaseStoreError, "prepare"):
-                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+                self.store.prepare(7, {"compat-universal": "proxies: [new]\n"}, {"xui": "b" * 64})
 
             self.assertFalse(public_candidate.exists())
             self.assertFalse(private_candidate.exists())
@@ -817,7 +830,7 @@ class ReleaseStoreTests(unittest.TestCase):
             self.store.mark_current(7, first.release_id)
 
             with self.assertRaisesRegex(ReleaseStoreError, "prepare"):
-                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+                self.store.prepare(7, {"compat-universal": "proxies: [new]\n"}, {"xui": "b" * 64})
 
             self.assertFalse(public_candidate.exists())
             self.assertFalse(private_candidate.exists())
@@ -836,7 +849,7 @@ class ReleaseStoreTests(unittest.TestCase):
 
         with patch.object(self.store, "verify_release", side_effect=fail_new_release):
             with self.assertRaises(ReleaseStoreError):
-                self.store.prepare(7, {"standard": "proxies: [new]\n"}, {"xui": "b" * 64})
+                self.store.prepare(7, {"compat-universal": "proxies: [new]\n"}, {"xui": "b" * 64})
 
         self.assert_prior_release_survives(first)
         self.assert_no_uncommitted_candidates()
@@ -854,8 +867,8 @@ class ReleaseStoreTests(unittest.TestCase):
             hashlib.sha256(release.manifest_path.read_bytes()).hexdigest() + "\n",
             encoding="utf-8",
         )
-        release.public_paths["standard"].write_text("tampered\n", encoding="utf-8")
-        os.chmod(release.public_paths["standard"], 0o640)
+        release.public_paths["compat-universal"].write_text("tampered\n", encoding="utf-8")
+        os.chmod(release.public_paths["compat-universal"], 0o640)
 
         with self.assertRaisesRegex(ReleaseStoreError, "hash"):
             self.store.verify_release(7, release.release_id)
@@ -913,9 +926,9 @@ class AirportArtifactTests(unittest.TestCase):
             expected_public_gid=os.getegid(),
         )
         self.owner_bundle = {
-            "balanced": "proxies: [balanced]\n",
-            "standard": "proxies: [standard]\n",
-            "privacy": "proxies: [privacy]\n",
+            "compat-office": "proxies: [compat-office]\n",
+            "compat-universal": "proxies: [compat-universal]\n",
+            "balance-office": "proxies: [balance-office]\n",
         }
 
     def tearDown(self):
@@ -977,7 +990,7 @@ class AirportArtifactTests(unittest.TestCase):
     def test_member_bundle_rejects_an_airport_document(self):
         with self.assertRaises(ReleaseStoreError):
             self.store.prepare(
-                7, {"standard": "proxies: []\n"}, {"xui": "a" * 64}, airport_document=AIRPORT_DOCUMENT
+                7, {"compat-universal": "proxies: []\n"}, {"xui": "a" * 64}, airport_document=AIRPORT_DOCUMENT
             )
 
     def test_invalid_airport_documents_fail_closed(self):

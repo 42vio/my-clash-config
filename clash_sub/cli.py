@@ -542,7 +542,9 @@ def _parser():
     commands.add_parser("recover", add_help=False)
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
-    commands.add_parser("template-sync", add_help=False)
+    template = commands.add_parser("template-sync", add_help=False)
+    template.add_argument("--compat-office", type=Path)
+    template.add_argument("--balance-office", type=Path)
     commands.add_parser("mihomo-update", add_help=False)
     update = commands.add_parser("update", add_help=False)
     update.add_argument("--post-update", action="store_true")
@@ -579,7 +581,7 @@ def _run_command(parsed, stdout, stderr, factory):
         )
         return _managed(stdout, stderr, action, success_output=_UPDATE_REMINDER)
     if command == "template-sync":
-        return _template_sync(stdout, stderr)
+        return _template_sync(parsed, stdout, stderr)
     if command == "mihomo-update":
         return _mihomo_update(stdout, stderr)
     if command == "cert":
@@ -840,16 +842,17 @@ def _mihomo_update(stdout, stderr):
     return 0
 
 
-def _template_sync(stdout, stderr):
+def _template_sync(parsed, stdout, stderr):
     try:
-        result = template_sync.run_template_sync(default_repo_root())
+        report = template_sync.run_template_sync(
+            default_repo_root(), parsed.compat_office, parsed.balance_office
+        )
     except template_sync.TemplateSyncError as error:
         return _error(stderr, error.code, 1)
     except Exception:
         return _error(stderr, "template_sync_failed", 1)
-    for relative in result["changed"]:
-        stdout.write("%s\n" % relative)
-    stdout.write("模板已同步。请查看 git diff，运行测试后再提交。\n")
+    for line in report.lines:
+        stdout.write("%s\n" % line)
     return 0
 
 

@@ -434,13 +434,13 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
             variant: [proxy["name"] for proxy in document["proxies"]]
             for variant, document in owner_documents.items()
         }
-        member_standard = yaml.safe_load(member.public_paths["standard"].read_text())
-        member_names = [proxy["name"] for proxy in member_standard["proxies"]]
+        member_universal = yaml.safe_load(member.public_paths["compat-universal"].read_text())
+        member_names = [proxy["name"] for proxy in member_universal["proxies"]]
 
         # Airport nodes stay out of every inline proxies list.
-        self.assertEqual(owner_names["balanced"], ["Owner 3x-ui", "Home"])
-        self.assertEqual(owner_names["standard"], ["Owner 3x-ui"])
-        self.assertEqual(owner_names["privacy"], ["Owner 3x-ui", "Home"])
+        self.assertEqual(owner_names["compat-office"], ["Owner 3x-ui", "Home"])
+        self.assertEqual(owner_names["compat-universal"], ["Owner 3x-ui"])
+        self.assertEqual(owner_names["balance-office"], ["Owner 3x-ui", "Home"])
         self.assertEqual(member_names, ["Member 3x-ui"])
 
         owner_token = harness.state().users[harness.owner_id].token
@@ -460,26 +460,26 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
             self.assertEqual(groups["加速线路"]["use"], ["AmyTelecom"], variant)
             self.assertEqual(groups["自动选择"]["use"], ["AmyTelecom"], variant)
 
-        self.assertNotIn("proxy-providers", member_standard)
+        self.assertNotIn("proxy-providers", member_universal)
         member_groups = {
-            group["name"]: group for group in member_standard["proxy-groups"]
+            group["name"]: group for group in member_universal["proxy-groups"]
         }
         self.assertNotIn("use", member_groups["加速线路"])
-        member_text = member.public_paths["standard"].read_text()
+        member_text = member.public_paths["compat-universal"].read_text()
         self.assertNotIn("AmyTelecom", member_text)
         self.assertNotIn("amy-1.example.test", member_text)
         self.assertNotIn("airport.example.test", member_text)
 
         owner_xui = next(
             proxy
-            for proxy in owner_documents["standard"]["proxies"]
+            for proxy in owner_documents["compat-universal"]["proxies"]
             if proxy["name"] == "Owner 3x-ui"
         )
         self.assertEqual((owner_xui["server"], owner_xui["port"]), ("example.com", 443))
         self.assertEqual(
             [
                 (proxy["server"], proxy["port"])
-                for proxy in member_standard["proxies"]
+                for proxy in member_universal["proxies"]
             ],
             [("example.com", 443)],
         )
@@ -539,12 +539,12 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         harness = self.make_harness()
         harness.import_airport()
 
-        first = yaml.safe_load(harness.release(harness.owner_id).public_paths["standard"].read_text())
+        first = yaml.safe_load(harness.release(harness.owner_id).public_paths["compat-universal"].read_text())
         harness.airport_body = harness.airport_body.replace(b"airport-old", b"airport-new")
         harness.import_airport()
         second_release = harness.release(harness.owner_id)
 
-        second = yaml.safe_load(second_release.public_paths["standard"].read_text())
+        second = yaml.safe_load(second_release.public_paths["compat-universal"].read_text())
         self.assertNotEqual(
             first["proxy-providers"]["AmyTelecom"]["path"],
             second["proxy-providers"]["AmyTelecom"]["path"],
@@ -569,7 +569,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
                 self.assertIn("-%s/" % item["readable_code"], url)
                 self.assertRegex(
                     url,
-                    r"^https://sub\.example\.test:443/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/clash-(?:balanced|standard|privacy)\.yaml$",
+                    r"^https://sub\.example\.test:443/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/clash-(?:compat-office|compat-universal|balance-office)\.yaml$",
                 )
 
     def test_routes_authorize_only_exact_token_user_and_variant_combinations(self):
@@ -581,10 +581,10 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         member = state.users[harness.member_id]
         routes = harness.route_text()
 
-        self.assertIn("location = /s/%s/clash-standard.yaml" % member.token, routes)
-        self.assertNotIn("location = /s/%s/clash-balanced.yaml" % member.token, routes)
-        self.assertNotIn("location = /s/%s/clash-privacy.yaml" % member.token, routes)
-        self.assertIn("location = /s/%s/clash-balanced.yaml" % owner.token, routes)
+        self.assertIn("location = /s/%s/clash-compat-universal.yaml" % member.token, routes)
+        self.assertNotIn("location = /s/%s/clash-compat-office.yaml" % member.token, routes)
+        self.assertNotIn("location = /s/%s/clash-balance-office.yaml" % member.token, routes)
+        self.assertIn("location = /s/%s/clash-compat-office.yaml" % owner.token, routes)
         self.assertIn("location = /s/%s/AmyTelecom.yaml" % owner.token, routes)
         self.assertNotIn("location = /s/%s/AmyTelecom.yaml" % member.token, routes)
         self.assertEqual(routes.count("location = /s/%s/" % member.token), 1)
@@ -789,9 +789,9 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         routes = harness.route_text()
         self.assertIn("location = /s/%s/AmyTelecom.yaml" % old_token, routes)
         self.assertIn("alias %s;" % rolled.airport_path, routes)
-        standard = yaml.safe_load(rolled.public_paths["standard"].read_text())
+        universal = yaml.safe_load(rolled.public_paths["compat-universal"].read_text())
         self.assertEqual(
-            standard["proxy-providers"]["AmyTelecom"]["path"],
+            universal["proxy-providers"]["AmyTelecom"]["path"],
             "./proxy_providers/AmyTelecom-%s.yaml" % hashlib.sha256(old_body).hexdigest(),
         )
 
@@ -800,15 +800,15 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotEqual(rotated["token"], old_token)
         routes = harness.route_text()
         self.assertNotIn("location = /s/%s/" % old_token, routes)
-        self.assertIn("location = /s/%s/clash-balanced.yaml" % rotated["token"], routes)
+        self.assertIn("location = /s/%s/clash-compat-office.yaml" % rotated["token"], routes)
         self.assertIn("location = /s/%s/AmyTelecom.yaml" % rotated["token"], routes)
         rotated_release = harness.release(harness.owner_id)
         self.assertEqual(rotated_release.airport_path.read_bytes(), old_body)
-        rotated_standard = yaml.safe_load(
-            rotated_release.public_paths["standard"].read_text()
+        rotated_universal = yaml.safe_load(
+            rotated_release.public_paths["compat-universal"].read_text()
         )
         self.assertEqual(
-            rotated_standard["proxy-providers"]["AmyTelecom"]["url"],
+            rotated_universal["proxy-providers"]["AmyTelecom"]["url"],
             "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % rotated["token"],
         )
         harness.assert_lock_and_markers(self)
@@ -906,9 +906,9 @@ class DirectHomeOverwriteAcceptanceTests(unittest.TestCase):
             ]
             for variant, path in harness.release(harness.owner_id).public_paths.items()
         }
-        self.assertEqual(names["balanced"], ["Owner 3x-ui", "Home Updated"])
-        self.assertEqual(names["privacy"], ["Owner 3x-ui", "Home Updated"])
-        self.assertEqual(names["standard"], ["Owner 3x-ui"])
+        self.assertEqual(names["compat-office"], ["Owner 3x-ui", "Home Updated"])
+        self.assertEqual(names["balance-office"], ["Owner 3x-ui", "Home Updated"])
+        self.assertEqual(names["compat-universal"], ["Owner 3x-ui"])
         self.assertEqual(stat.S_IMODE(harness.home_path.stat().st_mode), 0o600)
         harness.assert_lock_and_markers(self)
 
@@ -925,13 +925,13 @@ class DirectHomeOverwriteAcceptanceTests(unittest.TestCase):
         self.assertFalse(result["errors"])
         self.assertEqual(harness.home_path.read_bytes(), uploaded)
         self.assertEqual(stat.S_IMODE(harness.home_path.stat().st_mode), 0o600)
-        balanced = yaml.safe_load(
-            harness.release(harness.owner_id).public_paths["balanced"].read_text(
+        compat_office = yaml.safe_load(
+            harness.release(harness.owner_id).public_paths["compat-office"].read_text(
                 encoding="utf-8"
             )
         )
         self.assertIn(
-            "Home Widened", [proxy["name"] for proxy in balanced["proxies"]]
+            "Home Widened", [proxy["name"] for proxy in compat_office["proxies"]]
         )
 
     def test_malformed_uploaded_home_is_kept_and_reported_while_members_sync(self):

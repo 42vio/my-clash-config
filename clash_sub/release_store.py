@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
-from clash_sub.domain import OWNER_VARIANTS, PreparedRelease
+from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, PreparedRelease
 
 
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
@@ -28,7 +28,6 @@ _MANIFEST_FIELDS = frozenset(
     )
 )
 _MANIFEST_OPTIONAL_FIELDS = frozenset(("airport",))
-_MEMBER_VARIANTS = ("standard",)
 _PUBLIC_DIRECTORY_MODE = 0o2750
 _SPACE_HEADROOM = 1024 * 1024
 _MANIFEST_RESERVE = 64 * 1024
@@ -359,8 +358,8 @@ def _validate_bundle(bundle: Mapping[str, str]) -> tuple[tuple[str, ...], dict[s
         raise ReleaseStoreError("release variants are invalid")
     files = dict(bundle)
     keys = tuple(files)
-    if set(keys) == set(_MEMBER_VARIANTS):
-        variants = _MEMBER_VARIANTS
+    if set(keys) == set(MEMBER_VARIANTS):
+        variants = MEMBER_VARIANTS
     elif set(keys) == set(OWNER_VARIANTS):
         variants = OWNER_VARIANTS
     else:

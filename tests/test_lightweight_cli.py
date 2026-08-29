@@ -72,16 +72,16 @@ class FakeService:
                 "email": "Alice",
                 "readable_code": "ABC234",
                 "urls": (
-                    "https://sub.example.test:8443/s/%s/clash-balanced.yaml" % TOKEN,
-                    "https://sub.example.test:8443/s/%s/clash-standard.yaml" % TOKEN,
-                    "https://sub.example.test:8443/s/%s/clash-privacy.yaml" % TOKEN,
+                    "https://sub.example.test:8443/s/%s/clash-compat-office.yaml" % TOKEN,
+                    "https://sub.example.test:8443/s/%s/clash-compat-universal.yaml" % TOKEN,
+                    "https://sub.example.test:8443/s/%s/clash-balance-office.yaml" % TOKEN,
                 ),
             },
             {
                 "client_id": 8,
                 "email": "Bob",
                 "readable_code": "XYZ789",
-                "urls": ("https://sub.example.test:8443/s/%s/clash-standard.yaml" % ROTATED_TOKEN,),
+                "urls": ("https://sub.example.test:8443/s/%s/clash-compat-universal.yaml" % ROTATED_TOKEN,),
             },
         )
 
@@ -112,18 +112,18 @@ class FakeService:
 
     def history(self, user):
         self._call("history", user)
-        return ({"release_id": "release-%s" % user, "variants": ("standard",)},)
+        return ({"release_id": "release-%s" % user, "variants": ("compat-universal",)},)
 
     def rollback(self, user, release):
         self._call("rollback", user, release)
-        return {"client_id": user, "release_id": release, "variants": ("standard",)}
+        return {"client_id": user, "release_id": release, "variants": ("compat-universal",)}
 
     def rotate_link(self, user):
         self._call("rotate_link", user)
         return {
             "client_id": user,
             "token": ROTATED_TOKEN,
-            "urls": ("https://sub.example.test:8443/s/%s/clash-standard.yaml" % ROTATED_TOKEN,),
+            "urls": ("https://sub.example.test:8443/s/%s/clash-compat-universal.yaml" % ROTATED_TOKEN,),
         }
 
     def reinitialize_owner(self, user):
@@ -1021,7 +1021,7 @@ class MenuColorTests(unittest.TestCase):
                 self.assertIn(RED + keyword + RESET, stdout)
 
     def test_rotated_urls_stay_uncolored_on_a_tty(self):
-        rotated_url = "https://sub.example.test:8443/s/%s/clash-standard.yaml" % ROTATED_TOKEN
+        rotated_url = "https://sub.example.test:8443/s/%s/clash-compat-universal.yaml" % ROTATED_TOKEN
 
         code, stdout, stderr = run_cli(
             None, self.service, stdin_text="8\n3\n7\ny\n\n0\n0\n", tty=True
@@ -1038,29 +1038,51 @@ class TemplateSyncCommandTests(unittest.TestCase):
         from clash_sub import template_sync
 
         root = Path(__file__).resolve().parents[1]
+        report = template_sync.TemplateSyncReport(
+            changed=template_sync.TEMPLATE_OUTPUT_PATHS,
+            lines=(
+                "Compat 基础：已更新",
+                "家庭覆盖层：已更新",
+                "Balance DNS：已更新",
+                "写入：templates/base/compat-office.yaml",
+            ),
+        )
         environment = {
             key: value for key, value in os.environ.items() if key != "MIHOMO_BIN"
         }
         with patch.object(
             template_sync,
             "run_template_sync",
-            return_value={"changed": template_sync.TEMPLATE_OUTPUT_PATHS},
+            return_value=report,
         ) as sync:
             with patch.dict(os.environ, environment, clear=True):
                 code, stdout, stderr = run_cli(["template-sync"], FakeService())
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(sync.call_args.args, (root,))
-        # Exactly the three changed paths and the final prompt: no file
-        # contents are ever printed, private or public.
-        self.assertEqual(
-            stdout,
-            "templates/clash.yaml\n"
-            "templates/variants/manifest.yaml\n"
-            "private/home.yaml\n"
-            "模板已同步。请查看 git diff，运行测试后再提交。\n",
+        sync.assert_called_once_with(root, None, None)
+        self.assertEqual(stdout, "\n".join(report.lines) + "\n")
+
+    def test_template_sync_accepts_a_single_compat_source_without_reading_balance(self):
+        from clash_sub import template_sync
+
+        root = Path(__file__).resolve().parents[1]
+        report = template_sync.TemplateSyncReport(
+            changed=("templates/base/compat-office.yaml",),
+            lines=("Compat 基础：无变化",),
         )
+        with patch.object(template_sync, "run_template_sync", return_value=report) as sync:
+            code, stdout, stderr = run_cli(
+                ["template-sync", "--compat-office", "/tmp/Compat-Office.yaml"],
+                FakeService(),
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        sync.assert_called_once_with(
+            root, Path("/tmp/Compat-Office.yaml"), None
+        )
+        self.assertEqual(stdout, "\n".join(report.lines) + "\n")
 
     def test_template_sync_failure_reports_only_the_stable_code(self):
         from clash_sub import template_sync

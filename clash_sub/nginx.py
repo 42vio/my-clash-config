@@ -22,9 +22,9 @@ _ACTIVATION_JOURNAL = ".activation-journal.json"
 _JOURNAL_SCHEMA = 1
 _UNSAFE_PATH_CHARACTERS = frozenset(" ;{}'\\\"#$" + "".join(chr(code) for code in range(0x20)) + chr(0x7F))
 _TITLES = {
-    "balanced": ("Clash Balanced", "Clash-Balanced.yaml"),
-    "standard": ("Clash Standard", "Clash-Standard.yaml"),
-    "privacy": ("Clash Privacy", "Clash-Privacy.yaml"),
+    "compat-office": ("Clash Compat Office", "Clash-Compat-Office.yaml"),
+    "compat-universal": ("Clash Compat Universal", "Clash-Compat-Universal.yaml"),
+    "balance-office": ("Clash Balance Office", "Clash-Balance-Office.yaml"),
 }
 
 

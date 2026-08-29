@@ -171,7 +171,7 @@ class ServiceTests(unittest.TestCase):
         self.home_path = Path(self.config.private_root) / "home.yaml"
         self.home_path.write_bytes(dump_home_overlay(self.home))
         os.chmod(self.home_path, 0o600)
-        self.member_render_text = "member standard"
+        self.member_render_text = "member compat universal"
         self.fail_client = None
         self.fail_owner_render = False
         self.service = ClashSubService(
@@ -271,7 +271,7 @@ class ServiceTests(unittest.TestCase):
             raise RuntimeError("owner private failure")
         if is_owner:
             # Mirror the generator contract: the private home nodes are
-            # composed into the balanced and privacy variants only.
+            # composed into the Compat Office and Balance Office variants only.
             home_nodes = (
                 ""
                 if home is None
@@ -286,12 +286,12 @@ class ServiceTests(unittest.TestCase):
                         airport.url,
                         airport.digest[:8],
                         variant,
-                        home_nodes if variant in ("balanced", "privacy") else "",
+                        home_nodes if variant in ("compat-office", "balance-office") else "",
                     )
                 )
-                for variant in ("balanced", "standard", "privacy")
+                for variant in ("compat-office", "compat-universal", "balance-office")
             }
-        return {"standard": self.member_render_text}
+        return {"compat-universal": self.member_render_text}
 
     def _routes(self, config, state, clients):
         if any(user.active and user.current_release is None for user in state.users.values()):
@@ -304,7 +304,7 @@ class ServiceTests(unittest.TestCase):
         result = self.service.sync_all()
         self.assertEqual({item["client_id"] for item in result["updated"]}, {8})
         self.assertEqual(self.state.users[7].current_release, self.store.prepared[0][1].release_id)
-        self.assertEqual(tuple(self.store.prepared[0][1].public_paths), ("balanced", "standard", "privacy"))
+        self.assertEqual(tuple(self.store.prepared[0][1].public_paths), ("compat-office", "compat-universal", "balance-office"))
         self.assertTrue(all("token" not in repr(item) for item in result["updated"]))
         self.assertEqual(len(self.activator.calls[0][2]), 1)
         self.assertIs(self.store.prepared[0][1].airport, self.airport_document)
@@ -442,10 +442,10 @@ class ServiceTests(unittest.TestCase):
 
         def changed_render(owner, xui, airport, home, root):
             if not owner:
-                return {"standard": "member changed"}
+                return {"compat-universal": "member changed"}
             return {
                 variant: ("proxies:\n- name: Owner %s changed\n" % variant)
-                for variant in ("balanced", "standard", "privacy")
+                for variant in ("compat-office", "compat-universal", "balance-office")
             }
 
         self.service._render = changed_render
@@ -896,12 +896,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.home_path.read_bytes(), uploaded)
         self.assertEqual(stat.S_IMODE(self.home_path.stat().st_mode), 0o600)
         release = self.store.verify_release(7, self.current_owner_release())
-        for variant in ("balanced", "privacy"):
+        for variant in ("compat-office", "balance-office"):
             self.assertIn("- name: Home New\n", release.bundle[variant])
             self.assertNotIn("- name: Home\n", release.bundle[variant])
-        self.assertNotIn("Home New", release.bundle["standard"])
+        self.assertNotIn("Home New", release.bundle["compat-universal"])
         member = self.store.verify_release(8, self.state.users[8].current_release)
-        self.assertNotIn("Home New", member.bundle["standard"])
+        self.assertNotIn("Home New", member.bundle["compat-universal"])
 
     def test_sync_without_any_home_file_omits_the_overlay_without_error(self):
         self.bootstrap()
@@ -912,7 +912,7 @@ class ServiceTests(unittest.TestCase):
 
         self.assertFalse(result["errors"])
         release = self.store.verify_release(7, self.current_owner_release())
-        for variant in ("balanced", "privacy"):
+        for variant in ("compat-office", "balance-office"):
             self.assertNotIn("- name: Home\n", release.bundle[variant])
 
     def test_bad_overwritten_home_stays_for_debug_while_old_release_stays_live(self):
@@ -975,7 +975,7 @@ class ServiceTests(unittest.TestCase):
 
         def render(is_owner, xui, airport, home, template_root):
             if not is_owner:
-                return {"standard": "member still syncing"}
+                return {"compat-universal": "member still syncing"}
             raise HomeSourceError("home_group_invalid")
 
         self.service._render = render

@@ -87,7 +87,7 @@ class LightweightNginxTests(unittest.TestCase):
                 10: UserState(10, "deleted@example.invalid", token(b"x", "VWXYZA"), "VWXYZA", True, release),
             },
         )
-        for client_id, variants in ((7, ("balanced", "standard", "privacy")), (8, ("standard",))):
+        for client_id, variants in ((7, ("compat-office", "compat-universal", "balance-office")), (8, ("compat-universal",))):
             directory = self.public_root / "releases" / str(client_id) / release
             directory.mkdir(parents=True)
             for variant in variants:
@@ -122,25 +122,25 @@ class LightweightNginxTests(unittest.TestCase):
 
         text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
 
-        self.assertIn("location = /s/%s/clash-balanced.yaml" % self.owner_token, text)
-        self.assertIn("location = /s/%s/clash-standard.yaml" % self.owner_token, text)
-        self.assertIn("location = /s/%s/clash-privacy.yaml" % self.owner_token, text)
-        self.assertIn("location = /s/%s/clash-standard.yaml" % self.member_token, text)
-        self.assertNotIn("location = /s/%s/clash-balanced.yaml" % self.member_token, text)
-        self.assertNotIn("location = /s/%s/clash-privacy.yaml" % self.member_token, text)
+        self.assertIn("location = /s/%s/clash-compat-office.yaml" % self.owner_token, text)
+        self.assertIn("location = /s/%s/clash-compat-universal.yaml" % self.owner_token, text)
+        self.assertIn("location = /s/%s/clash-balance-office.yaml" % self.owner_token, text)
+        self.assertIn("location = /s/%s/clash-compat-universal.yaml" % self.member_token, text)
+        self.assertNotIn("location = /s/%s/clash-compat-office.yaml" % self.member_token, text)
+        self.assertNotIn("location = /s/%s/clash-balance-office.yaml" % self.member_token, text)
         self.assertNotIn("location /s/", text)
         self.assertNotIn("/s/ABCDEF/", text)
         self.assertNotIn("deleted@example.invalid", text)
         self.assertNotIn(self.owner.email, text)
         self.assertNotIn(self.member.email, text)
         self.assertNotIn(self.disabled.email, text)
-        self.assertIn("alias %s;" % (self.public_root / "releases" / "8" / self.state.users[8].current_release / "clash-standard.yaml"), text)
+        self.assertIn("alias %s;" % (self.public_root / "releases" / "8" / self.state.users[8].current_release / "clash-compat-universal.yaml"), text)
         self.assertIn('if ($request_method !~ ^(GET|HEAD)$) { return 404; }', text)
-        self.assertIn('add_header Profile-Title "Clash Standard";', text)
-        self.assertIn("add_header Content-Disposition 'attachment; filename=Clash-Standard.yaml';", text)
+        self.assertIn('add_header Profile-Title "Clash Compat Universal";', text)
+        self.assertIn("add_header Content-Disposition 'attachment; filename=Clash-Compat-Universal.yaml';", text)
         self.assertIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8";', text)
-        self.assertNotIn('add_header Profile-Title "Clash Standard" always;', text)
-        self.assertNotIn("add_header Content-Disposition 'attachment; filename=Clash-Standard.yaml' always;", text)
+        self.assertNotIn('add_header Profile-Title "Clash Compat Universal" always;', text)
+        self.assertNotIn("add_header Content-Disposition 'attachment; filename=Clash-Compat-Universal.yaml' always;", text)
         self.assertNotIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8" always;', text)
         self.assertIn('if ($args != "") { return 404; }', text)
         self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", text)
@@ -228,7 +228,7 @@ class LightweightNginxTests(unittest.TestCase):
                     os.chmod(alias, 0o644)
                 elif name == "symlink":
                     alias.unlink()
-                    alias.symlink_to(self.public_root / "releases" / "7" / "clash-balanced.yaml")
+                    alias.symlink_to(self.public_root / "releases" / "7" / self.state.users[7].current_release / "clash-compat-office.yaml")
                 else:
                     os.link(alias, alias.with_name("linked.yaml"))
                 with self.assertRaisesRegex(NginxError, "release path") as caught:
@@ -258,7 +258,7 @@ class LightweightNginxTests(unittest.TestCase):
             / "releases"
             / "8"
             / self.state.users[8].current_release
-            / "clash-standard.yaml"
+            / "clash-compat-universal.yaml"
         )
         os.link(path, path.with_name("linked.yaml"))
 
