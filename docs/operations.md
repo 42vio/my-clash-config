@@ -1,15 +1,21 @@
-# Operations
+# 运维、故障与恢复
 
-## Airport refresh
+## 快速入口
 
-On the server, use the `clash-sub` interactive menu to update the airport.
-Paste a temporary HTTPS subscription only into the hidden prompt. Do not place
-the URL in shell history, repository files, or logs. Check `clash-sub status`
-after completion.
+| 目标 | 从这里开始 |
+| --- | --- |
+| 开发 Mac 更新模板 | [模板更新](#模板更新) |
+| 服务器更新机场、发布或看状态 | [机场更新](#机场更新) 与 [同步、状态与链接](#同步状态与链接) |
+| 订阅异常或服务不可用 | [故障检查顺序](#故障检查顺序) |
+| 保存当前服务器 | [备份](#备份) |
+| 重装机器或更换域名/VPS | [全新服务器恢复](#全新服务器恢复) 或 [域名或-vps-迁移](#域名或-vps-迁移) |
+| 不再由脚本继续维护 | [人工接管](#人工接管) |
 
-## Template update on the development Mac
+以下服务器命令均以 root 在 `/opt/my-clash-config` 的已安装环境执行。首次安装、3x-ui 固定设置和安装回滚见[部署清单](../DEPLOYMENT.md)；模板的拆分、授权边界、Home 与注释规则见[模板设计](template-design.md)。
 
-By default, `template-sync` reads these two iCloud files:
+## 模板更新
+
+日常默认来源仅为开发 Mac iCloud 目录下的 `Compat-Office.yaml` 和 `Balance-Office.yaml`：
 
 ```text
 ~/Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents/
@@ -21,37 +27,197 @@ By default, `template-sync` reads these two iCloud files:
 ./bin/clash-sub template-sync
 ```
 
-To update exactly one source, pass exactly one option. It does not read the
-other default file:
+只替换一个来源时，每次只传一个选项；未指定的默认来源不会被读取：
 
 ```bash
 ./bin/clash-sub template-sync --compat-office /path/Compat-Office.yaml
 ./bin/clash-sub template-sync --balance-office /path/Balance-Office.yaml
 ```
 
-Compat 公共注释 are retained with the public base. Balance 的完整 `dns` is
-replaced as one section, including its comments; it is not recursively merged.
-Inputs are read only. A bad path, unavailable iCloud file, parse failure, or
-failed validation leaves every destination unchanged.
+同步先验证全部候选，随后原子写入；路径不可用、YAML 解析或验证失败时，目标不应留下半更新。报告只允许出现公开路径、注释和集合计数；不得把机场 URL、动态节点、Home 内容或凭据复制到终端记录、提交信息或故障报告。
 
-## Safe report and review
+完成后只审查受跟踪改动，并运行：
 
-The change report names changed public YAML paths, whether Balance DNS changed,
-comment and collection counts, and written or unchanged files. It may show
-public comments, but 不显示家庭内容或动态节点的名称、地址、URL 或凭据.
+```bash
+git diff --check
+.venv/bin/python -m unittest discover -v
+.venv/bin/python scripts/scan_tracked_secrets.py
+.venv/bin/python scripts/scan_tracked_secrets.py --private-root private
+```
 
-Review only tracked changes, then run the repository tests and both secret
-scans. `private/home.yaml` stays local and ignored.
+模板的具体生成与保留机制只以[模板设计](template-design.md)为准，不在本页展开。
 
-## Releases and rollback
+## Home 范围变更
 
-Use `clash-sub sync` to generate a release, `clash-sub links` to view links,
-`clash-sub history` to inspect releases, and `clash-sub rollback` to select a
-previous release. Rotate a leaked link with `clash-sub rotate-link`.
+先在开发 Mac 的私密覆盖层完成范围修改并以模板同步验证；不要把 Home 对象、值或注释搬进公共模板。`Compat-Universal.yaml` 只用于首次初始化 Home 范围，不是日常更新输入。
 
-## Deployment boundary
+服务器端变更由人工 SFTP 覆盖私密运行时目录中的 Home 文件，随后确认它是普通文件、不是 symlink，且权限为 `0600`；再执行：
 
-未来的服务器上传 is a separate, manual deployment boundary. This repository
-update neither transfers private files nor connects to a server. When that
-future process is defined, it must validate server inputs before publishing;
-it is not part of `template-sync`.
+```bash
+clash-sub sync
+clash-sub status
+```
+
+不存在 Home 上传命令；`sync` 也不接受上传目标。具体私密文件安全边界见[模板设计](template-design.md)。
+
+## 机场更新
+
+在服务器执行 `clash-sub`，主菜单选择 `1`，仅在隐藏提示中粘贴临时 HTTPS 订阅地址。不要把地址作为 shell 参数、写入历史、仓库、重定向文件或工单。成功后执行：
+
+```bash
+clash-sub status
+clash-sub links
+```
+
+若更新失败，保留原发布物，按[故障检查顺序](#故障检查顺序)排查；不要反复粘贴地址或把地址发送到日志中。
+
+## 同步、状态与链接
+
+模板、3x-ui、机场或 Home 有效变更后发布：
+
+```bash
+clash-sub sync
+clash-sub status
+clash-sub links
+```
+
+`sync` 会先恢复中断的运行时发布，再准备并验证候选，最后激活；若输出“同步部分完成”，按其中公开的客户端 ID 与错误代码处理，且以 `status` 的最近错误和 pending 项为准。`links` 输出可用订阅链接，屏幕录制或终端转存前先避免泄露。
+
+日常代码维护使用：
+
+```bash
+clash-sub update
+clash-sub sync
+```
+
+`update` 先创建更新前快照，执行 fast-forward 拉取和依赖同步，再由新代码完成 systemd 加固与 Nginx 重渲染；更新后仍需重新发布。
+
+## 历史与回退
+
+先从 `status` 或 `links` 确认目标用户 ID，再查看该用户可用发布版本：
+
+```bash
+clash-sub history <用户ID>
+clash-sub rollback <用户ID> <发布版本ID>
+clash-sub status
+clash-sub links
+```
+
+只有历史中存在的版本可以回退。泄露订阅链接时，轮换对应用户的令牌并重新取链接；旧链接立即失效：
+
+```bash
+clash-sub rotate-link <用户ID>
+clash-sub links
+```
+
+owner 身份发生变化或需要从 3x-ui 重新选择 owner 时才执行 `clash-sub reinitialize-owner <用户ID>`；该操作完成后必须重新在隐藏提示中更新机场订阅，再执行 `clash-sub sync`。
+
+## 证书和组件更新
+
+先查看证书，再按需要强制续期；`--domain` 不是改域名入口，会被拒绝：
+
+```bash
+clash-sub cert
+clash-sub cert --renew
+clash-sub status
+```
+
+单独升级 Mihomo 校验器时：
+
+```bash
+clash-sub mihomo-update
+clash-sub sync
+clash-sub status
+```
+
+每日流量任务由 `clash-sub-traffic.timer` 触发。检查定时器与服务状态：
+
+```bash
+systemctl status clash-sub-traffic.timer clash-sub-traffic.service
+```
+
+## 故障检查顺序
+
+按以下顺序停止；前一步异常时先修复，不要直接重装或删除发布目录。
+
+1. 查看发布与健康摘要：
+
+   ```bash
+   clash-sub status
+   clash-sub links
+   ```
+
+   记录公开的错误代码、pending 项与受影响用户 ID，不记录订阅链接或私密值。
+
+2. 检查 Nginx、x-ui 与定时器：
+
+   ```bash
+   nginx -t
+   systemctl status nginx x-ui clash-sub-traffic.timer
+   journalctl -u nginx -u x-ui -u clash-sub-traffic.service -n 100 --no-pager
+   ```
+
+3. 若发布过程中断、启动恢复未完成，先运行：
+
+   ```bash
+   clash-sub recover
+   nginx -t
+   clash-sub status
+   ```
+
+   `clash-sub-recover.service` 也会在启动时于 Nginx 之前处理这类激活日志；手动恢复成功后再决定是否重试 `sync`。
+
+4. 只在本地 YAML 或 Home 范围变更后失败时，回到开发 Mac 运行模板同步与两种密钥扫描；不要从服务器或日志取回私密内容。机场失败则重新通过隐藏输入更新，不使用命令行 URL。
+
+5. 当前发布有效但内容不合预期时，使用[历史与回退](#历史与回退)的用户级回退；仅整合安装本身需要撤销时，按[部署清单](../DEPLOYMENT.md#重新部署与安装回滚)执行 `clash-sub rollback --install`。
+
+## 备份
+
+变更前、更新前和迁移前都创建完整备份：
+
+```bash
+clash-sub backup
+```
+
+备份写入仓库 `backups/`，文件权限为 `0600`。归档包含存在时的 3x-ui 数据库、项目管理的 Nginx 配置、仓库私密目录（安装记录除外）、与仓库不同的运行时私密目录，以及仓库 commit 和 Nginx 版本清单。归档含私密数据：立即复制到受保护的离线或加密位置，不上传到仓库、公开网盘、工单或聊天记录。
+
+备份创建后验证文件存在且权限正确；不要解包到仓库或把清单内容贴进记录：
+
+```bash
+ls -l backups/clash-sub-backup-*.tar.gz
+```
+
+## 全新服务器恢复
+
+恢复以新服务器为目标，保留旧服务器直到验收完成。顺序如下：
+
+1. 从受保护备份恢复 3x-ui 数据库与入站/client 配置；按[部署清单](../DEPLOYMENT.md#3x-ui-关键配置)检查面板、Reality 入站和端口。
+2. 克隆仓库到 `/opt/my-clash-config`，按[部署清单](../DEPLOYMENT.md#全新安装)执行 `bash install.sh`。安装时仅在隐藏提示输入新主机所需的域名、Cloudflare token 与 owner email。
+3. 在安装建立运行时目录后，人工恢复备份中的私密服务设置与 Home 覆盖层；逐项确认私密文件为普通文件、无 symlink，并收紧为 `0600`。不要将其写入仓库，也没有上传命令可替代人工 SFTP。
+4. 通过隐藏提示重新导入机场订阅，然后发布并验收：
+
+   ```bash
+   clash-sub sync
+   nginx -t
+   systemctl status nginx x-ui clash-sub-traffic.timer
+   clash-sub status
+   clash-sub links
+   ```
+
+5. 验证所有者和成员的授权范围、`status` 最近错误为空、链接可访问后，才停止旧服务器。证书由新安装流程申请；不要从备份手工覆盖新主机证书或 Nginx 生成文件。
+
+## 域名或 VPS 迁移
+
+既有安装记录不允许用 `clash-sub cert --domain` 或再次安装直接改域名；新域名或新 VPS 一律按[全新服务器恢复](#全新服务器恢复)建立新环境。
+
+1. 在旧服务器执行 `clash-sub backup`，并保留旧服务继续运行。
+2. 在新主机完成恢复和验收；新域名的 DNS、证书和 Nginx 由安装流程处理。
+3. 用新域名的 `clash-sub links` 验证每个预期链接，并确认 Nginx、x-ui 与流量定时器正常。
+4. 仅在新发布物和客户端实际连通后切换 DNS/客户端；保留旧主机作为回退点。
+5. 稳定观察后再人工撤销旧主机的公开入口和访问凭据。不要在切换前执行安装回滚或删除旧备份。
+
+## 人工接管
+
+需要永久停止脚本化维护时，先创建并离线保存完整备份，记录公开的版本号、服务状态和待办事项；不要记录订阅链接、token、Home 或机场地址。将日常变更切换为受控的人工操作前，先冻结 `clash-sub update`、`sync`、`rotate-link` 等写入操作，避免两套流程同时发布。
+
+若仅撤销本项目的整合安装，使用 `clash-sub rollback --install`，并按部署文档恢复 Reality 入站公网 listen。该回滚保留运行时目录、3x-ui 数据库和已签发证书；接管人必须决定这些保留数据的后续备份、权限与删除策略。完成交接前，不删除旧服务器、备份或安装记录。
