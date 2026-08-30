@@ -76,7 +76,7 @@ bash install.sh
 clash-sub rollback --install
 ```
 
-该操作移除本项目写入的 Nginx 配置、systemd unit 和发布目录，保留 3x-ui 数据库及已签发证书；之后将 Reality 入站 listen 改回 `0.0.0.0` 以恢复 `10443` 直连。再次安装前按“3x-ui 关键配置”和“全新安装”重新执行。
+该操作移除或还原本项目写入的 Nginx 配置与 systemd 文件，保留运行时目录、3x-ui 数据库及已签发证书；之后将 Reality 入站 listen 改回 `0.0.0.0` 以恢复 `10443` 直连。再次安装前按“3x-ui 关键配置”和“全新安装”重新执行。
 
 ## 路径与命令速查
 
