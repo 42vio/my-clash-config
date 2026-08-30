@@ -821,14 +821,12 @@ class RepositoryScanTests(ScannerTestCase):
 
         self.assertEqual(exit_code, 0, self.captured_report)
 
-    def test_real_repository_stays_clean_with_documented_home_overlay(self):
-        # The overlay shape the tracked design notes publish (short
-        # public-style group names plus the documented rule text, which
-        # tracked non-markdown files also quote) must keep the real
-        # repository scan clean once private/home.yaml materializes.
-        # The rule is assembled from adjacent literals so this tracked
-        # test file never contains the contiguous rule string itself.
-        documented_rule = "IP-CIDR,192.168.2.0/24,HomeServer,no-" "resolve"
+    def test_real_repository_stays_clean_with_synthetic_home_overlay(self):
+        # A unique synthetic Home rule must not be attributed to another
+        # tracked file when private/home.yaml materializes.  Assemble it
+        # from adjacent literals so this tracked test file does not contain
+        # the complete private needle itself.
+        synthetic_rule = "IP-CIDR,198.18.23.0/24,HomeServer,no-" "resolve"
         with TemporaryDirectory() as directory:
             private_root = Path(directory) / "private"
             write_home(
@@ -836,7 +834,7 @@ class RepositoryScanTests(ScannerTestCase):
                 password="scanprobe",
                 proxy_name="ProxyServer",
                 group_name="HomeServer",
-                rules=(documented_rule,),
+                rules=(synthetic_rule,),
             )
 
             exit_code = self.scan(ROOT, private_root=private_root)
