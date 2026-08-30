@@ -106,7 +106,7 @@ c: {type: http, behavior: classical, interval: 86400}                           
 proxies: []
 proxy-groups:
 #节点分组（订阅按地区自动测速 / 手动切换；自建节点单列）
-- {name: 加速线路, <<: {type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🏴‍☠️ 自建节点2, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]} # 加速线路全列表
+- {name: 加速线路, <<: {type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]} # 加速线路全列表
 , icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Proxy.png, type: select, proxies: [自动选择, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]}
 - name: 自动选择
   exclude-filter: "流量|到期|剩余|官网|过期"
@@ -277,7 +277,6 @@ rules:
 - RULE-SET,Microsoft,微软服务,no-resolve
 - RULE-SET,AI,AI服务,no-resolve
 - GEOSITE,category-ai-!cn,AI服务
-- GEOSITE,google-cn,🎯 Direct
 - GEOSITE,category-games@cn,🎯 Direct
 - GEOSITE,category-game-platforms-download,游戏下载
 - GEOSITE,category-public-tracker,🎯 Direct
