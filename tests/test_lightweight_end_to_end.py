@@ -631,7 +631,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(harness.active_view(), before)
         harness.assert_candidate_cleanup(self)
 
-    def test_mihomo_failure_preserves_active_bytes_and_metadata(self):
+    def test_mihomo_failure_for_existing_home_preserves_active_bytes_and_metadata(self):
         harness = self.make_harness()
         harness.import_airport()
         harness.service.sync_all()
@@ -641,7 +641,10 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
         result = harness.service.sync_all()
 
-        self.assertEqual({item["code"] for item in result["errors"]}, {"owner_update_failed"})
+        self.assertEqual(
+            {item["code"] for item in result["errors"]},
+            {"home_mihomo_validation_failed"},
+        )
         self.assertTrue(harness.runner.mihomo_calls())
         self.assertEqual(harness.active_view(), before)
         harness.assert_candidate_cleanup(self)
