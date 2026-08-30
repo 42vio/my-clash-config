@@ -43,6 +43,17 @@ def clone_round_trip(value):
     return copy.deepcopy(value)
 
 
+def clone_round_trip_document(document):
+    """Clone one complete YAML document without changing its anchor graph."""
+    return load_round_trip(dump_round_trip(copy.deepcopy(document)))
+
+
+def clone_isolated_round_trip(value):
+    """Clone one YAML value as a self-contained fragment."""
+    wrapper = CommentedMap({"value": value})
+    return load_round_trip(dump_round_trip(wrapper))["value"]
+
+
 def copy_key_comments(source, source_key, target, target_key):
     if source.ca.comment is not None:
         target.ca.comment = copy.deepcopy(source.ca.comment)

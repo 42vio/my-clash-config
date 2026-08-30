@@ -636,15 +636,13 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         harness.import_airport()
         harness.service.sync_all()
         before = harness.active_view()
-        # A home-less owner candidate keeps the generic owner failure code;
-        # the home-bearing rejection is pinned by the overwrite tests below.
-        harness.home_path.unlink()
         harness.set_xui_proxy(harness.owner_id, "Owner changed")
         harness.runner.fail_mihomo = True
 
         result = harness.service.sync_all()
 
         self.assertEqual({item["code"] for item in result["errors"]}, {"owner_update_failed"})
+        self.assertTrue(harness.runner.mihomo_calls())
         self.assertEqual(harness.active_view(), before)
         harness.assert_candidate_cleanup(self)
 

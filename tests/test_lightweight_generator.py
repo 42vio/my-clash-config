@@ -8,6 +8,7 @@ from ruamel.yaml.comments import CommentedMap
 from clash_sub.domain import AirportProvider
 from clash_sub.generator import _compose_variant, render_user_bundle
 from clash_sub.sources import HomeSourceError, parse_home_overlay
+from clash_sub.yaml_rt import load_round_trip
 
 
 PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
@@ -51,6 +52,7 @@ PROFILES = """profiles:
     home: true
 inject-node-groups:
 - Public
+inject-provider-groups: []
 """
 
 HOME_YAML = """# home header
@@ -267,15 +269,72 @@ class LightweightGeneratorTests(unittest.TestCase):
                 "inject-node-groups:\n- Public\nlegacy: true\n",
             ),
         )
-
         with self.assertRaises(ValueError):
-            render_user_bundle(
-                False,
-                [reality_proxy("Member 3x-ui")],
-                None,
-                None,
-                self.root / "templates",
-            )
+            _compose_variant(self.root / "templates", "compat-universal")
+
+    def test_owner_provider_only_group_is_composed_without_member_provider_access(self):
+        """A provider-only target must not depend on node injection membership."""
+        self._write(
+            "templates/base/compat-office.yaml",
+            BASE_COMPAT.replace(
+                "rule-providers: {}\n",
+                "- name: Automatic\n"
+                "  type: url-test\n"
+                "  proxies: [DIRECT]\n"
+                "rule-providers: {}\n",
+            ),
+        )
+        self._write(
+            "templates/profiles.yaml",
+            PROFILES.replace(
+                "inject-provider-groups: []",
+                "inject-provider-groups: [Automatic]",
+            ),
+        )
+
+        owner = render_user_bundle(
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            provider(),
+            home_overlay(),
+            self.root / "templates",
+        )
+        member = render_user_bundle(
+            False,
+            [reality_proxy("Member 3x-ui")],
+            None,
+            None,
+            self.root / "templates",
+        )
+
+        owner_groups = proxy_groups(owner["compat-universal"])
+        member_groups = proxy_groups(member["compat-universal"])
+        self.assertEqual(owner_groups["Automatic"]["use"], ["AmyTelecom"])
+        self.assertNotIn("use", member_groups["Automatic"])
+        self.assertNotIn("proxy-providers", yaml.safe_load(member["compat-universal"]))
+
+    def test_render_keeps_shared_yaml_aliases_as_shared_objects(self):
+        """Rebuilding a group separately must not expand a shared YAML alias."""
+        self._write(
+            "templates/base/compat-office.yaml",
+            BASE_COMPAT.replace(
+                "rule-providers: {}\n",
+                "routing-default: &routing-default {interval: 300}\n"
+                "routing-default-copy: *routing-default\n"
+                "rule-providers: {}\n",
+            ),
+        )
+
+        rendered = render_user_bundle(
+            True,
+            [reality_proxy("Owner 3x-ui")],
+            provider(),
+            home_overlay(),
+            self.root / "templates",
+        )["compat-universal"]
+        document = load_round_trip(rendered.encode("utf-8"))
+
+        self.assertIs(document["routing-default"], document["routing-default-copy"])
 
     def test_member_rejects_unauthorized_provider_and_home(self):
         with self.assertRaises(ValueError):

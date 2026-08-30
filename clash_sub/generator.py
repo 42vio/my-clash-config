@@ -15,6 +15,7 @@ from clash_sub.sources import (
 from clash_sub.yaml_rt import (
     RoundTripYamlError,
     clone_round_trip,
+    clone_isolated_round_trip,
     copy_key_comments,
     dump_round_trip,
     load_round_trip,
@@ -430,6 +431,8 @@ def _compose_variant(template_root: Path, variant: str) -> tuple[CommentedMap, d
         elif base_root_comment is not None:
             document.ca.comment = base_root_comment
     injections = {group: "all" for group in manifest["inject-node-groups"]}
+    for group in manifest["inject-provider-groups"]:
+        injections[group] = "all-provider" if group in injections else "provider"
     return document, injections
 
 
@@ -442,7 +445,11 @@ def _load_round_trip(path):
 
 def _load_manifest(path):
     manifest = _load_round_trip(path)
-    if set(manifest) != {"profiles", "inject-node-groups"}:
+    if set(manifest) != {
+        "profiles",
+        "inject-node-groups",
+        "inject-provider-groups",
+    }:
         raise ValueError("profile manifest shape is invalid")
     profiles = manifest.get("profiles")
     if not isinstance(profiles, Mapping) or set(profiles) != set(OWNER_VARIANTS):
@@ -459,13 +466,14 @@ def _load_manifest(path):
             or recipe.get("home") is not expected_home
         ):
             raise ValueError("profile recipe is invalid")
-    groups = manifest.get("inject-node-groups")
-    if (
-        not isinstance(groups, list)
-        or any(not isinstance(group, str) or not group.strip() for group in groups)
-        or len(set(groups)) != len(groups)
-    ):
-        raise ValueError("profile injection list is invalid")
+    for key in ("inject-node-groups", "inject-provider-groups"):
+        groups = manifest.get(key)
+        if (
+            not isinstance(groups, list)
+            or any(not isinstance(group, str) or not group.strip() for group in groups)
+            or len(set(groups)) != len(groups)
+        ):
+            raise ValueError("profile injection list is invalid")
     return manifest
 
 
@@ -500,19 +508,24 @@ def _inject_proxy_names(document, injections, source_names, provider_name=None):
         matching = indexes.get(group_name, [])
         if len(matching) != 1:
             raise ValueError("inject-node-group must exist exactly once")
-        targets = groups[matching[0]].setdefault("proxies", CommentedSeq())
+        target_index = matching[0]
+        target_group = _materialize_injection_group(groups, target_index)
+        targets = target_group.setdefault("proxies", CommentedSeq())
         if not isinstance(targets, list):
             raise ValueError("inject-node-group must expose proxies")
-        if source_name not in source_names:
+        inject_source = "all" if source_name == "all-provider" else source_name
+        if inject_source == "provider":
+            continue
+        if inject_source not in source_names:
             raise ValueError("inject-node-group references unknown source")
-        for name in source_names[source_name]:
+        for name in source_names[inject_source]:
             if name not in targets:
                 targets.append(name)
     if provider_name is None:
         return
     provider_indexes = set()
     for group_name, source_name in injections.items():
-        if source_name == "all":
+        if source_name in {"all-provider", "provider"}:
             matching = indexes.get(group_name, [])
             if len(matching) == 1:
                 provider_indexes.add(matching[0])
@@ -520,8 +533,22 @@ def _inject_proxy_names(document, injections, source_names, provider_name=None):
         if group.get("include-all") is True:
             provider_indexes.add(index)
     for index in provider_indexes:
-        uses = groups[index].setdefault("use", CommentedSeq())
+        uses = _materialize_injection_group(groups, index).setdefault(
+            "use", CommentedSeq()
+        )
         if not isinstance(uses, list):
             raise ValueError("proxy group use entries must be a list")
         if provider_name not in uses:
             uses.append(provider_name)
+
+
+def _materialize_injection_group(groups, index):
+    """Detach only a group that this render needs to mutate."""
+    group = groups[index]
+    if not isinstance(group, Mapping):
+        raise ValueError("proxy-groups entries must have names")
+    copied = clone_isolated_round_trip(group)
+    if not isinstance(copied, Mapping):
+        raise ValueError("proxy-groups entries must have names")
+    groups[index] = copied
+    return copied

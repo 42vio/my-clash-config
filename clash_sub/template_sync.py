@@ -33,6 +33,8 @@ from clash_sub.sources import (
 from clash_sub.yaml_rt import (
     RoundTripYamlError,
     clone_round_trip,
+    clone_round_trip_document,
+    clone_isolated_round_trip,
     copy_key_comments,
     dump_round_trip,
     load_round_trip,
@@ -60,6 +62,9 @@ OUTPUT_MODES = {
     "private/home.yaml": 0o600,
 }
 MAX_SOURCE_BYTES = 5 * 1024 * 1024
+_BUILTIN_TARGETS = frozenset(
+    {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE", "GLOBAL"}
+)
 
 _PROBE_PROVIDER_URL = "https://template-sync.invalid/s/probe/AmyTelecom.yaml"
 _PROBE_PROVIDER_DIGEST = "5" * 64
@@ -166,6 +171,7 @@ class _SplitResult:
     public: Mapping
     home: HomeOverlay | None
     inject_node_groups: tuple[str, ...]
+    inject_provider_groups: tuple[str, ...]
     dynamic_names: frozenset[str]
 
 
@@ -206,7 +212,9 @@ def run_template_sync(
         split = _split_source(compat_source, scope)
         compat_candidate = split.public
         home_candidate = split.home
-        profiles_candidate = _build_profiles(split.inject_node_groups)
+        profiles_candidate = _build_profiles(
+            split.inject_node_groups, split.inject_provider_groups
+        )
     else:
         compat_candidate = _load_current_candidate(root, PUBLIC_TEMPLATE_FILES[0])
         home_candidate = scope
@@ -344,36 +352,43 @@ def _validate_source_document(document, text):
             and isinstance(provider.get("path"), str)
             and bool(provider.get("path").strip())
         ):
-            validation_document = clone_round_trip(document)
+            validation_document = clone_round_trip_document(document)
             validation_document["proxy-providers"] = CommentedMap(
                 {_PROVIDER_NAME: clone_round_trip(_PROBE_PROVIDER)}
             )
             groups = validation_document.get("proxy-groups")
             if not isinstance(groups, list):
                 raise TemplateSyncError("template_source_invalid")
-            for group in groups:
+            for index, group in enumerate(groups):
                 if not isinstance(group, Mapping):
                     raise TemplateSyncError("template_source_invalid")
                 uses = _group_uses(group)
-                if uses is None:
-                    continue
-                if not isinstance(uses, list) or any(
-                    use != provider_name for use in uses
-                ):
-                    raise TemplateSyncError("template_source_invalid")
-                _drop_merged_provider_use(group)
-                group["use"] = CommentedSeq([_PROVIDER_NAME] * len(uses))
-                if "proxies" not in group and group.get("include-all") is not True:
-                    group["proxies"] = CommentedSeq()
-            external_names = _external_provider_members(
-                document, source_proxy_names, source_group_names
-            )
-            if external_names:
-                for group in groups:
+                if uses is not None:
+                    if not isinstance(uses, list) or any(
+                        use != provider_name for use in uses
+                    ):
+                        raise TemplateSyncError("template_source_invalid")
+                    groups[index] = _with_provider_use(
+                        group, CommentedSeq([_PROVIDER_NAME] * len(uses))
+                    )
+                    if "proxies" not in group and group.get("include-all") is not True:
+                        groups[index]["proxies"] = CommentedSeq()
+            if _source_file_provider_name(document) is not None:
+                source_groups = document.get("proxy-groups", [])
+                for index, group in enumerate(groups):
+                    source_group = source_groups[index]
                     members = group.get("proxies")
                     if isinstance(members, list):
                         group["proxies"] = CommentedSeq(
-                            member for member in members if member not in external_names
+                            member
+                            for member in members
+                            if not _is_external_provider_member(
+                                document,
+                                source_group,
+                                member,
+                                source_proxy_names,
+                                source_group_names,
+                            )
                         )
             provider_url = _PROBE_PROVIDER_URL
         else:
@@ -435,6 +450,14 @@ def _source_file_provider_name(document):
     return provider_name
 
 
+def _source_provider_name(document):
+    providers = document.get("proxy-providers")
+    if not isinstance(providers, Mapping) or len(providers) != 1:
+        return None
+    provider_name = next(iter(providers))
+    return provider_name if isinstance(provider_name, str) and provider_name.strip() else None
+
+
 def _external_provider_members(document, proxy_names, group_names):
     provider_name = _source_file_provider_name(document)
     if provider_name is None:
@@ -444,19 +467,38 @@ def _external_provider_members(document, proxy_names, group_names):
     for group in document.get("proxy-groups", []) or []:
         if not isinstance(group, Mapping):
             continue
-        uses = _group_uses(group)
-        if not isinstance(uses, list) or provider_name not in uses:
-            continue
         members = group.get("proxies")
         if not isinstance(members, list):
             continue
         external.update(
             member
             for member in members
-            if isinstance(member, str)
-            and member not in proxy_names | group_names | builtins
+            if _is_external_provider_member(
+                document, group, member, proxy_names, group_names
+            )
         )
     return frozenset(external)
+
+
+def _is_external_provider_member(
+    document, group, member, proxy_names, group_names
+):
+    """Recognize only source-provider members that are safe to omit publicly."""
+    provider_name = _source_file_provider_name(document)
+    if (
+        provider_name is None
+        or not isinstance(member, str)
+        or member in proxy_names | group_names | _BUILTIN_TARGETS
+    ):
+        return False
+    uses = _group_uses(group)
+    if isinstance(uses, list) and provider_name in uses:
+        return True
+    members = group.get("proxies")
+    return isinstance(members, list) and any(
+        isinstance(candidate, str) and candidate in proxy_names
+        for candidate in members
+    )
 
 
 def _prune_private_references(node, names):
@@ -509,11 +551,17 @@ def _split_source(
     home_injected = set(scope.inject_home_node_groups)
 
     groups = source["proxy-groups"]
+    public = clone_round_trip_document(source)
+    public_groups = public["proxy-groups"]
+    if not isinstance(public_groups, list):
+        raise TemplateSyncError("template_source_invalid")
+    local_provider_name = _source_provider_name(source)
     private_group_values = []
     private_group_indices = []
     public_group_values = []
     public_group_indices = []
     inject_node_groups = []
+    inject_provider_groups = []
     extensions = CommentedMap()
     for index, group in enumerate(groups):
         if not isinstance(group, Mapping):
@@ -524,13 +572,24 @@ def _split_source(
             private_group_indices.append(index)
             private_group_values.append(private)
             continue
-        public = clone_round_trip(group)
-        _drop_provider_use(public)
+        public_group = public_groups[index]
+        if not isinstance(public_group, Mapping):
+            raise TemplateSyncError("template_source_invalid")
+        uses = _group_uses(group)
+        is_provider_group = isinstance(uses, list) and local_provider_name in uses
         members = group.get("proxies")
+        is_node_group = isinstance(members, list) and any(
+            isinstance(member, str) and member in dynamic_names
+            for member in members
+        )
+        if is_provider_group or (
+            _source_file_provider_name(source) is not None and is_node_group
+        ):
+            inject_provider_groups.append(name)
         if isinstance(members, list):
             kept_indices = []
             extension_indices = []
-            if any(isinstance(member, str) and member in dynamic_names for member in members):
+            if is_node_group:
                 inject_node_groups.append(name)
             for member_index, member in enumerate(members):
                 if isinstance(member, str) and member in home_group_names:
@@ -540,25 +599,36 @@ def _split_source(
                     # extension, but it cannot restore a home node embedded
                     # directly in a public group.  Reject rather than lose it.
                     raise TemplateSyncError("template_source_invalid")
-                elif isinstance(member, str) and member in external_provider_names:
+                elif _is_external_provider_member(
+                    source,
+                    group,
+                    member,
+                    set(source_proxy_names),
+                    set(source_group_names),
+                ):
                     continue
                 elif isinstance(member, str) and member in all_inline:
                     continue
                 else:
                     kept_indices.append(member_index)
-            public["proxies"] = _select_sequence(members, kept_indices)
+            members_changed = kept_indices != list(range(len(members)))
+            if is_provider_group or members_changed:
+                if is_provider_group:
+                    public_group = _without_provider_use(public_group)
+                    public_groups[index] = public_group
+                public_group["proxies"] = _select_sequence(members, kept_indices)
             if extension_indices:
                 extensions[name] = _select_sequence(members, extension_indices)
         elif _group_uses(group) is not None and "include-all" not in group:
-            public["proxies"] = CommentedSeq()
+            public_group = _without_provider_use(public_group)
+            public_groups[index] = public_group
+            public_group["proxies"] = CommentedSeq()
         public_group_indices.append(index)
-        public_group_values.append(public)
+        public_group_values.append(public_group)
 
-    public = clone_round_trip(source)
     public["proxies"] = CommentedSeq()
-    public["proxy-groups"] = _sequence_with_values(
-        groups, public_group_indices, public_group_values
-    )
+    for index in reversed(private_group_indices):
+        del public_groups[index]
     public_rules = source.get("rules")
     if not isinstance(public_rules, list):
         raise TemplateSyncError("template_source_invalid")
@@ -619,13 +689,13 @@ def _split_source(
         public=public,
         home=home,
         inject_node_groups=tuple(inject_node_groups),
+        inject_provider_groups=tuple(inject_provider_groups),
         dynamic_names=dynamic_names,
     )
 
 
 def _strip_private_group(group, name, all_injected, home_injected, all_inline, home_inline):
-    copied = clone_round_trip(group)
-    _drop_provider_use(copied)
+    copied = _materialize_group(group)
     members = group.get("proxies")
     if not isinstance(members, list):
         return copied
@@ -646,10 +716,59 @@ def _strip_private_group(group, name, all_injected, home_injected, all_inline, h
     return copied
 
 
-def _drop_provider_use(group):
-    if "use" in group:
-        del group["use"]
-    _drop_merged_provider_use(group)
+def _materialize_group(group):
+    """Make a standalone group for the private overlay document."""
+    copied = CommentedMap()
+    copied.ca.comment = copy.deepcopy(getattr(group.ca, "comment", None))
+    for key, value in group.items():
+        if key == "use":
+            continue
+        copied[key] = clone_isolated_round_trip(value)
+        if key in group.ca.items:
+            copied.ca.items[key] = copy.deepcopy(group.ca.items[key])
+    return copied
+
+
+def _materialize_proxy(proxy):
+    copied = CommentedMap()
+    copied.ca.comment = copy.deepcopy(getattr(proxy.ca, "comment", None))
+    for key, value in proxy.items():
+        copied[key] = clone_isolated_round_trip(value)
+        if key in proxy.ca.items:
+            copied.ca.items[key] = copy.deepcopy(proxy.ca.items[key])
+    return copied
+
+
+def _without_provider_use(group):
+    """Copy a group without inherited provider bindings.
+
+    Removing a key from a ruamel merge source mutates every alias and can
+    corrupt its merge bookkeeping.  Materialize only the group's explicit
+    fields instead, preserving unrelated anchors in the surrounding document.
+    """
+    if not getattr(group, "merge", None):
+        copied = clone_round_trip(group)
+        if "use" in copied:
+            del copied["use"]
+        return copied
+    copied = CommentedMap()
+    copied.ca.comment = copy.deepcopy(getattr(group.ca, "comment", None))
+    # ``items()`` includes merge-inherited defaults such as ``proxies``.  They
+    # must become explicit when the merge that carried a source provider is
+    # removed, otherwise validation sees a group with no targets.
+    for key, value in group.items():
+        if key == "use":
+            continue
+        copied[key] = clone_round_trip(value)
+        if key in group.ca.items:
+            copied.ca.items[key] = copy.deepcopy(group.ca.items[key])
+    return copied
+
+
+def _with_provider_use(group, uses):
+    copied = _without_provider_use(group)
+    copied["use"] = uses
+    return copied
 
 
 def _group_uses(group):
@@ -665,13 +784,6 @@ def _group_uses(group):
     return None
 
 
-def _drop_merged_provider_use(group):
-    merged = getattr(group, "merge", None)
-    if not merged:
-        return
-    for item in merged:
-        if isinstance(item, Mapping) and "use" in item:
-            del item["use"]
 
 
 def _build_home_document(
@@ -687,6 +799,9 @@ def _build_home_document(
     if getattr(source, "ca", None) is not None:
         document.ca.comment = copy.deepcopy(source.ca.comment)
     proxies = _select_sequence(source["proxies"], home_proxy_indices)
+    for index, proxy in enumerate(proxies):
+        if isinstance(proxy, Mapping):
+            proxies[index] = _materialize_proxy(proxy)
     groups = _sequence_with_values(
         source["proxy-groups"], private_group_indices, private_group_values
     )
@@ -701,9 +816,6 @@ def _build_home_document(
         scope, "inject-home-node-groups"
     )
     document["rules"] = rules
-    for key in ("proxies", "proxy-groups", "rules"):
-        if key in source:
-            copy_key_comments(source, key, document, key)
     for key in (
         "extend-proxy-groups",
         "inject-node-groups",
@@ -751,7 +863,7 @@ def _sequence_with_values(source, indices, values):
         result.ca.comment = copy.deepcopy(source.ca.comment)
         result.ca.end = copy.deepcopy(source.ca.end)
     for new_index, (old_index, value) in enumerate(zip(indices, values)):
-        result.append(clone_round_trip(value))
+        result.append(clone_isolated_round_trip(value))
         source_comments = getattr(getattr(source, "ca", None), "items", {})
         comments = source_comments.get(old_index)
         if comments is not None:
@@ -771,7 +883,7 @@ def _rule_targets_private(rule, private_names):
     return target in private_names
 
 
-def _build_profiles(inject_node_groups):
+def _build_profiles(inject_node_groups, inject_provider_groups):
     profiles = CommentedMap()
     profiles["compat-office"] = CommentedMap({"dns": "compat", "home": True})
     profiles["compat-universal"] = CommentedMap({"dns": "compat", "home": False})
@@ -781,6 +893,9 @@ def _build_profiles(inject_node_groups):
     document = CommentedMap()
     document["profiles"] = profiles
     document["inject-node-groups"] = CommentedSeq(list(inject_node_groups))
+    document["inject-provider-groups"] = CommentedSeq(
+        list(inject_provider_groups)
+    )
     return document
 
 
@@ -941,6 +1056,7 @@ def _validate_profiles_document(document):
     if not isinstance(document, Mapping) or set(document) != {
         "profiles",
         "inject-node-groups",
+        "inject-provider-groups",
     }:
         raise TemplateSyncError("template_candidate_invalid")
     profiles = document.get("profiles")
@@ -965,13 +1081,14 @@ def _validate_profiles_document(document):
             or recipe.get("home") is not home
         ):
             raise TemplateSyncError("template_candidate_invalid")
-    inject = document.get("inject-node-groups")
-    if not isinstance(inject, list) or any(
-        not isinstance(name, str) or not name.strip() for name in inject
-    ):
-        raise TemplateSyncError("template_candidate_invalid")
-    if len(set(inject)) != len(inject):
-        raise TemplateSyncError("template_candidate_invalid")
+    for key in ("inject-node-groups", "inject-provider-groups"):
+        inject = document.get(key)
+        if not isinstance(inject, list) or any(
+            not isinstance(name, str) or not name.strip() for name in inject
+        ):
+            raise TemplateSyncError("template_candidate_invalid")
+        if len(set(inject)) != len(inject):
+            raise TemplateSyncError("template_candidate_invalid")
 
 
 def _validate_candidates(
@@ -995,7 +1112,9 @@ def _validate_candidates(
         raise TemplateSyncError("template_candidate_invalid")
     if not isinstance(home_candidate, HomeOverlay):
         raise TemplateSyncError("template_candidate_invalid")
-    profile_injections = profiles_candidate["inject-node-groups"]
+    profile_injections = set(profiles_candidate["inject-node-groups"]) | set(
+        profiles_candidate["inject-provider-groups"]
+    )
     public_group_names = {
         group.get("name")
         for group in compat_candidate.get("proxy-groups", [])
@@ -1036,7 +1155,7 @@ def _validate_candidates(
         _validate_rendered(compat_universal_owner, _PROBE_PROVIDER_URL)
         _validate_rendered(compat_member, None)
         if balance_candidate is not None:
-            balance_full = clone_round_trip(compat_candidate)
+            balance_full = clone_round_trip_document(compat_candidate)
             balance_full["dns"] = clone_round_trip(balance_candidate["dns"])
             balance_owner = _compose_for_validation(
                 balance_full,
@@ -1051,7 +1170,7 @@ def _validate_candidates(
 
 
 def _compose_for_validation(base, profiles, home, *, use_home, owner):
-    document = clone_round_trip(base)
+    document = clone_round_trip_document(base)
     document["proxies"] = CommentedSeq([clone_round_trip(_PROBE_PROXY)])
     if use_home:
         document["proxies"].extend(
@@ -1088,6 +1207,8 @@ def _compose_for_validation(base, profiles, home, *, use_home, owner):
         )
         if not isinstance(target, Mapping):
             raise ValueError
+        target_index = document["proxy-groups"].index(target)
+        target = _materialize_validation_group(document["proxy-groups"], target_index)
         members = target.get("proxies")
         if isinstance(members, list) and _PROBE_NAME not in members:
             members.append(_PROBE_NAME)
@@ -1110,9 +1231,37 @@ def _compose_for_validation(base, profiles, home, *, use_home, owner):
                         members.append(member)
     if owner:
         document["proxy-providers"] = CommentedMap({_PROVIDER_NAME: _PROBE_PROVIDER})
+        for name in profiles["inject-provider-groups"]:
+            target = next(
+                (
+                    group
+                    for group in document.get("proxy-groups", [])
+                    if isinstance(group, Mapping) and group.get("name") == name
+                ),
+                None,
+            )
+            if not isinstance(target, Mapping):
+                raise ValueError
+            target_index = document["proxy-groups"].index(target)
+            target = _materialize_validation_group(
+                document["proxy-groups"], target_index
+            )
+            uses = target.setdefault("use", CommentedSeq())
+            if not isinstance(uses, list) or _PROVIDER_NAME in uses:
+                raise ValueError
+            uses.append(_PROVIDER_NAME)
     elif "proxy-providers" in document:
         del document["proxy-providers"]
     return _dump_candidate(document)
+
+
+def _materialize_validation_group(groups, index):
+    group = groups[index]
+    copied = clone_isolated_round_trip(group)
+    if not isinstance(copied, Mapping):
+        raise ValueError
+    groups[index] = copied
+    return copied
 
 
 def _validate_rendered(text, provider_url):
@@ -1354,7 +1503,7 @@ def _serialize_candidates(candidates):
 
 def _dump_candidate(document):
     try:
-        return dump_round_trip(clone_round_trip(document))
+        return dump_round_trip(clone_round_trip_document(document))
     except RoundTripYamlError:
         raise TemplateSyncError("template_candidate_invalid") from None
 

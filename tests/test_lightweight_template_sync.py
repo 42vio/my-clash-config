@@ -16,6 +16,7 @@ from unittest.mock import patch
 import yaml
 
 from clash_sub.sources import load_home_overlay
+from clash_sub.yaml_rt import load_round_trip
 from clash_sub.template_sync import (
     HOME_SCOPE_PATH,
     OUTPUT_MODES,
@@ -185,6 +186,8 @@ PROFILES = """profiles:
     dns: balance-office
     home: true
 inject-node-groups:
+  []
+inject-provider-groups:
   []
 """
 
@@ -373,7 +376,8 @@ class TemplateSyncInputTests(unittest.TestCase):
             )
         )
 
-    def test_rejects_unknown_member_in_group_unrelated_to_local_provider(self):
+    def test_node_injection_group_strips_undeclared_local_provider_member(self):
+        """A dynamic-node group may also carry a member from its local provider."""
         source_provider = (
             "proxy-providers: {SourceNodes: {type: file, "
             "path: ./proxy_providers/source.yaml}}\n"
@@ -389,7 +393,104 @@ class TemplateSyncInputTests(unittest.TestCase):
             source_provider,
         ).replace(
             "- name: Public\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, HomeAll]\n",
-            "- name: Public\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, HomeAll, Synthetic Unknown]\n",
+            "- name: Public\n  type: select\n"
+            "  proxies: [DIRECT, Shared 3x-ui, HomeAll, SourceNode]\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-dynamic-provider.yaml", source)
+
+        run_template_sync(self.root, compat_office=path)
+
+        document = yaml.safe_load((self.root / PUBLIC_TEMPLATE_FILES[0]).read_text())
+        public = next(group for group in document["proxy-groups"] if group["name"] == "Public")
+        manifest = yaml.safe_load((self.root / "templates/profiles.yaml").read_text())
+        self.assertNotIn("SourceNode", public["proxies"])
+        self.assertEqual(manifest["inject-node-groups"], ["Public"])
+        self.assertEqual(manifest["inject-provider-groups"], ["Public"])
+
+    def test_sync_keeps_provider_group_aliases_and_declares_provider_only_targets(self):
+        """Dropping provider credentials must not sever public YAML aliases."""
+        source_provider = (
+            "proxy-providers: {SourceNodes: {type: file, "
+            "path: ./proxy_providers/source.yaml}}\n"
+        )
+        source = COMPAT_OFFICE.replace(
+            "proxy-providers:\n"
+            "  AmyTelecom:\n"
+            "    type: http\n"
+            "    url: %s\n"
+            "    interval: 0\n"
+            "    path: ./proxy_providers/AmyTelecom-%s.yaml\n"
+            % (PROVIDER_URL, PROVIDER_DIGEST),
+            source_provider,
+        ).replace(
+            "- name: Public\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, HomeAll]\n",
+            "- name: Public\n"
+            "  type: select\n"
+            "  use: [SourceNodes]\n"
+            "  proxies: [DIRECT, Shared 3x-ui, HomeAll, SourceNode]\n"
+            "- name: Automatic\n"
+            "  type: select\n"
+            "  use: [SourceNodes]\n"
+            "  proxies: [DIRECT, SourceNode]\n",
+        ).replace(
+            "# shared comment\n",
+            "# shared comment\n"
+            "shared-setting: &shared_setting {enabled: true}\n"
+            "shared-setting-copy: *shared_setting\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-provider-alias.yaml", source)
+
+        run_template_sync(self.root, compat_office=path)
+
+        template = load_round_trip(
+            (self.root / "templates/base/compat-office.yaml").read_bytes()
+        )
+        self.assertIs(template["shared-setting-copy"], template["shared-setting"])
+        manifest = yaml.safe_load((self.root / "templates/profiles.yaml").read_text())
+        self.assertEqual(manifest["inject-node-groups"], ["Public"])
+        self.assertEqual(manifest["inject-provider-groups"], ["Public", "Automatic"])
+
+    def test_sync_serializes_unrelated_group_merge_anchor_and_alias(self):
+        """Sanitizing providers must not flatten an untouched shared group default."""
+        source = COMPAT_OFFICE.replace(
+            "proxy-groups:\n",
+            "static-group: &static-group\n"
+            "  type: select\n"
+            "  proxies: [DIRECT]\n"
+            "proxy-groups:\n",
+        ).replace(
+            "- name: HomeAll\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, Home]\n",
+            "- name: Static\n  <<: *static-group\n"
+            "- name: HomeAll\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, Home]\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-static-merge.yaml", source)
+
+        run_template_sync(self.root, compat_office=path)
+
+        text = (self.root / PUBLIC_TEMPLATE_FILES[0]).read_text()
+        document = load_round_trip(text.encode("utf-8"))
+        static = next(group for group in document["proxy-groups"] if group["name"] == "Static")
+        self.assertEqual(static["proxies"], ["DIRECT"])
+        self.assertIs(static["proxies"], document["static-group"]["proxies"])
+
+    def test_rejects_unknown_member_in_group_unrelated_to_local_provider(self):
+        source_provider = (
+            "proxy-providers: {SourceNodes: {type: file, "
+            "path: ./proxy_providers/source.yaml}}\n"
+        )
+        source = COMPAT_OFFICE.replace(
+            "proxy-providers:\n"
+            "  AmyTelecom:\n"
+            "    type: http\n"
+            "    url: %s\n"
+            "    interval: 0\n"
+            "    path: ./proxy_providers/AmyTelecom-%s.yaml\n"
+            % (PROVIDER_URL, PROVIDER_DIGEST),
+            source_provider,
+        ).replace(
+            "- name: HomeAll\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, Home]\n",
+            "- name: Unrelated\n  type: select\n  proxies: [DIRECT, Synthetic Unknown]\n"
+            "- name: HomeAll\n  type: select\n  proxies: [DIRECT, Shared 3x-ui, Home]\n",
         )
         path = _write_source(self.source_root / "Compat-Office-unrelated.yaml", source)
 
@@ -480,6 +581,37 @@ class TemplateSyncSplitTests(unittest.TestCase):
             yaml.safe_load(balance_text)["dns"],
             yaml.safe_load(self.balance_path.read_text())["dns"],
         )
+
+    def test_home_fragment_with_public_merge_anchor_is_standalone(self):
+        """A private group must not retain an alias whose definition is public."""
+        source = COMPAT_OFFICE.replace(
+            "proxy-groups:\n",
+            "public-default: &public-default\n"
+            "  type: select\n"
+            "# home group heading\n"
+            "proxy-groups:\n",
+        ).replace(
+            "- name: HomeAll\n  type: select\n",
+            "- name: HomeAll\n  <<: *public-default\n",
+        ).replace(
+            "- name: HomeOnly\n  type: select\n",
+            "- name: HomeOnly\n  <<: *public-default\n",
+        ).replace(
+            "rules:\n- DOMAIN-SUFFIX,public.example.test,Public\n",
+            "# home rules heading\n"
+            "rules:\n- DOMAIN-SUFFIX,public.example.test,Public\n",
+        )
+        path = _write_source(self.source_root / "Compat-Office-anchored-home.yaml", source)
+
+        run_template_sync(self.root, compat_office=path)
+
+        home_path = self.root / HOME_SCOPE_PATH
+        first = home_path.read_bytes()
+        home = load_home_overlay(home_path, 5 * 1024 * 1024)
+        self.assertEqual([group["type"] for group in home.proxy_groups], ["select", "select"])
+        self.assertNotIn("*public-default", home_path.read_text())
+        run_template_sync(self.root, compat_office=path)
+        self.assertEqual(home_path.read_bytes(), first)
 
     def test_balance_profile_mismatch_is_rejected_before_writes(self):
         mismatched = COMPAT_OFFICE.replace(
