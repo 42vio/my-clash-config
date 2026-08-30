@@ -68,16 +68,17 @@ def _activation_candidate_inventory_paths(text, private_root, current_root, ngin
 DOCUMENTATION_PATHS = {
     "readme": ROOT / "README.md",
     "deployment": ROOT / "DEPLOYMENT.md",
-    "xui-setup": ROOT / "docs" / "3x-ui-setup.md",
+    "template-design": ROOT / "docs" / "template-design.md",
     "operations": ROOT / "docs" / "operations.md",
-    "private-data": ROOT / "docs" / "private-data.md",
-    "recovery": ROOT / "docs" / "recovery.md",
 }
 
 
 RETIRED_DOCUMENTATION_PATHS = (
+    "docs/3x-ui-setup.md",
     "docs/dns-design.md",
     "docs/legacy-trojan-topology.md",
+    "docs/private-data.md",
+    "docs/recovery.md",
     "docs/superpowers/plans/2026-08-21-clash-subscription-publication.md",
     "docs/superpowers/plans/2026-08-23-clash-sub-lightweight.md",
     "docs/superpowers/plans/2026-08-25-clash-sub-integration.md",
@@ -88,57 +89,32 @@ RETIRED_DOCUMENTATION_PATHS = (
     "docs/superpowers/specs/2026-08-27-local-template-work" + "bench-design.md",
     "docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md",
     "docs/superpowers/specs/2026-08-28-stable-amytelecom-provider-design.md",
+    "docs/superpowers/plans/2026-08-29-clash-template-redesign.md",
+    "docs/superpowers/specs/2026-08-29-clash-template-redesign.md",
 )
 
 
 class DocumentationContractTests(unittest.TestCase):
-    """The six concise user documents describe only the current workflow."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.texts = {
-            name: path.read_text(encoding="utf-8")
-            for name, path in DOCUMENTATION_PATHS.items()
-        }
+    """The personal maintenance documentation has one stable topology."""
 
     def test_all_documented_files_exist(self):
         for name, path in DOCUMENTATION_PATHS.items():
             self.assertTrue(path.is_file(), name)
 
-    def test_readme_documents_authorization_and_release_filenames(self):
-        readme = self.texts["readme"]
-        for phrase in (
-            "owner | `compat-office`",
-            "owner | `compat-universal`",
-            "owner | `balance-office`",
-            "member | `compat-universal`",
-            "clash-compat-office.yaml",
-            "clash-compat-universal.yaml",
-            "clash-balance-office.yaml",
-            "./bin/clash-sub template-sync",
-        ):
-            self.assertIn(phrase, readme)
-
-    def test_operations_documents_iCloud_sources_single_source_updates_and_report(self):
-        operations = self.texts["operations"]
-        for phrase in (
-            "~/Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents",
-            "Compat-Office.yaml",
-            "Balance-Office.yaml",
-            "--compat-office",
-            "--balance-office",
-            "change report",
-            "不显示家庭内容或动态节点",
-            "未来的服务器上传",
-        ):
-            self.assertIn(phrase, operations)
-
-    def test_documents_explain_comments_private_modes_and_current_workflow(self):
-        self.assertIn("Compat 公共注释", self.texts["operations"])
-        self.assertIn("Balance 的完整 `dns`", self.texts["operations"])
-        private_data = self.texts["private-data"]
-        for phrase in ("Git 忽略", "0600", "private/home.yaml"):
-            self.assertIn(phrase, private_data)
+    def test_only_four_personal_maintenance_documents_remain(self):
+        actual = {
+            path.relative_to(ROOT).as_posix()
+            for path in (*ROOT.glob("*.md"), *(ROOT / "docs").rglob("*.md"))
+        }
+        self.assertEqual(
+            actual,
+            {
+                "README.md",
+                "DEPLOYMENT.md",
+                "docs/template-design.md",
+                "docs/operations.md",
+            },
+        )
 
     def test_retired_documents_and_old_release_aliases_are_absent(self):
         for relative in RETIRED_DOCUMENTATION_PATHS:

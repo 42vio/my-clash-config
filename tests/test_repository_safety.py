@@ -344,8 +344,11 @@ class RepositorySafetyTests(unittest.TestCase):
 
     def test_retired_user_documentation_is_absent(self):
         retired = (
+            "docs/3x-ui-setup.md",
             "docs/dns-design.md",
             "docs/legacy-trojan-topology.md",
+            "docs/private-data.md",
+            "docs/recovery.md",
             "docs/superpowers/plans/2026-08-21-clash-subscription-publication.md",
             "docs/superpowers/plans/2026-08-23-clash-sub-lightweight.md",
             "docs/superpowers/plans/2026-08-25-clash-sub-integration.md",
@@ -356,6 +359,8 @@ class RepositorySafetyTests(unittest.TestCase):
             "docs/superpowers/specs/2026-08-27-local-template-work" + "bench-design.md",
             "docs/superpowers/specs/2026-08-28-private-home-overlay-upload-design.md",
             "docs/superpowers/specs/2026-08-28-stable-amytelecom-provider-design.md",
+            "docs/superpowers/plans/2026-08-29-clash-template-redesign.md",
+            "docs/superpowers/specs/2026-08-29-clash-template-redesign.md",
         )
         for relative in retired:
             self.assertFalse((ROOT / relative).exists(), relative)
