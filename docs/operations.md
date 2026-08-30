@@ -40,7 +40,7 @@
 
 ```bash
 git diff --check
-.venv/bin/python -m unittest discover -v
+.venv/bin/python -m unittest discover -s tests -p 'test*.py'
 .venv/bin/python scripts/scan_tracked_secrets.py
 .venv/bin/python scripts/scan_tracked_secrets.py --private-root private
 ```

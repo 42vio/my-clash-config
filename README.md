@@ -43,7 +43,7 @@ clash-sub
 运行仓库测试：
 
 ```bash
-.venv/bin/python -m unittest discover -v
+.venv/bin/python -m unittest discover -s tests -p 'test*.py'
 ```
 
 扫描受跟踪文件中的敏感值：
