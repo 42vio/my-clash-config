@@ -1,8 +1,6 @@
 """Backup and lifecycle management commands."""
 
 import datetime
-import io
-import json
 import os
 import re
 import shutil
@@ -32,11 +30,14 @@ def _xui_database_path(repo_root):
 
 
 def _nginx_config_paths():
+    """The two nginx files a rebuild restores verbatim."""
     return (
         Path("/etc/nginx/stream-conf.d/clash-sub.conf"),
         Path("/etc/nginx/conf.d/clash-sub.conf"),
-        Path("/etc/nginx/clash-sub/routes.conf"),
     )
+
+
+_ROUTES_CONF_PATH = Path("/etc/nginx/clash-sub/routes.conf")
 
 
 def _runtime_private_root(repo_root):
@@ -50,61 +51,36 @@ def _runtime_private_root(repo_root):
         return None
 
 
-def _versions_manifest(repo_root, runner):
-    def output(arguments, *, stderr=False):
-        try:
-            result = runner(
-                arguments,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE if stderr else subprocess.DEVNULL,
-                timeout=30,
-                check=False,
-            )
-            stream = result.stderr if stderr else result.stdout
-            return stream.decode("utf-8", "replace").strip()
-        except Exception:
-            return ""
-
-    return {
-        "repository": output(["git", "-C", str(repo_root), "rev-parse", "HEAD"]),
-        "nginx": output(["nginx", "-v"], stderr=True),
-    }
+_BACKUP_ARCHIVE_NAMES = (
+    "etc/x-ui/x-ui.db",
+    "etc/nginx/stream-conf.d/clash-sub.conf",
+    "etc/nginx/conf.d/clash-sub.conf",
+    "var/lib/clash-sub/private/state.json",
+)
 
 
 def create_backup(repo_root, runner):
-    """Create one full tarball backup; returns its path (0600)."""
+    """Archive exactly the four rebuild-essential files; returns the path (0600)."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     destination = _backups_root(repo_root) / ("clash-sub-backup-%s.tar.gz" % stamp)
-    source_files = []
+    private_root = _runtime_private_root(repo_root)
+    sources = []
     database = _xui_database_path(repo_root)
-    if database:
-        source_files.append(database)
-    source_files.extend(path for path in _nginx_config_paths() if path.is_file())
-    private_root = Path(repo_root) / "private"
-    if private_root.is_dir():
-        source_files.extend(
-            path
-            for path in sorted(private_root.rglob("*"))
-            if path.is_file() and "install-state" not in path.name
-        )
-    runtime_root = _runtime_private_root(repo_root)
-    if runtime_root is not None and runtime_root.is_dir() and runtime_root != private_root:
-        source_files.extend(
-            path for path in sorted(runtime_root.rglob("*")) if path.is_file()
-        )
+    if database is not None:
+        sources.append(database)
+    sources.extend(_nginx_config_paths())
+    if private_root is not None:
+        sources.append(private_root / "state.json")
+    if len(sources) != len(_BACKUP_ARCHIVE_NAMES) or any(
+        not path.is_file() for path in sources
+    ):
+        raise RuntimeError("backup_incomplete")
     descriptor, temporary = tempfile.mkstemp(dir=str(_backups_root(repo_root)))
     os.close(descriptor)
     try:
         with tarfile.open(temporary, "w:gz") as archive:
-            for path in source_files:
-                archive.add(str(path), arcname=str(path), recursive=False)
-            manifest = json.dumps(
-                _versions_manifest(repo_root, runner), sort_keys=True
-            ).encode("utf-8")
-            info = tarfile.TarInfo("clash-sub-versions.json")
-            info.size = len(manifest)
-            archive.addfile(info, io.BytesIO(manifest))
+            for path, archive_name in zip(sources, _BACKUP_ARCHIVE_NAMES):
+                archive.add(str(path), arcname=archive_name, recursive=False)
         os.chmod(temporary, 0o600)
         os.replace(temporary, destination)
     finally:
@@ -119,7 +95,9 @@ def auto_snapshot(repo_root, runner, *, label):
     directory = _backups_root(repo_root) / ("%s-%s" % (stamp, label))
     directory.mkdir(parents=True, exist_ok=False)
     targets = [Path(repo_root) / "private" / "config" / "service.yaml"]
-    targets.extend(path for path in _nginx_config_paths() if path.is_file())
+    targets.extend(
+        path for path in (*_nginx_config_paths(), _ROUTES_CONF_PATH) if path.is_file()
+    )
     names = {path.name: sum(item.name == path.name for item in targets) for path in targets}
     for path in targets:
         if path.is_file():

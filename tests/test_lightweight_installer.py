@@ -1229,6 +1229,9 @@ class SubscriptionInitPhaseTests(unittest.TestCase):
         self.assertEqual(self.paths.private_root.stat().st_mode & 0o777, 0o700)
         self.assertTrue(self.paths.public_root.is_dir())
         self.assertEqual(self.paths.public_root.stat().st_mode & 0o7777, 0o2750)
+        provider = self.paths.public_root / "provider"
+        self.assertTrue(provider.is_dir())
+        self.assertEqual(provider.stat().st_mode & 0o7777, 0o2750)
         self.assertTrue(self.paths.routes_conf.parent.is_dir())
 
     def test_service_yaml_preserves_special_owner_email_as_string(self):

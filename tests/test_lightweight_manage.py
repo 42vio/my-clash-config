@@ -50,6 +50,20 @@ class BackupTests(unittest.TestCase):
         )
         (self.root / "private" / "state.json").write_text("{}", encoding="utf-8")
         self.runner_calls = []
+        self.database = self.root / "backup-sources" / "x-ui.db"
+        self.database.parent.mkdir(parents=True, exist_ok=True)
+        self.database.write_bytes(b"database")
+        self.stream_conf = self.root / "backup-sources" / "stream-conf.d" / "clash-sub.conf"
+        self.stream_conf.parent.mkdir(parents=True, exist_ok=True)
+        self.stream_conf.write_text("# stream\n", encoding="utf-8")
+        self.http_conf = self.root / "backup-sources" / "conf.d" / "clash-sub.conf"
+        self.http_conf.parent.mkdir(parents=True, exist_ok=True)
+        self.http_conf.write_text("# http\n", encoding="utf-8")
+        self.runtime_root = self.root / "var-lib-private"
+        self.runtime_root.mkdir()
+        (self.runtime_root / "state.json").write_text("{}", encoding="utf-8")
+        (self.runtime_root / "current").mkdir()
+        (self.runtime_root / "current" / "7").write_text("release\n", encoding="utf-8")
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -60,63 +74,57 @@ class BackupTests(unittest.TestCase):
         completed.stdout = (self.root.as_posix() + "\n").encode()
         return completed
 
-    def test_creates_tarball_with_private_and_nginx_configs(self):
+    _MISSING = object()
+
+    def _patched_sources(self, database=_MISSING, nginx=_MISSING, runtime=_MISSING):
+        return patch("clash_sub.manage._xui_database_path", return_value=self.database if database is self._MISSING else database), patch(
+            "clash_sub.manage._nginx_config_paths",
+            return_value=(self.stream_conf, self.http_conf) if nginx is self._MISSING else nginx,
+        ), patch(
+            "clash_sub.manage._runtime_private_root",
+            return_value=self.runtime_root if runtime is self._MISSING else runtime,
+        )
+
+    def test_backup_contains_only_four_rebuild_files(self):
         from clash_sub.manage import create_backup
 
-        nginx_conf = self.root / "etc-clash-sub.conf"
-        with patch("clash_sub.manage._xui_database_path", return_value=None), patch(
-            "clash_sub.manage._nginx_config_paths",
-            return_value=(nginx_conf,),
-        ), patch("clash_sub.manage._runtime_private_root", return_value=None):
-            nginx_conf.write_text("# nginx\n", encoding="utf-8")
+        patches = self._patched_sources()
+        with patches[0], patches[1], patches[2]:
             path = create_backup(self.root, self._runner)
 
         self.assertTrue(path.exists())
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertTrue(path.parent == (self.root / "backups"))
-        with tarfile.open(path, "r:gz") as archive:
-            names = archive.getnames()
-        self.assertTrue(
-            any(name.endswith("private/config/service.yaml") for name in names)
-        )
-        self.assertTrue(any(name.endswith("private/state.json") for name in names))
-        self.assertTrue(any(name.endswith("etc-clash-sub.conf") for name in names))
-        self.assertTrue(any(name == "clash-sub-versions.json" for name in names))
-        self.assertFalse(any("install-state" in name for name in names))
-        self.assertTrue(
-            any("git" in " ".join(c) for c in self.runner_calls)
-        )
-
-    def test_creates_tarball_with_runtime_private_root(self):
-        from clash_sub.manage import create_backup
-
-        runtime_root = Path(self.tempdir.name) / "var-lib-private"
-        (runtime_root / "releases").mkdir(parents=True)
-        (runtime_root / "state.json").write_text("{}", encoding="utf-8")
-        (runtime_root / "releases" / "r1.yaml").write_text("p\n", encoding="utf-8")
-
-        with patch("clash_sub.manage._xui_database_path", return_value=None), patch(
-            "clash_sub.manage._nginx_config_paths", return_value=()
-        ), patch(
-            "clash_sub.manage._runtime_private_root", return_value=runtime_root
-        ):
-            path = create_backup(self.root, self._runner)
-
-        with tarfile.open(path, "r:gz") as archive:
-            names = archive.getnames()
-        self.assertTrue(any(name.endswith("state.json") for name in names))
-        self.assertTrue(any(name.endswith("releases/r1.yaml") for name in names))
-        self.assertTrue(any(name.endswith("private/config/service.yaml") for name in names))
-
-    def test_backups_directory_is_private(self):
-        from clash_sub.manage import create_backup
-
-        with patch("clash_sub.manage._xui_database_path", return_value=None), patch(
-            "clash_sub.manage._nginx_config_paths", return_value=()
-        ), patch("clash_sub.manage._runtime_private_root", return_value=None):
-            create_backup(self.root, self._runner)
-
         self.assertEqual((self.root / "backups").stat().st_mode & 0o777, 0o700)
+        with tarfile.open(path, "r:gz") as archive:
+            self.assertEqual(
+                set(archive.getnames()),
+                {
+                    "etc/x-ui/x-ui.db",
+                    "etc/nginx/stream-conf.d/clash-sub.conf",
+                    "etc/nginx/conf.d/clash-sub.conf",
+                    "var/lib/clash-sub/private/state.json",
+                },
+            )
+
+    def test_backup_fails_incomplete_when_a_rebuild_file_is_missing(self):
+        from clash_sub.manage import create_backup
+
+        cases = (
+            ("database", self._patched_sources(database=None)),
+            ("stream conf", self._patched_sources(nginx=(self.root / "absent-stream.conf", self.http_conf))),
+            ("http conf", self._patched_sources(nginx=(self.stream_conf, self.root / "absent-http.conf"))),
+            ("state", self._patched_sources(runtime=None)),
+        )
+        for name, patches in cases:
+            with self.subTest(name=name):
+                with patches[0], patches[1], patches[2]:
+                    with self.assertRaisesRegex(RuntimeError, "backup_incomplete"):
+                        create_backup(self.root, self._runner)
+                self.assertEqual(
+                    tuple(entry.name for entry in (self.root / "backups").iterdir()),
+                    (),
+                )
 
     def test_snapshot_copies_live_configs(self):
         from clash_sub.manage import auto_snapshot
@@ -149,17 +157,6 @@ class BackupTests(unittest.TestCase):
 
         copied = [path.read_text(encoding="utf-8") for path in snapshot.rglob("clash-sub.conf")]
         self.assertCountEqual(copied, ["stream", "http"])
-
-    def test_versions_manifest_reads_nginx_stderr(self):
-        from clash_sub.manage import _versions_manifest
-
-        def runner(arguments, **_):
-            result = subprocess.CompletedProcess(arguments, 0)
-            result.stdout = b"commit\n" if arguments[0] == "git" else b""
-            result.stderr = b"nginx version: nginx/1.26.3\n" if arguments[0] == "nginx" else b""
-            return result
-
-        self.assertEqual(_versions_manifest(self.root, runner)["nginx"], "nginx version: nginx/1.26.3")
 
 
 class UpdateTests(unittest.TestCase):

@@ -857,6 +857,11 @@ class Installer:
         if public_gid != -1:
             os.chown(self.paths.public_root, -1, public_gid)
         os.chmod(self.paths.public_root, 0o2750)
+        provider_root = self.paths.public_root / "provider"
+        provider_root.mkdir(parents=True, exist_ok=True)
+        if public_gid != -1:
+            os.chown(provider_root, -1, public_gid)
+        os.chmod(provider_root, 0o2750)
         self.paths.routes_conf.parent.mkdir(parents=True, exist_ok=True)
 
     # -- phase 7 ---------------------------------------------------------
