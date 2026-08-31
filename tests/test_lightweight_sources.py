@@ -546,7 +546,7 @@ extend-proxy-groups: {}
 inject-node-groups: []
 inject-home-node-groups: [HomeServer]
 rules:
-- IP-CIDR,192.168.2.0/24,HomeServer,no-resolve
+- IP-CIDR,198.51.100.0/24,HomeServer,no-resolve
 """
 
         home = parse_home_overlay(payload, 1024 * 1024)
