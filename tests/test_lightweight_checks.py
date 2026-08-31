@@ -70,6 +70,24 @@ class ProviderMappingTests(unittest.TestCase):
         with self.assertRaisesRegex(CheckError, "proxy-providers"):
             validate_clash(dump(owner_document()), ())
 
+    def test_only_the_exact_provider_mapping_is_accepted(self):
+        provider = owner_document()["proxy-providers"]["AmyTelecom"]
+        cases = (
+            ("wrong type", {"AmyTelecom": dict(provider, type="file")}),
+            ("wrong url", {"AmyTelecom": dict(provider, url=PROVIDER_URL + "x")}),
+            ("non-weekly interval", {"AmyTelecom": dict(provider, interval=3600)}),
+            ("boolean interval", {"AmyTelecom": dict(provider, interval=False)}),
+            ("missing interval", {"AmyTelecom": {"type": "http", "url": PROVIDER_URL, "path": provider["path"]}}),
+            ("wrong stable path", {"AmyTelecom": dict(provider, path="./proxy_providers/AmyTelecom.yaml")}),
+            ("non-mapping provider", {"AmyTelecom": "https://airport.example"}),
+        )
+        for name, providers in cases:
+            with self.subTest(name=name):
+                document = owner_document()
+                document["proxy-providers"] = providers
+                with self.assertRaisesRegex(CheckError, "provider"):
+                    validate_clash(dump(document), (), PROVIDER_URL)
+
     def test_owner_authorization_requires_provider_and_isolated_url(self):
         with self.assertRaisesRegex(CheckError, "airport proxy-provider"):
             validate_clash(dump(valid_document()), (), PROVIDER_URL)
@@ -78,6 +96,16 @@ class ProviderMappingTests(unittest.TestCase):
         document["notes"] = "leaked owner-token inline"
         with self.assertRaisesRegex(CheckError, "forbidden value"):
             validate_clash(dump(document), ("owner-token",), PROVIDER_URL)
+
+    def test_member_rejects_leaked_provider_url_and_token_fields(self):
+        document = valid_document()
+        document["notes"] = PROVIDER_URL
+        with self.assertRaisesRegex(CheckError, "forbidden value"):
+            validate_clash(dump(document), (PROVIDER_URL, "owner-token"))
+        document = valid_document()
+        document["notes"] = "inline owner-token leak"
+        with self.assertRaisesRegex(CheckError, "forbidden value"):
+            validate_clash(dump(document), (PROVIDER_URL, "owner-token"))
         document = owner_document()
         document["dns"]["notes"] = PROVIDER_URL
         with self.assertRaisesRegex(CheckError, "forbidden value"):
