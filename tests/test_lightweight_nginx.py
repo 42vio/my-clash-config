@@ -87,13 +87,19 @@ class LightweightNginxTests(unittest.TestCase):
                 10: UserState(10, "deleted@example.invalid", token(b"x", "VWXYZA"), "VWXYZA", True, release),
             },
         )
-        for client_id, variants in ((7, ("compat-office", "compat-universal", "balance-office")), (8, ("compat-universal",))):
+        for client_id, variants in ((7, ("compat", "balance")), (8, ("compat",))):
             directory = self.public_root / "releases" / str(client_id) / release
             directory.mkdir(parents=True)
             for variant in variants:
-                path = directory / ("clash-%s.yaml" % variant)
+                path = directory / (
+                    "Clash-Compat.yaml" if variant == "compat" else "Clash-Balance.yaml"
+                )
                 path.write_text("proxies: []\n", encoding="utf-8")
                 os.chmod(path, 0o640)
+        provider_path = self.public_root / "provider" / "AmyTelecom-Provider.yaml"
+        provider_path.parent.mkdir(parents=True)
+        provider_path.write_text("proxies:\n- name: Amy\n", encoding="utf-8")
+        os.chmod(provider_path, 0o640)
         public_gid = grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid()
         for directory in (self.public_root, *self.public_root.rglob("*")):
             if directory.is_dir():
@@ -122,25 +128,26 @@ class LightweightNginxTests(unittest.TestCase):
 
         text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
 
-        self.assertIn("location = /s/%s/clash-compat-office.yaml" % self.owner_token, text)
-        self.assertIn("location = /s/%s/clash-compat-universal.yaml" % self.owner_token, text)
-        self.assertIn("location = /s/%s/clash-balance-office.yaml" % self.owner_token, text)
-        self.assertIn("location = /s/%s/clash-compat-universal.yaml" % self.member_token, text)
-        self.assertNotIn("location = /s/%s/clash-compat-office.yaml" % self.member_token, text)
-        self.assertNotIn("location = /s/%s/clash-balance-office.yaml" % self.member_token, text)
+        self.assertIn("location = /s/%s/Clash-Compat.yaml" % self.owner_token, text)
+        self.assertIn("location = /s/%s/Clash-Balance.yaml" % self.owner_token, text)
+        self.assertIn("location = /s/%s/Clash-Compat.yaml" % self.member_token, text)
+        self.assertNotIn("location = /s/%s/Clash-Balance.yaml" % self.member_token, text)
+        self.assertNotIn("clash-compat-office.yaml", text)
+        self.assertNotIn("clash-compat-universal.yaml", text)
+        self.assertNotIn("clash-balance-office.yaml", text)
         self.assertNotIn("location /s/", text)
         self.assertNotIn("/s/ABCDEF/", text)
         self.assertNotIn("deleted@example.invalid", text)
         self.assertNotIn(self.owner.email, text)
         self.assertNotIn(self.member.email, text)
         self.assertNotIn(self.disabled.email, text)
-        self.assertIn("alias %s;" % (self.public_root / "releases" / "8" / self.state.users[8].current_release / "clash-compat-universal.yaml"), text)
+        self.assertIn("alias %s;" % (self.public_root / "releases" / "8" / self.state.users[8].current_release / "Clash-Compat.yaml"), text)
         self.assertIn('if ($request_method !~ ^(GET|HEAD)$) { return 404; }', text)
-        self.assertIn('add_header Profile-Title "Clash Compat Universal";', text)
-        self.assertIn("add_header Content-Disposition 'attachment; filename=Clash-Compat-Universal.yaml';", text)
+        self.assertIn('add_header Profile-Title "Clash-Compat";', text)
+        self.assertIn("add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml';", text)
         self.assertIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8";', text)
-        self.assertNotIn('add_header Profile-Title "Clash Compat Universal" always;', text)
-        self.assertNotIn("add_header Content-Disposition 'attachment; filename=Clash-Compat-Universal.yaml' always;", text)
+        self.assertNotIn('add_header Profile-Title "Clash-Compat" always;', text)
+        self.assertNotIn("add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml' always;", text)
         self.assertNotIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8" always;', text)
         self.assertIn('if ($args != "") { return 404; }', text)
         self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", text)
@@ -166,69 +173,83 @@ class LightweightNginxTests(unittest.TestCase):
             text,
         )
 
-    def _airport_alias(self):
-        return (
-            self.public_root
-            / "releases"
-            / "7"
-            / self.state.users[7].current_release
-            / "AmyTelecom.yaml"
-        )
+    def _provider_alias(self):
+        return self.public_root / "provider" / "AmyTelecom-Provider.yaml"
 
-    def _add_airport_artifact(self):
-        alias = self._airport_alias()
-        alias.write_text("proxies:\n- name: Amy\n", encoding="utf-8")
-        os.chmod(alias, 0o640)
-        public_gid = grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid()
-        os.chown(alias, -1, public_gid)
-        return alias
-
-    def test_owner_routes_include_the_exact_stable_amytelecom_route(self):
-        alias = self._add_airport_artifact()
+    def test_owner_routes_use_exact_case_and_stable_provider(self):
+        alias = self._provider_alias()
 
         text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
 
-        block = "location = /s/%s/AmyTelecom.yaml {" % self.owner_token
+        block = "location = /s/%s/AmyTelecom-Provider.yaml {" % self.owner_token
         self.assertIn(block, text)
-        self.assertEqual(text.count("location = /s/%s/" % self.owner_token), 4)
+        self.assertEqual(text.count("location = /s/%s/" % self.owner_token), 3)
         self.assertEqual(text.count("location = /s/%s/" % self.member_token), 1)
         self.assertIn("alias %s;" % alias, text)
         self.assertIn('add_header Profile-Title "AmyTelecom";', text)
         self.assertIn(
-            "add_header Content-Disposition 'attachment; filename=AmyTelecom.yaml';", text
+            "add_header Content-Disposition 'attachment; filename=AmyTelecom-Provider.yaml';",
+            text,
         )
-        airport_lines = text[text.index(block) :].splitlines()
-        airport_block = "\n".join(
-            airport_lines[: next(i for i, line in enumerate(airport_lines) if line == "}") + 1]
+        provider_lines = text[text.index(block) :].splitlines()
+        provider_block = "\n".join(
+            provider_lines[: next(i for i, line in enumerate(provider_lines) if line == "}") + 1]
         )
-        self.assertNotIn("Subscription-Userinfo", airport_block)
-        self.assertIn("if ($request_method !~ ^(GET|HEAD)$) { return 404; }", airport_block)
-        self.assertIn('if ($args != "") { return 404; }', airport_block)
-        self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", airport_block)
-        self.assertIn("client_max_body_size 1k;", airport_block)
-        self.assertIn("access_log off;", airport_block)
-        self.assertIn("log_not_found off;", airport_block)
-        self.assertIn('default_type "text/yaml; charset=utf-8";', airport_block)
-        self.assertIn("add_header X-Content-Type-Options nosniff always;", airport_block)
-        self.assertIn("add_header Cache-Control no-store always;", airport_block)
-        self.assertNotIn(self.owner.email, airport_block)
+        self.assertNotIn("Subscription-Userinfo", provider_block)
+        self.assertIn("if ($request_method !~ ^(GET|HEAD)$) { return 404; }", provider_block)
+        self.assertIn('if ($args != "") { return 404; }', provider_block)
+        self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", provider_block)
+        self.assertIn("client_max_body_size 1k;", provider_block)
+        self.assertIn("access_log off;", provider_block)
+        self.assertIn("log_not_found off;", provider_block)
+        self.assertIn('default_type "text/yaml; charset=utf-8";', provider_block)
+        self.assertIn("add_header X-Content-Type-Options nosniff always;", provider_block)
+        self.assertIn("add_header Cache-Control no-store always;", provider_block)
+        self.assertNotIn(self.owner.email, provider_block)
         self.assertNotIn("airport.example", text)
+        self.assertNotIn("AmyTelecom.yaml", text)
 
-    def test_amytelecom_route_is_absent_without_an_airport_artifact(self):
+    def test_member_has_no_balance_or_provider_route(self):
         text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
 
-        self.assertNotIn("AmyTelecom.yaml", text)
-        self.assertEqual(text.count("location = /s/%s/" % self.owner_token), 3)
+        member_lines = [
+            line
+            for line in text.splitlines()
+            if "location = /s/%s/" % self.member_token in line
+        ]
+        self.assertEqual(
+            member_lines,
+            ["location = /s/%s/Clash-Compat.yaml {" % self.member_token],
+        )
+        self.assertNotIn("/s/%s/Clash-Balance.yaml" % self.member_token, text)
+        self.assertNotIn("/s/%s/AmyTelecom-Provider.yaml" % self.member_token, text)
 
-    def test_amytelecom_route_rejects_insecure_artifacts_without_leaking_the_token(self):
-        for name in ("mode", "symlink", "hard link"):
+    def test_owner_routes_require_the_stable_provider(self):
+        self._provider_alias().unlink()
+
+        with self.assertRaisesRegex(NginxError, "release path") as caught:
+            render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
+
+        self.assertNotIn(self.owner_token, str(caught.exception))
+
+    def test_provider_route_rejects_insecure_files_without_leaking_the_token(self):
+        for name in ("mode", "symlink", "hard link", "directory"):
             with self.subTest(name=name):
-                alias = self._add_airport_artifact()
+                alias = self._provider_alias()
                 if name == "mode":
                     os.chmod(alias, 0o644)
                 elif name == "symlink":
                     alias.unlink()
-                    alias.symlink_to(self.public_root / "releases" / "7" / self.state.users[7].current_release / "clash-compat-office.yaml")
+                    alias.symlink_to(
+                        self.public_root
+                        / "releases"
+                        / "7"
+                        / self.state.users[7].current_release
+                        / "Clash-Compat.yaml"
+                    )
+                elif name == "directory":
+                    alias.unlink()
+                    alias.mkdir()
                 else:
                     os.link(alias, alias.with_name("linked.yaml"))
                 with self.assertRaisesRegex(NginxError, "release path") as caught:
@@ -239,6 +260,20 @@ class LightweightNginxTests(unittest.TestCase):
                 linked = alias.with_name("linked.yaml")
                 if linked.exists() or linked.is_symlink():
                     linked.unlink()
+
+    def test_provider_route_rejects_a_symlinked_provider_directory(self):
+        real = self.public_root / "real-provider"
+        real.mkdir()
+        os.chown(real, -1, grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid())
+        os.chmod(real, 0o2750)
+        provider = self.public_root / "provider"
+        shutil.rmtree(provider)
+        provider.symlink_to(real, target_is_directory=True)
+
+        with self.assertRaisesRegex(NginxError, "release path") as caught:
+            render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
+
+        self.assertNotIn(self.owner_token, str(caught.exception))
 
     def test_routes_reject_a_symlinked_release_ancestor_without_exposing_the_token(self):
         self.assertIsNotNone(render_routes, "Nginx routes are not implemented")
@@ -258,7 +293,7 @@ class LightweightNginxTests(unittest.TestCase):
             / "releases"
             / "8"
             / self.state.users[8].current_release
-            / "clash-compat-universal.yaml"
+            / "Clash-Compat.yaml"
         )
         os.link(path, path.with_name("linked.yaml"))
 

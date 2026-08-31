@@ -10,7 +10,16 @@ from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, RuntimeState, ServiceConfig, XuiClient
+from clash_sub.domain import (
+    AIRPORT_FILENAME,
+    MEMBER_VARIANTS,
+    OWNER_VARIANTS,
+    PROFILE_FILENAMES,
+    PROFILE_TITLES,
+    RuntimeState,
+    ServiceConfig,
+    XuiClient,
+)
 from clash_sub.state import TOKEN_RE, _state_to_payload
 
 
@@ -21,11 +30,7 @@ _PRIVATE_MODE = 0o600
 _ACTIVATION_JOURNAL = ".activation-journal.json"
 _JOURNAL_SCHEMA = 1
 _UNSAFE_PATH_CHARACTERS = frozenset(" ;{}'\\\"#$" + "".join(chr(code) for code in range(0x20)) + chr(0x7F))
-_TITLES = {
-    "compat-office": ("Clash Compat Office", "Clash-Compat-Office.yaml"),
-    "compat-universal": ("Clash Compat Universal", "Clash-Compat-Universal.yaml"),
-    "balance-office": ("Clash Balance Office", "Clash-Balance-Office.yaml"),
-}
+_PROVIDER_TITLE = "AmyTelecom"
 
 
 class NginxError(RuntimeError):
@@ -112,9 +117,8 @@ def render_routes(config, state, clients):
             for variant in OWNER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
                 blocks.append(_route_block(user.token, variant, alias, traffic))
-            airport_alias = _airport_release_path(public_root, client_id, release_id)
-            if airport_alias is not None:
-                blocks.append(_airport_route_block(user.token, airport_alias))
+            provider_alias = _provider_path(public_root)
+            blocks.append(_provider_route_block(user.token, provider_alias))
         else:
             for variant in MEMBER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
@@ -623,13 +627,13 @@ def _release_id(value):
 def _release_path(public_root, client_id, release_id, variant):
     if isinstance(client_id, bool) or not isinstance(client_id, int) or client_id < 1:
         raise NginxError("invalid release path")
-    if variant not in _TITLES:
+    if variant not in PROFILE_FILENAMES:
         raise NginxError("invalid release path")
     root = Path(public_root)
     release_root = root / "releases"
     client_root = release_root / str(client_id)
     release_root_path = client_root / release_id
-    path = release_root_path / ("clash-%s.yaml" % variant)
+    path = release_root_path / PROFILE_FILENAMES[variant]
     public_gid = _public_gid(root)
     for path_part in (root, release_root, client_root, release_root_path):
         _require_public_release_directory(path_part, public_gid)
@@ -654,22 +658,14 @@ def _userinfo(client):
     )
 
 
-def _airport_release_path(public_root, client_id, release_id):
-    """Resolve the owner release's raw airport file, or None when absent.
-
-    A release without the artifact (a legacy owner release) simply has no
-    stable airport route; an insecure or tampered artifact stays an error.
-    """
+def _provider_path(public_root):
+    """Resolve the stable owner-only provider file from the public root."""
     root = Path(public_root)
-    release_root = root / "releases"
-    client_root = release_root / str(client_id)
-    release_root_path = client_root / release_id
-    path = release_root_path / "AmyTelecom.yaml"
+    provider_directory = root / "provider"
     public_gid = _public_gid(root)
-    for path_part in (root, release_root, client_root, release_root_path):
+    for path_part in (root, provider_directory):
         _require_public_release_directory(path_part, public_gid)
-    if not path.exists() and not path.is_symlink():
-        return None
+    path = provider_directory / AIRPORT_FILENAME
     if (
         path.is_symlink()
         or not path.is_file()
@@ -682,12 +678,12 @@ def _airport_release_path(public_root, client_id, release_id):
     return path
 
 
-def _airport_route_block(token, alias):
+def _provider_route_block(token, alias):
     if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
         raise NginxError("invalid subscription token")
     return "\n".join(
         (
-            "location = /s/%s/AmyTelecom.yaml {" % token,
+            "location = /s/%s/%s {" % (token, AIRPORT_FILENAME),
             '    if ($request_method !~ ^(GET|HEAD)$) { return 404; }',
             '    if ($args != "") { return 404; }',
             "    limit_req zone=clash_subscription burst=5 nodelay;",
@@ -696,8 +692,8 @@ def _airport_route_block(token, alias):
             "    log_not_found off;",
             '    default_type "text/yaml; charset=utf-8";',
             "    alias %s;" % alias,
-            '    add_header Profile-Title "AmyTelecom";',
-            "    add_header Content-Disposition 'attachment; filename=AmyTelecom.yaml';",
+            '    add_header Profile-Title "%s";' % _PROVIDER_TITLE,
+            "    add_header Content-Disposition 'attachment; filename=%s';" % AIRPORT_FILENAME,
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",
             "}",
@@ -708,10 +704,11 @@ def _airport_route_block(token, alias):
 def _route_block(token, variant, alias, userinfo):
     if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
         raise NginxError("invalid subscription token")
-    title, filename = _TITLES[variant]
+    title = PROFILE_TITLES[variant]
+    filename = PROFILE_FILENAMES[variant]
     return "\n".join(
         (
-            "location = /s/%s/clash-%s.yaml {" % (token, variant),
+            "location = /s/%s/%s {" % (token, filename),
             '    if ($request_method !~ ^(GET|HEAD)$) { return 404; }',
             '    if ($args != "") { return 404; }',
             "    limit_req zone=clash_subscription burst=5 nodelay;",
