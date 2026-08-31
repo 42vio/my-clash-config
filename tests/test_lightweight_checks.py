@@ -70,6 +70,21 @@ class ProviderMappingTests(unittest.TestCase):
         with self.assertRaisesRegex(CheckError, "proxy-providers"):
             validate_clash(dump(owner_document()), ())
 
+    def test_member_may_carry_template_providers_but_not_the_airport(self):
+        document = valid_document()
+        document["proxy-providers"] = {
+            "Subscribe": {"type": "file", "path": "./providers/subscribe.yaml"}
+        }
+        validate_clash(dump(document), ())
+        document = valid_document()
+        document["proxy-providers"] = {
+            "Subscribe": {"type": "http", "url": "http://provider.example/other.yaml", "interval": 3600, "path": "./providers/subscribe.yaml"}
+        }
+        validate_clash(dump(document), ())
+        document = owner_document()
+        with self.assertRaisesRegex(CheckError, "proxy-providers"):
+            validate_clash(dump(document), ())
+
     def test_only_the_exact_provider_mapping_is_accepted(self):
         provider = owner_document()["proxy-providers"]["AmyTelecom"]
         cases = (

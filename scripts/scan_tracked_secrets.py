@@ -129,6 +129,21 @@ _HEX_32_TOKEN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{32}(?![0-9a-fA-F])")
 _URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\"'`<>]+")
 _HEX_32_RE = re.compile(r"^[0-9a-fA-F]{32,}$")
 _RANDOM_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Subscription-credential URLs hide a base64-wrapped sid/token blob or an
+# explicit credential key in the query string; legitimate tracked URLs
+# (rule-provider CDNs, DoH endpoints) carry no such parameters.
+_BASE64_QUERY_VALUE_RE = re.compile(r"^[A-Za-z0-9+/=_-]{40,}$")
+_QUERY_CREDENTIAL_KEYS = (
+    "token",
+    "sid",
+    "secret",
+    "password",
+    "passwd",
+    "psk",
+    "auth",
+    "key",
+    "uuid",
+)
 _CREDENTIAL_KEY_FRAGMENTS = (
     "password",
     "passwd",
@@ -300,6 +315,20 @@ def _proxy_uri_is_documentation(uri: str) -> bool:
     return True
 
 
+def _url_query_is_credential(url: str) -> bool:
+    query = url.split("?", 1)[1] if "?" in url else ""
+    if not query:
+        return False
+    for parameter in query.split("&"):
+        name, separator, value = parameter.partition("=")
+        if separator and name.lower() in _QUERY_CREDENTIAL_KEYS:
+            if len(value) >= 8 and not _is_placeholder_credential(value):
+                return True
+        if _BASE64_QUERY_VALUE_RE.fullmatch(value if separator else parameter):
+            return True
+    return False
+
+
 def find_content_findings(text: str, relative_path: str) -> List[Finding]:
     """Return category findings for one tracked text file."""
     findings: Set[Finding] = set()
@@ -320,6 +349,9 @@ def find_content_findings(text: str, relative_path: str) -> List[Finding]:
         ):
             findings.add(Finding("tracked-url-userinfo", relative_path))
     url_spans = [match.span() for match in _URL_RE.finditer(text)]
+    for match in _URL_RE.finditer(text):
+        if _url_query_is_credential(match.group(0)):
+            findings.add(Finding("tracked-credential-url", relative_path))
     for match in _HEX_32_TOKEN_RE.finditer(text):
         if any(start <= match.start() < end for start, end in url_spans):
             # Hex inside a URL (public rule-provider gist ids, and

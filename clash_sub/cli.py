@@ -651,7 +651,7 @@ def _call(operation, value, stdout, stderr, factory):
                 stdout.write("%s\n" % url)
         elif operation == "reinitialize":
             service.reinitialize_owner(value)
-            stdout.write("所有者已重新初始化；请更新机场订阅后执行 sync。\n")
+            stdout.write("所有者已重新初始化；请执行 sync。\n")
         else:
             return _error(stderr, "invalid_command", 2)
     except ServiceError as error:

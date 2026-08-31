@@ -38,6 +38,42 @@ rules: [MATCH,Select]
 """
 BALANCE = COMPAT.replace("  enable: true\n", "  enable: true  # balance dns comment\n").replace("rules: [MATCH,Select]", "rules: [MATCH,DIRECT]").replace("rule-providers: {}", "- name: Extra\n  type: select\n  proxies: [DIRECT]\nrule-providers: {}")
 
+AIRPORT_ALIAS = """# compat comment
+mixed-port: 7890
+allow-lan: true
+mode: rule
+dns:
+  enable: true
+anchors:
+  auto: {type: url-test, use: &id001 [Subscribe]}
+proxies:
+- name: Dynamic
+  type: vless
+  server: 192.0.2.1
+  port: 443
+  uuid: 11111111-1111-4111-8111-111111111111
+  network: tcp
+  tls: true
+  flow: xtls-rprx-vision
+  servername: test.example
+  client-fingerprint: chrome
+  reality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: 1111111111111111}
+proxy-providers:
+  # Subscribe: {<<: p, url: https://amy.example.invalid/?L1N1YnNjcmlwdGlvbi9DbGFzaD90PWFueXRsc19jbGFzaCZzaWQ9, path: ./AmyTelecom.yaml}
+  Subscribe: {type: file, path: ./AmyTelecom.yaml}
+  Other: {type: file, path: ./providers/other.yaml}
+proxy-groups:
+- name: Airport Only
+  <<: {type: url-test, use: [Subscribe]}
+  use: *id001
+- name: Select
+  type: select
+  proxies: [DIRECT, Dynamic]
+  use: [AmyTelecom, Subscribe]
+rule-providers: {}
+rules: [MATCH,Select]
+"""
+
 def write(path, text, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -102,6 +138,30 @@ class TemplateSyncTests(unittest.TestCase):
         ), 0o600)
         run_template_sync(self.root, compat=source)
         self.assertIn("http://provider.example/other.yaml", (self.root / "templates/base/Clash-Compat.yaml").read_text())
+
+    def test_compat_removes_local_airport_alias_providers_and_comments(self):
+        sanitized, injections = template_sync._sanitize_compat(load_round_trip(AIRPORT_ALIAS))
+
+        text = template_sync._dump(sanitized)
+        self.assertNotIn("AmyTelecom.yaml", text)
+        self.assertIn("Other", sanitized["proxy-providers"])
+        self.assertNotIn("Subscribe", sanitized["proxy-providers"])
+        self.assertEqual(injections[1], ("Airport Only", "Select"))
+        airport_group = next(group for group in sanitized["proxy-groups"] if group["name"] == "Airport Only")
+        self.assertEqual(airport_group.get("use", []), [])
+        self.assertEqual(airport_group.get("proxies", []), [])
+
+    def test_compat_sync_publishes_template_without_airport_aliases(self):
+        source = self.root / "source/Clash-Compat-Alias.yaml"
+        write(source, AIRPORT_ALIAS, 0o600)
+
+        run_template_sync(self.root, compat=source)
+
+        text = (self.root / "templates/base/Clash-Compat.yaml").read_text()
+        manifest = (self.root / "templates/profiles.yaml").read_text()
+        self.assertNotIn("AmyTelecom.yaml", text)
+        self.assertIn("Airport Only", manifest)
+        self.assertIn("Select", manifest)
 
     def test_sync_rejects_a_synthetic_renderer_output_before_publishing(self):
         with patch("clash_sub.template_sync.render_user_bundle", return_value={"compat": "not yaml"}):

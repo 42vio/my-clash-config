@@ -7,12 +7,20 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
-from clash_sub.domain import HomeOverlay, PreparedRelease, RuntimeState, ServiceConfig, UserState, XuiClient, XuiSnapshot
-from clash_sub.sources import HomeSourceError, dump_home_overlay, normalize_server_home
+from clash_sub.airport_store import AirportStore, AirportStoreError
+from clash_sub.domain import (
+    PROFILE_FILENAMES,
+    PreparedRelease,
+    RuntimeState,
+    ServiceConfig,
+    UserState,
+    XuiClient,
+    XuiSnapshot,
+)
 from clash_sub.state import StateError
 
 try:
@@ -20,6 +28,12 @@ try:
 except ImportError:
     ClashSubService = None
     ServiceError = RuntimeError
+
+
+PROVIDER_DOCUMENT = (
+    b"proxies:\n"
+    b"- {name: Airport candidate, type: ss, server: amy.example.test, port: 443}\n"
+)
 
 
 class OperationLockTests(unittest.TestCase):
@@ -52,28 +66,11 @@ class OperationLockTests(unittest.TestCase):
 
 
 def token(byte, code):
-    return base64.urlsafe_b64encode(byte * 32).decode().rstrip("=") + "-" + code
+    return base64.urlsafe_b64encode(byte * 32).decode("ascii").rstrip("=") + "-" + code
 
 
 def client(client_id, email, enabled=True, upload=1):
     return XuiClient(client_id, email, "sub-%s" % client_id, enabled, upload, 2, 3, 4000)
-
-
-def home_document_bytes(node_name="Home"):
-    """Synthetic six-field overlay bytes exactly as SFTP would upload them."""
-    return yaml.safe_dump(
-        {
-            "proxies": [{"name": node_name, "type": "ss"}],
-            "proxy-groups": [
-                {"name": "HomeServer", "type": "select", "proxies": [node_name]}
-            ],
-            "extend-proxy-groups": {},
-            "inject-node-groups": [],
-            "inject-home-node-groups": ["HomeServer"],
-            "rules": [],
-        },
-        sort_keys=False,
-    ).encode("utf-8")
 
 
 class FakeStore:
@@ -85,17 +82,21 @@ class FakeStore:
         self.marked = []
         self.counter = 0
 
-    def prepare(self, client_id, bundle, input_hashes, airport_document=None):
+    def prepare(self, client_id, bundle, input_hashes):
         current = self.releases.get(client_id, [])
-        if current and current[-1].public_paths.keys() == bundle.keys() and getattr(current[-1], "bundle", None) == bundle and getattr(current[-1], "airport", None) == airport_document:
+        if current and current[-1].public_paths.keys() == bundle.keys() and getattr(current[-1], "bundle", None) == bundle:
             return None
         self.counter += 1
         release_id = "2026-08-23T12-00-%02dZ-000000%02x" % (self.counter, self.counter)
-        release = PreparedRelease(release_id, {name: Path("/releases/%s/%s/clash-%s.yaml" % (client_id, release_id, name)) for name in bundle}, Path("/private/manifest"))
+        release = PreparedRelease(
+            release_id,
+            {name: Path("/releases/%s/%s/%s" % (client_id, release_id, PROFILE_FILENAMES[name])) for name in bundle},
+            Path("/private/manifest"),
+        )
         object.__setattr__(release, "bundle", dict(bundle))
-        object.__setattr__(release, "airport", airport_document)
+        object.__setattr__(release, "inputs", dict(input_hashes))
         self.releases.setdefault(client_id, []).append(release)
-        self.prepared.append((client_id, release))
+        self.prepared.append((client_id, release, dict(input_hashes)))
         return release
 
     def verify_release(self, client_id, release_id):
@@ -103,9 +104,6 @@ class FakeStore:
             if release.release_id == release_id:
                 return release
         raise ValueError("missing release")
-
-    def read_airport_document(self, client_id, release_id):
-        return getattr(self.verify_release(client_id, release_id), "airport", None)
 
     def history(self, client_id):
         return tuple(reversed(self.releases.get(client_id, ())))
@@ -152,26 +150,22 @@ class ServiceTests(unittest.TestCase):
         os.chmod(private_root, 0o700)
         self.clock_value = 1750000000.0
         self.config = ServiceConfig("owner@example.test", "sub.example.test:8443", "example.com:443", root / "xui.db", private_root, root / "public", root / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), root / "templates")
+        self.airport_file = root / "public" / "provider" / "AmyTelecom-Provider.yaml"
+        self.airport_file.parent.mkdir(parents=True)
+        self.airport_file.write_bytes(PROVIDER_DOCUMENT)
+        os.chmod(self.airport_file, 0o640)
+        self.replaced_documents = []
+        self.download_document = PROVIDER_DOCUMENT
+        self.airport_store = MagicMock(spec=AirportStore)
+        self.airport_store.path = self.airport_file
+        self.airport_store.read.return_value = PROVIDER_DOCUMENT
+        self.airport_store.replace.side_effect = self._replace_provider
         self.generator_calls = []
         self.mihomo_calls = []
         self.fetch_calls = []
         self.download_calls = []
         self.validation_calls = []
-        self.airport_document = b"proxies:\n- name: Airport candidate\n  type: ss\n"
-        self.home = HomeOverlay(
-            proxies=({"name": "Home", "type": "ss"},),
-            proxy_groups=({"name": "HomeServer", "type": "select", "proxies": ["Home"]},),
-            extend_proxy_groups={},
-            inject_node_groups=(),
-            inject_home_node_groups=("HomeServer",),
-            rules=(),
-        )
-        # The official server home file, planted exactly as the local
-        # template-sync boundary would leave it behind.
-        self.home_path = Path(self.config.private_root) / "home.yaml"
-        self.home_path.write_bytes(dump_home_overlay(self.home))
-        os.chmod(self.home_path, 0o600)
-        self.member_render_text = "member compat universal"
+        self.member_render_text = "member compat"
         self.fail_client = None
         self.fail_owner_render = False
         self.service = ClashSubService(
@@ -182,10 +176,7 @@ class ServiceTests(unittest.TestCase):
             rotate_user_token=self._rotate,
             fetch_xui_proxies=self._fetch,
             download_airport_document=self._download,
-            # The local test user stands in for the root service account.
-            load_home_overlay=lambda path, max_bytes: normalize_server_home(
-                path, max_bytes, expected_uid=os.geteuid()
-            ),
+            airport_store=self.airport_store,
             render_user_bundle=self._render,
             validate_clash=self._validate,
             mihomo_validator=type("Validator", (), {"validate": lambda _, path: self.mihomo_calls.append(path)})(),
@@ -199,41 +190,22 @@ class ServiceTests(unittest.TestCase):
         )
 
     def bootstrap(self):
-        """Mirror the operational order: import the airport before syncing."""
-        return self.service.update_airport("https://airport.example/bootstrap")
+        """One successful sync with the stable provider already in place."""
+        return self.service.sync_all()
+
+    def _replace_provider(self, document, validator):
+        # Mirrors the real store: the validator sees a staged candidate and
+        # the stable file only changes after validation succeeds.
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "AmyTelecom-Provider.yaml"
+            candidate.write_bytes(document)
+            validator(candidate)
+        self.airport_file.write_bytes(document)
+        self.replaced_documents.append(document)
+        return self.airport_file
 
     def current_owner_release(self):
         return self.state.users[7].current_release
-
-    def active_owner_view(self):
-        """The whole live owner view: identity, release, bytes, airport."""
-        release = self.store.verify_release(7, self.current_owner_release())
-        return (
-            self.state.users[7],
-            release.release_id,
-            tuple(sorted(release.bundle.items())),
-            getattr(release, "airport", None),
-        )
-
-    def _upload_home_bytes(self, payload):
-        self.home_path.write_bytes(payload)
-        return payload
-
-    def _assert_bad_home_is_isolated(self, plant, code):
-        """One bad upload keeps the old owner view live while members sync."""
-        self.bootstrap()
-        self.service.sync_all()
-        before = self.active_owner_view()
-        uploaded = plant()
-        self.member_render_text = "member still syncing"
-
-        result = self.service.sync_all()
-
-        self.assertEqual(result["errors"], ({"client_id": 7, "code": code},))
-        self.assertEqual(self.active_owner_view(), before)
-        self.assertIn(8, [item["client_id"] for item in result["updated"]])
-        self.assertEqual(len(self.activator.calls), 3)
-        return uploaded
 
     def _reconcile(self, previous, clients, owner_email):
         users = {} if previous is None else dict(previous.users)
@@ -260,65 +232,109 @@ class ServiceTests(unittest.TestCase):
 
     def _download(self, url, max_bytes):
         self.download_calls.append(url)
-        return self.airport_document
+        return self.download_document
 
     def _validate(self, text, forbidden, allowed_provider_url=None):
         self.validation_calls.append((forbidden, allowed_provider_url))
 
-    def _render(self, is_owner, xui, airport, home, template_root):
-        self.generator_calls.append((is_owner, airport, home))
+    def _render(self, is_owner, xui, airport, template_root):
+        self.generator_calls.append((is_owner, airport))
         if is_owner and self.fail_owner_render:
             raise RuntimeError("owner private failure")
         if is_owner:
-            # Mirror the generator contract: the private home nodes are
-            # composed into the Compat Office and Balance Office variants only.
-            home_nodes = (
-                ""
-                if home is None
-                else "".join("- name: %s\n" % proxy["name"] for proxy in home.proxies)
-            )
             return {
                 variant: (
                     "proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\n"
-                    "    path: ./proxy_providers/AmyTelecom-%s.yaml\n    interval: 0\n"
-                    "proxies:\n- name: Owner %s\n%s"
-                    % (
-                        airport.url,
-                        airport.digest[:8],
-                        variant,
-                        home_nodes if variant in ("compat-office", "balance-office") else "",
-                    )
+                    "    path: ./proxy_providers/AmyTelecom-Provider.yaml\n    interval: 604800\n"
+                    "proxies:\n- name: Owner %s\n" % (airport.url, variant)
                 )
-                for variant in ("compat-office", "compat-universal", "balance-office")
+                for variant in ("compat", "balance")
             }
-        return {"compat-universal": self.member_render_text}
+        return {"compat": self.member_render_text}
 
     def _routes(self, config, state, clients):
         if any(user.active and user.current_release is None for user in state.users.values()):
             raise ValueError("missing release route")
         return "routes:%s" % sorted(state.users)
 
-    def test_first_airport_update_then_sync_activates_owner_and_member(self):
+    def test_first_sync_activates_owner_and_member_with_exact_profiles(self):
         self.assertIsNotNone(ClashSubService)
-        self.bootstrap()
-        result = self.service.sync_all()
-        self.assertEqual({item["client_id"] for item in result["updated"]}, {8})
-        self.assertEqual(self.state.users[7].current_release, self.store.prepared[0][1].release_id)
-        self.assertEqual(tuple(self.store.prepared[0][1].public_paths), ("compat-office", "compat-universal", "balance-office"))
+        result = self.bootstrap()
+        self.assertEqual({item["client_id"] for item in result["updated"]}, {7, 8})
+        self.assertEqual(tuple(self.store.prepared[0][1].public_paths), ("compat", "balance"))
+        self.assertEqual(tuple(self.store.prepared[1][1].public_paths), ("compat",))
         self.assertTrue(all("token" not in repr(item) for item in result["updated"]))
-        self.assertEqual(len(self.activator.calls[0][2]), 1)
-        self.assertIs(self.store.prepared[0][1].airport, self.airport_document)
+        self.assertEqual(len(self.activator.calls[0][2]), 2)
 
-    def test_first_sync_without_an_airport_release_leaves_the_owner_pending(self):
-        result = self.service.sync_all()
+    def test_release_input_hashes_contain_only_the_xui_source(self):
+        self.bootstrap()
+        for _client_id, _release, inputs in self.store.prepared:
+            self.assertEqual(set(inputs), {"xui"})
 
+    def test_sync_reads_and_validates_the_stable_provider_before_any_user(self):
+        self.airport_store.read.side_effect = AirportStoreError("airport_provider_invalid")
+
+        with self.assertRaisesRegex(ServiceError, "airport_provider_required") as caught:
+            self.service.sync_all()
+
+        self.assertNotIn("airport.example", str(caught.exception))
+        self.assertEqual(self.generator_calls, [])
+        self.assertEqual(self.store.prepared, [])
+        self.assertEqual(self.activator.calls, [])
+
+    def test_sync_rejects_an_invalid_stored_provider_document(self):
+        self.airport_store.read.return_value = b"proxies: []\n"
+
+        with self.assertRaisesRegex(ServiceError, "airport_provider_required"):
+            self.service.sync_all()
+
+    def test_member_render_receives_no_provider(self):
+        self.bootstrap()
+
+        member_calls = [call for call in self.generator_calls if not call[0]]
+        owner_calls = [call for call in self.generator_calls if call[0]]
+        self.assertTrue(member_calls)
+        self.assertTrue(owner_calls)
+        self.assertTrue(all(call[1] is None for call in member_calls))
+        self.assertTrue(all(call[1] is not None for call in owner_calls))
+
+    def test_owner_render_receives_the_stable_provider_url(self):
+        self.bootstrap()
+
+        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom-Provider.yaml" % token(bytes([7]), "ABCDEF")
         self.assertEqual(
-            result["errors"],
-            ({"client_id": 7, "code": "owner_update_failed"},),
+            {call[1].url for call in self.generator_calls if call[0]},
+            {provider_url},
         )
-        self.assertEqual([item["client_id"] for item in self.service.status()["pending"]], [7])
-        self.assertIsNone(self.state.users[7].current_release)
-        self.assertEqual(len(self.activator.calls), 1)
+
+    def test_owner_validation_receives_the_stable_provider_url_and_full_forbidden_set(self):
+        self.bootstrap()
+
+        owner_calls = [call for call in self.validation_calls if call[1] is not None]
+        member_calls = [call for call in self.validation_calls if call[1] is None]
+        self.assertTrue(owner_calls)
+        self.assertTrue(member_calls)
+        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom-Provider.yaml" % token(bytes([7]), "ABCDEF")
+        self.assertEqual({call[1] for call in owner_calls}, {provider_url})
+        seen = set(owner_calls[0][0])
+        self.assertIn(token(bytes([8]), "GHJKMN"), seen)
+        self.assertIn("sub-7", seen)
+
+    def test_owner_mihomo_validation_swaps_in_the_stable_local_file_provider(self):
+        snapshots = []
+
+        def snapshot(path):
+            snapshots.append(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
+
+        self.service._mihomo.validate = snapshot
+        self.bootstrap()
+
+        owner_snapshots = [document for document in snapshots if "proxy-providers" in document]
+        self.assertTrue(owner_snapshots)
+        for document in owner_snapshots:
+            provider = document["proxy-providers"]["AmyTelecom"]
+            self.assertEqual(provider["type"], "file")
+            self.assertEqual(provider["path"], str(self.airport_file))
 
     def test_sync_all_reuses_the_release_artifact_without_touching_the_upstream(self):
         self.bootstrap()
@@ -327,46 +343,96 @@ class ServiceTests(unittest.TestCase):
         self.service.sync_all()
 
         self.assertEqual(self.download_calls, [])
-        owner_calls = [call for call in self.generator_calls if call[0]]
-        self.assertTrue(owner_calls)
-        self.assertEqual({call[1].digest for call in owner_calls}, {__import__("hashlib").sha256(self.airport_document).hexdigest()})
 
-    def test_owner_validation_receives_the_stable_provider_url_and_full_forbidden_set(self):
+    def test_provider_byte_change_cannot_create_a_main_release(self):
         self.bootstrap()
-        self.service.sync_all()
+        first_release = self.current_owner_release()
+        self.airport_store.read.return_value = PROVIDER_DOCUMENT.replace(b"amy.example.test", b"amy-2.example.test")
 
-        owner_calls = [call for call in self.validation_calls if call[1] is not None]
-        member_calls = [call for call in self.validation_calls if call[1] is None]
-        self.assertTrue(owner_calls)
-        self.assertTrue(member_calls)
-        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "ABCDEF")
-        self.assertEqual({call[1] for call in owner_calls}, {provider_url})
+        result = self.service.sync_all()
 
-    def test_owner_mihomo_validation_swaps_in_a_local_file_provider_with_raw_bytes(self):
-        import yaml as yaml_module
+        self.assertFalse(result["errors"])
+        self.assertEqual(self.current_owner_release(), first_release)
+        self.assertEqual(self.state.users[8].current_release, self.store.history(8)[0].release_id)
 
-        snapshots = []
+    def test_update_airport_does_not_read_xui_prepare_release_or_activate(self):
+        self.service._read_snapshot = MagicMock()
+        self.service._recover_runtime = MagicMock()
 
-        def snapshot(path):
-            directory = Path(path).parent
-            snapshots.append(
-                (
-                    yaml_module.safe_load(Path(path).read_text(encoding="utf-8")),
-                    {item.name: item.read_bytes() for item in directory.iterdir()},
-                )
-            )
+        result = self.service.update_airport("https://airport.example/sub")
 
-        self.service._mihomo.validate = snapshot
+        self.assertEqual(result, {"updated": True})
+        self.airport_store.replace.assert_called_once()
+        self.service._read_snapshot.assert_not_called()
+        self.service._recover_runtime.assert_not_called()
+        self.assertEqual(self.store.prepared, [])
+        self.assertEqual(self.activator.calls, [])
+        self.assertEqual(self.fetch_calls, [])
+
+    def test_update_airport_only_replaces_the_provider_file(self):
         self.bootstrap()
+        before_state = self.state
+        before_activations = len(self.activator.calls)
+        new_document = PROVIDER_DOCUMENT.replace(b"amy.example.test", b"amy-2.example.test")
+        self.download_document = new_document
 
-        self.assertTrue(snapshots)
-        for document, siblings in snapshots:
-            provider = document["proxy-providers"]["AmyTelecom"]
-            self.assertEqual(provider["type"], "file")
-            self.assertEqual(Path(provider["path"]).name, "AmyTelecom.yaml")
-            self.assertEqual(siblings["AmyTelecom.yaml"], self.airport_document)
+        result = self.service.update_airport("https://airport.example/new")
 
-    def test_rotate_owner_rebuilds_the_release_with_new_token_and_same_airport(self):
+        self.assertEqual(result, {"updated": True})
+        self.assertEqual(self.replaced_documents, [new_document])
+        self.assertEqual(self.state, before_state)
+        self.assertEqual(len(self.activator.calls), before_activations)
+        self.assertEqual(len(self.store.prepared), 2)
+
+    def test_update_airport_validates_the_candidate_with_mihomo_as_a_file_provider(self):
+        def fail_first(candidate):
+            raise RuntimeError("mihomo rejected the provider")
+
+        original_validate = self.service._mihomo.validate
+        seen = []
+
+        def capture(path):
+            document = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+            provider_path = Path(document["proxy-providers"]["AmyTelecom"]["path"])
+            seen.append((document, provider_path.read_bytes()))
+
+        self.service._mihomo.validate = capture
+
+        self.service.update_airport("https://airport.example/sub")
+
+        self.service._mihomo.validate = original_validate
+        self.assertEqual(len(seen), 1)
+        document, candidate_bytes = seen[0]
+        provider = document["proxy-providers"]["AmyTelecom"]
+        self.assertEqual(provider["type"], "file")
+        self.assertTrue(provider["path"].endswith("AmyTelecom-Provider.yaml"))
+        self.assertEqual(candidate_bytes, PROVIDER_DOCUMENT)
+        self.assertEqual(document["rules"], ["MATCH,%s" % document["proxy-groups"][0]["name"]])
+        self.assertEqual(document["proxy-groups"][0]["use"], ["AmyTelecom"])
+
+    def test_update_airport_failure_keeps_the_previous_provider_and_emits_one_code(self):
+        self.bootstrap()
+        secret = "https://airport.example/temporary-secret"
+        self.airport_store.replace.side_effect = lambda document, validator: (_ for _ in ()).throw(AirportStoreError("airport_provider_write_failed"))
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.update_airport(secret)
+
+        self.assertEqual(caught.exception.code, "airport_update_failed")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.service.status()["last_errors"], ("airport_update_failed",))
+
+    def test_update_airport_rejects_a_non_provider_document(self):
+        self.download_document = b"proxies: []\n"
+
+        with self.assertRaisesRegex(ServiceError, "airport_update_failed"):
+            self.service.update_airport("https://airport.example/empty")
+
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.replaced_documents, [])
+
+    def test_rotate_owner_rebuilds_the_release_with_the_new_token_url(self):
         self.bootstrap()
         self.download_calls.clear()
         first_release = self.state.users[7].current_release
@@ -379,20 +445,22 @@ class ServiceTests(unittest.TestCase):
         new_provider_urls = {call[1].url for call in self.generator_calls if call[0]} - old_provider_urls
         self.assertEqual(len(new_provider_urls), 1)
         self.assertIn(token(b"r", "PQRSTU"), next(iter(new_provider_urls)))
-        self.assertIs(
-            self.store.verify_release(7, self.state.users[7].current_release).airport,
-            self.airport_document,
-        )
-        self.assertEqual(len(rotated["urls"]), 3)
+        self.assertIn("AmyTelecom-Provider.yaml", next(iter(new_provider_urls)))
+        self.assertEqual(len(rotated["urls"]), 2)
 
-    def test_rotate_owner_without_an_airport_release_fails_sanitized(self):
-        with self.assertRaises(ServiceError) as caught:
-            self.service.rotate_link(7)
-        self.assertEqual(caught.exception.code, "rotation_not_allowed")
+    def test_member_rotation_changes_routes_without_touching_provider_bytes(self):
+        self.bootstrap()
+        replaced_before = list(self.replaced_documents)
+
+        rotated = self.service.rotate_link(8)
+
+        self.airport_store.replace.assert_not_called()
+        self.assertEqual(self.replaced_documents, replaced_before)
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(len(rotated["urls"]), 1)
 
     def test_rotation_activation_failure_returns_the_dedicated_code_and_keeps_the_old_link(self):
         self.bootstrap()
-        self.service.sync_all()
         old_token = self.state.users[7].token
         old_release = self.state.users[7].current_release
         releases_before = tuple(self.store.history(7))
@@ -406,7 +474,6 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn(old_token, str(caught.exception))
         self.assertEqual(self.state.users[7].token, old_token)
         self.assertEqual(self.state.users[7].current_release, old_release)
-        # The candidate release built for the new token was discarded.
         self.assertEqual(self.store.history(7), releases_before)
         self.assertTrue(
             any(item[0] == 7 for item in self.store.discarded)
@@ -414,7 +481,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_member_rotation_activation_failure_returns_the_dedicated_code(self):
         self.bootstrap()
-        self.service.sync_all()
         old_token = self.state.users[8].token
         self.activator.fail = True
 
@@ -424,48 +490,55 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "rotation_activation_failed")
         self.assertEqual(self.state.users[8].token, old_token)
 
-    def test_sync_retries_rendered_output_after_failed_activation_and_discards_candidates(self):
+    def test_rollback_never_changes_the_provider(self):
+        self.bootstrap()
+        release = self.state.users[7].current_release
+        self.service._releases.mark_current = lambda *_: None
+
+        self.service.rollback(7, release)
+
+        self.airport_store.replace.assert_not_called()
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.state.users[7].current_release, release)
+
+    def test_sync_activation_failure_is_all_or_nothing(self):
         self.activator.fail = True
         with self.assertRaises(ServiceError):
             self.service.sync_all()
         self.assertEqual(self.store.history(7), ())
         self.assertEqual(self.store.history(8), ())
-        self.assertEqual(len(self.store.discarded), 1)
+        self.assertEqual(len(self.store.discarded), 2)
+        self.assertIsNone(self.state)
+
+    def test_sync_retries_rendered_output_after_failed_activation_and_discards_candidates(self):
+        self.activator.fail = True
+        with self.assertRaises(ServiceError):
+            self.service.sync_all()
         self.activator.fail = False
         self.bootstrap()
-        self.service.sync_all()
         self.assertTrue(self.mihomo_calls)
 
     def test_mihomo_failure_discards_owned_sync_candidate_before_route_activation(self):
         self.bootstrap()
         self.service._mihomo.validate = lambda _: (_ for _ in ()).throw(RuntimeError("private"))
 
-        def changed_render(owner, xui, airport, home, root):
+        def changed_render(owner, xui, airport, root):
             if not owner:
-                return {"compat-universal": "member changed"}
+                return {"compat": "member changed"}
             return {
-                variant: ("proxies:\n- name: Owner %s changed\n" % variant)
-                for variant in ("compat-office", "compat-universal", "balance-office")
+                variant: ("proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\nproxies:\n- name: Owner %s changed\n" % (airport.url, variant))
+                for variant in ("compat", "balance")
             }
 
         self.service._render = changed_render
         result = self.service.sync_all()
         self.assertEqual(len(self.store.discarded), 2)
         self.assertEqual(len(self.store.history(7)), 1)
-        self.assertEqual(self.store.history(8), ())
+        self.assertEqual(len(self.store.history(8)), 1)
         self.assertEqual(len(self.activator.calls), 2)
-
-    def test_mihomo_failure_discards_owned_airport_candidate(self):
-        self.bootstrap()
-        self.airport_document = b"proxies:\n- name: Airport updated\n  type: ss\n"
-        self.service._mihomo.validate = lambda _: (_ for _ in ()).throw(RuntimeError("private"))
-        with self.assertRaises(ServiceError): self.service.update_airport("https://airport.example/new")
-        self.assertEqual(len(self.store.discarded), 1)
-        self.assertEqual(len(self.store.history(7)), 1)
 
     def test_traffic_rejects_new_clients_pending_manual_sync_without_mutation(self):
         self.bootstrap()
-        self.service.sync_all()
         self.clients.append(client(9, "new@example.test"))
         before = self.state
         calls = len(self.activator.calls)
@@ -480,7 +553,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_traffic_rejects_identity_and_enabled_state_drift_pending_manual_sync(self):
         self.bootstrap()
-        self.service.sync_all()
         baseline_clients = tuple(self.clients)
         baseline_state = self.state
         inactive_users = dict(baseline_state.users)
@@ -508,7 +580,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_traffic_allows_a_missing_already_inactive_retained_user(self):
         self.bootstrap()
-        self.service.sync_all()
         users = dict(self.state.users)
         users[8] = replace(users[8], active=False)
         self.state = RuntimeState(1, 7, users)
@@ -521,7 +592,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_links_and_rotation_reject_release_less_or_inactive_users(self):
         self.bootstrap()
-        self.service.sync_all()
         users = dict(self.state.users)
         users[9] = UserState(9, "pending@example.test", token(b"p", "PQRSTU"), "PQRSTU", True, None)
         self.state = RuntimeState(1, 7, users)
@@ -532,9 +602,8 @@ class ServiceTests(unittest.TestCase):
 
     def test_status_and_history_are_deterministically_sorted_without_secrets(self):
         self.bootstrap()
-        self.service.sync_all()
         users = dict(self.state.users)
-        users[3] = replace(users[8], client_id=3, email="inactive@example.test", active=False)
+        users[3] = replace(self.state.users[8], client_id=3, email="inactive@example.test", active=False)
         del users[8]
         self.state = RuntimeState(1, 7, users)
         self.assertEqual([item["client_id"] for item in self.service.status()["users"]], [3, 7, 8])
@@ -542,7 +611,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_status_reports_last_success_pending_sources_and_sanitized_errors(self):
         self.bootstrap()
-        self.service.sync_all()
 
         status = self.service.status()
 
@@ -564,8 +632,7 @@ class ServiceTests(unittest.TestCase):
     def test_partial_sync_journals_success_with_member_error_codes(self):
         self.fail_client = "sub-8"
 
-        self.bootstrap()
-        result = self.service.sync_all()
+        result = self.bootstrap()
 
         self.assertEqual(result["errors"][0]["code"], "member_update_failed")
         status = self.service.status()
@@ -574,7 +641,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_activation_failure_journals_error_and_preserves_last_success(self):
         self.bootstrap()
-        self.service.sync_all()
         self.assertEqual(self.service.status()["last_success"], self.clock_value)
         self.activator.fail = True
 
@@ -587,7 +653,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_status_journal_is_a_root_only_atomic_file(self):
         self.bootstrap()
-        self.service.sync_all()
 
         journal = Path(self.config.private_root) / "status.json"
 
@@ -651,37 +716,7 @@ class ServiceTests(unittest.TestCase):
             self.service._journal(success=self.clock_value)
 
         self.assertFalse(journal.exists())
-        # Only the fixture's own home upload remains; no journal or temp file.
-        self.assertEqual(
-            tuple(Path(self.config.private_root).iterdir()), (self.home_path,)
-        )
-
-    def test_render_validation_receives_tokens_loopback_subid_and_airport_url(self):
-        seen = []
-        self.service._validate = lambda text, values, allowed_provider_url=None: seen.extend(values)
-        self.service.update_airport("https://airport.example/transient")
-        self.assertIn(self.state.users[7].token, seen)
-        self.assertIn("sub-7", seen)
-        self.assertIn("https://airport.example/transient", seen)
-
-    def test_first_airport_update_allows_missing_home_snapshot(self):
-        home = Path(self.config.private_root) / "home.yaml"
-        home.unlink()
-        self.assertFalse(home.exists())
-        loaded = []
-        self.service._load_home = lambda path, max_bytes: loaded.append(path) or self.home
-
-        result = self.service.update_airport("https://airport.example/transient")
-
-        self.assertEqual(result["errors"], ())
-        self.assertNotIn(home, loaded)
-
-    def test_existing_invalid_home_snapshot_still_blocks_airport_update(self):
-        home = Path(self.config.private_root) / "home.yaml"; home.write_text("broken", encoding="utf-8")
-        self.service._load_home = lambda path, max_bytes: (_ for _ in ()).throw(ValueError()) if path == home else self.home
-
-        with self.assertRaisesRegex(ServiceError, "airport_activation_failed"):
-            self.service.update_airport("https://airport.example/transient")
+        self.assertEqual(tuple(Path(self.config.private_root).iterdir()), ())
 
     def test_busy_lock_blocks_mutation_without_state_change(self):
         before = self.state
@@ -697,23 +732,24 @@ class ServiceTests(unittest.TestCase):
         # stable codes without leaking the underlying private error.
         self.service._sink = lambda _: (_ for _ in ()).throw(RuntimeError("secret"))
         self.store.prune = lambda _: (_ for _ in ()).throw(RuntimeError("secret"))
+        self.member_render_text = "member changed for prune"
+
         result = self.service.sync_all()
+
         self.assertEqual({item["code"] for item in result["errors"]}, {"release_cleanup_failed"})
         self.assertNotIn("secret", repr(result))
 
     def test_unchanged_sync_updates_routes_without_render_or_mihomo(self):
         self.bootstrap()
-        self.service.sync_all()
         self.generator_calls.clear(); self.mihomo_calls.clear(); self.store.prepared.clear()
         self.service.sync_all()
         self.assertEqual([call[0] for call in self.generator_calls], [True, False])
         self.assertEqual(self.mihomo_calls, [])
         self.assertEqual(self.store.prepared, [])
-        self.assertEqual(len(self.activator.calls), 3)
+        self.assertEqual(len(self.activator.calls), 2)
 
     def test_member_failure_isolated_while_other_member_updates(self):
         self.bootstrap()
-        self.service.sync_all()
         self.clients.append(client(9, "other@example.test"))
         self.fail_client = "sub-8"
         result = self.service.sync_all()
@@ -723,17 +759,15 @@ class ServiceTests(unittest.TestCase):
 
     def test_new_member_source_failure_persists_identity_without_an_invalid_route(self):
         self.bootstrap()
-        self.service.sync_all()
         self.clients.append(client(9, "failed@example.test"))
         self.fail_client = "sub-9"
         result = self.service.sync_all()
         self.assertEqual(result["errors"], ({"client_id": 9, "code": "member_update_failed"},))
         self.assertIsNone(self.state.users[9].current_release)
-        self.assertEqual(len(self.activator.calls), 3)
+        self.assertEqual(len(self.activator.calls), 2)
 
     def test_owner_failure_keeps_all_old_owner_variants(self):
         self.bootstrap()
-        self.service.sync_all()
         old = self.state.users[7].current_release
         self.fail_owner_render = True
         result = self.service.sync_all()
@@ -742,7 +776,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_global_snapshot_failure_is_fail_closed_before_mutation(self):
         self.bootstrap()
-        self.service.sync_all()
         before = self.state
         calls = len(self.activator.calls)
         self.service._read_snapshot = lambda _: (_ for _ in ()).throw(RuntimeError("sub-id secret"))
@@ -763,31 +796,6 @@ class ServiceTests(unittest.TestCase):
         self.assertFalse(self.state.users[8].active)
         self.assertNotEqual(self.state.users[9].token, old)
 
-    def test_airport_activation_uses_one_transaction_and_hides_url_on_failure(self):
-        self.bootstrap()
-        self.service.sync_all(); before = self.state
-        self.activator.fail = True
-        self.airport_document = b"proxies:\n- name: Airport changed\n  type: ss\n"
-        secret = "https://airport.example/temporary-secret"
-        with self.assertRaises(ServiceError) as caught:
-            self.service.update_airport(secret)
-        self.assertEqual(caught.exception.code, "airport_activation_failed")
-        self.assertEqual(self.state, before)
-        self.assertNotIn(secret, str(caught.exception))
-        self.assertTrue(self.activator.calls[-1][2])
-
-    def test_traffic_update_never_generates_yaml_and_preserves_state_on_failure(self):
-        self.bootstrap()
-        self.service.sync_all(); before = self.state
-        self.generator_calls.clear(); self.mihomo_calls.clear(); self.store.prepared.clear(); self.activator.fail = True
-        with self.assertRaises(ServiceError) as caught:
-            self.service.traffic_update()
-        self.assertEqual(caught.exception.code, "traffic_activation_failed")
-        self.assertEqual(self.state, before)
-        self.assertEqual(self.generator_calls, [])
-        self.assertEqual(self.mihomo_calls, [])
-        self.assertEqual(self.store.prepared, [])
-
     def test_missing_persisted_owner_surfaces_a_distinct_sanitized_reinitialization_code(self):
         self.service._reconcile = lambda *_: (_ for _ in ()).throw(
             StateError("owner_reinitialization_required")
@@ -801,7 +809,6 @@ class ServiceTests(unittest.TestCase):
 
     def test_reinitialize_owner_revokes_missing_mapping_and_leaves_the_new_owner_pending(self):
         self.bootstrap()
-        self.service.sync_all()
         old_state = self.state
         self.clients = [client(9, "owner@example.test"), self.member]
 
@@ -831,22 +838,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(tuple(self.store.prepared), before_prepared)
         self.assertEqual(self.activator.calls[-1][0], self.state)
 
-    def test_rollback_does_not_fetch_and_owner_rotation_reuses_the_release_airport(self):
-        self.bootstrap(); self.service.sync_all(); release = self.state.users[7].current_release
-        self.fetch_calls.clear(); self.download_calls.clear(); self.service.rollback(7, release)
-        self.assertEqual(self.fetch_calls, [])
-        old = self.state.users[7].token
-        rotated = self.service.rotate_link(7)
-        self.assertNotEqual(rotated["token"], old)
-        self.assertEqual(len(rotated["urls"]), 3)
-        self.assertNotEqual(self.state.users[7].current_release, release)
-        # Rotation re-fetches only the loopback 3x-ui source; the airport
-        # upstream is never contacted again.
-        self.assertEqual(self.download_calls, [])
-        self.assertEqual(len(self.service.links()[0]["urls"]), 3)
-
     def test_rollback_rejects_invalid_current_users_before_release_verification_or_activation(self):
-        self.service.sync_all()
+        self.bootstrap()
         release = self.state.users[8].current_release
         baseline_state = self.state
         inactive_users = dict(baseline_state.users)
@@ -880,112 +873,6 @@ class ServiceTests(unittest.TestCase):
                 self.assertEqual(verified, [])
                 self.assertEqual(self.state, state)
                 self.assertEqual(len(self.activator.calls), calls)
-
-    def test_sync_publishes_directly_overwritten_home_after_server_validation(self):
-        self.bootstrap()
-        self.service.sync_all()
-        previous = self.current_owner_release()
-        uploaded = home_document_bytes(node_name="Home New")
-        self.home_path.write_bytes(uploaded)
-        self.home_path.chmod(0o644)
-
-        result = self.service.sync_all()
-
-        self.assertFalse(result["errors"])
-        self.assertNotEqual(self.current_owner_release(), previous)
-        self.assertEqual(self.home_path.read_bytes(), uploaded)
-        self.assertEqual(stat.S_IMODE(self.home_path.stat().st_mode), 0o600)
-        release = self.store.verify_release(7, self.current_owner_release())
-        for variant in ("compat-office", "balance-office"):
-            self.assertIn("- name: Home New\n", release.bundle[variant])
-            self.assertNotIn("- name: Home\n", release.bundle[variant])
-        self.assertNotIn("Home New", release.bundle["compat-universal"])
-        member = self.store.verify_release(8, self.state.users[8].current_release)
-        self.assertNotIn("Home New", member.bundle["compat-universal"])
-
-    def test_sync_without_any_home_file_omits_the_overlay_without_error(self):
-        self.bootstrap()
-        self.service.sync_all()
-        self.home_path.unlink()
-
-        result = self.service.sync_all()
-
-        self.assertFalse(result["errors"])
-        release = self.store.verify_release(7, self.current_owner_release())
-        for variant in ("compat-office", "balance-office"):
-            self.assertNotIn("- name: Home\n", release.bundle[variant])
-
-    def test_bad_overwritten_home_stays_for_debug_while_old_release_stays_live(self):
-        self.bootstrap()
-        self.service.sync_all()
-        before = self.active_owner_view()
-        uploaded = b"proxy-groups: ["
-        self.home_path.write_bytes(uploaded)
-        self.member_render_text = "member still syncing"
-
-        result = self.service.sync_all()
-
-        self.assertEqual(self.home_path.read_bytes(), uploaded)
-        self.assertEqual(self.active_owner_view(), before)
-        self.assertEqual(result["errors"], ({"client_id": 7, "code": "home_yaml_invalid"},))
-        self.assertIn(8, [item["client_id"] for item in result["updated"]])
-        self.assertEqual(self.service.status()["last_errors"], ("home_yaml_invalid",))
-
-    def test_overwritten_home_with_invalid_schema_is_reported_and_isolated(self):
-        uploaded = yaml.safe_dump(
-            {"proxies": [{"name": "Home", "type": "ss"}]}, sort_keys=False
-        ).encode("utf-8")
-
-        kept = self._assert_bad_home_is_isolated(
-            lambda: self._upload_home_bytes(uploaded), "home_schema_invalid"
-        )
-
-        self.assertEqual(kept, uploaded)
-        self.assertEqual(self.home_path.read_bytes(), uploaded)
-
-    def test_unsafe_overwritten_home_metadata_is_reported_and_isolated(self):
-        target = self.home_path.with_name("uploaded-home.yaml")
-
-        def plant():
-            self.home_path.rename(target)
-            self.home_path.symlink_to(target)
-            return None
-
-        self._assert_bad_home_is_isolated(plant, "home_source_invalid")
-
-        # The program never rolled the unsafe link back or touched it.
-        self.assertTrue(self.home_path.is_symlink())
-        self.assertEqual(target.read_bytes(), dump_home_overlay(self.home))
-
-    def test_overwritten_home_with_invalid_reference_is_reported_and_isolated(self):
-        document = yaml.safe_load(home_document_bytes())
-        document["inject-home-node-groups"] = ["MissingGroup"]
-        uploaded = yaml.safe_dump(document, sort_keys=False).encode("utf-8")
-
-        kept = self._assert_bad_home_is_isolated(
-            lambda: self._upload_home_bytes(uploaded), "home_group_reference_invalid"
-        )
-
-        self.assertEqual(kept, uploaded)
-
-    def test_home_composition_failure_reports_the_stable_home_code(self):
-        self.bootstrap()
-        self.service.sync_all()
-        before = self.active_owner_view()
-
-        def render(is_owner, xui, airport, home, template_root):
-            if not is_owner:
-                return {"compat-universal": "member still syncing"}
-            raise HomeSourceError("home_group_invalid")
-
-        self.service._render = render
-        self.member_render_text = "member still syncing"
-
-        result = self.service.sync_all()
-
-        self.assertEqual(result["errors"], ({"client_id": 7, "code": "home_group_invalid"},))
-        self.assertEqual(self.active_owner_view(), before)
-        self.assertIn(8, [item["client_id"] for item in result["updated"]])
 
 
 if __name__ == "__main__":

@@ -108,21 +108,24 @@ def _validate_proxy_providers(providers, allowed_provider_url):
         if allowed_provider_url is not None:
             raise CheckError("owner config must declare the airport proxy-provider")
         return set()
-    if allowed_provider_url is None:
-        raise CheckError("rendered config must not contain proxy-providers")
-    if not isinstance(providers, Mapping) or _PROVIDER_NAME not in providers:
+    if not isinstance(providers, Mapping):
         raise CheckError("proxy-providers must declare the airport provider")
-    provider = providers[_PROVIDER_NAME]
-    interval = provider.get("interval") if isinstance(provider, Mapping) else None
-    if (
-        not isinstance(provider, Mapping)
-        or provider.get("type") != "http"
-        or provider.get("url") != allowed_provider_url
-        or type(interval) is not int
-        or interval != 604800
-        or provider.get("path") != _PROVIDER_PATH
-    ):
-        raise CheckError("airport proxy-provider mapping is invalid")
+    if _PROVIDER_NAME in providers:
+        if allowed_provider_url is None:
+            raise CheckError("member proxy-providers must not contain the airport provider")
+        provider = providers[_PROVIDER_NAME]
+        interval = provider.get("interval") if isinstance(provider, Mapping) else None
+        if (
+            not isinstance(provider, Mapping)
+            or provider.get("type") != "http"
+            or provider.get("url") != allowed_provider_url
+            or type(interval) is not int
+            or interval != 604800
+            or provider.get("path") != _PROVIDER_PATH
+        ):
+            raise CheckError("airport proxy-provider mapping is invalid")
+    elif allowed_provider_url is not None:
+        raise CheckError("proxy-providers must declare the airport provider")
     for name, extra in providers.items():
         if name == _PROVIDER_NAME:
             continue

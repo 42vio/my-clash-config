@@ -3,6 +3,7 @@
 import subprocess
 from pathlib import Path
 
+from clash_sub.airport_store import AirportStore
 from clash_sub.checks import MihomoValidator, validate_clash
 from clash_sub.config import load_config
 from clash_sub.generator import render_user_bundle
@@ -12,7 +13,6 @@ from clash_sub.service import ClashSubService
 from clash_sub.sources import (
     download_airport_document,
     fetch_xui_proxies,
-    normalize_server_home,
 )
 from clash_sub.state import (
     load_state,
@@ -45,7 +45,7 @@ def build_service(root=None, runner=None):
         reinitialize_owner=reinitialize_owner,
         fetch_xui_proxies=fetch_xui_proxies,
         download_airport_document=download_airport_document,
-        load_home_overlay=normalize_server_home,
+        airport_store=AirportStore(config.public_root),
         render_user_bundle=render_user_bundle,
         validate_clash=validate_clash,
         mihomo_validator=MihomoValidator(config.mihomo_binary, runner=runner),

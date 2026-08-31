@@ -353,6 +353,44 @@ class TrackedContentRuleTests(ScannerTestCase):
 
             self.assertEqual(exit_code, 0, self.captured_report)
 
+    def test_credential_query_urls_are_flagged_and_redacted(self):
+        # Written as adjacent short literals so this tracked test file never
+        # itself contains a contiguous credential-looking value to flag.
+        leaked = (
+            "https://192.0.2.50/?"
+            "L1N1YnNjcmlwdGlvbi9DbGFzaD90"
+            "PWFueXRsc19jbGFzaCZzaWQ9"
+            "ODY5NTk\n"
+        )
+        token_query = "https://203.0.113.9/sub?to" "ken=shortSecretValue1\n"
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(repository, "template.yaml", "# comment: %s" % leaked)
+            self.stage(repository, "token-query.txt", token_query)
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 1)
+            report = self.captured_report
+            self.assertIn("tracked-credential-url: template.yaml", report)
+            self.assertIn("tracked-credential-url: token-query.txt", report)
+            self.assertNotIn("L1N1YnNjcmlwdGlvbi9", report)
+
+    def test_plain_query_urls_stay_allowed(self):
+        with TemporaryDirectory() as directory:
+            repository = self.make_repository(Path(directory))
+            self.stage(
+                repository,
+                "rules.yaml",
+                "url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Direct/Direct.yaml\n"
+                "doh: https://223.5.5.5/dns-query\n"
+                "doc: https://example.com/docs?topic=intro&page=2\n",
+            )
+
+            exit_code = self.scan(repository)
+
+            self.assertEqual(exit_code, 0, self.captured_report)
+
     def test_concrete_pem_private_key_block_is_flagged(self):
         body = "\n".join("A" * 64 for _ in range(4))
         block = "-----BEGIN PRIVATE KEY-----\n%s\n-----END PRIVATE KEY-----\n" % body

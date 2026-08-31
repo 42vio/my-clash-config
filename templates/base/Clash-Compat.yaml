@@ -93,70 +93,64 @@ dns:
 
 #========= 建立锚点 =========#
 p: {type: http, interval: 86400, health-check: {enable: true, url: http://www.gstatic.com/generate_204, interval: 1800}}                # 订阅 provider 基底
-auto: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: &id001 [Subscribe]}                 # 自动测速组基底
+auto: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: [Subscribe]}                        # 自动测速组基底
 sel: {type: select}
 fall: {type: fallback}                                                                                                             # 普通手选组
 usel: {type: select, use: [Subscribe]}                                                                                                 # 手动切换（订阅全列）
 a3: {type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]}            # 加速线路全列表
-g1: {type: select, proxies: &id002 [🎯 Direct, 加速线路]}                     # 直连优先 + 加速
-g2: {type: select, proxies: &id003 [🎯 Direct, 加速线路]}      # 媒体类（带自建中转）
-g3: {type: select, proxies: &id004 [加速线路, 🎯 Direct]}                     # 加速优先
+g1: {type: select, proxies: &id001 [🎯 Direct, 加速线路]}                     # 直连优先 + 加速
+g2: {type: select, proxies: &id002 [🎯 Direct, 加速线路]}      # 媒体类（带自建中转）
+g3: {type: select, proxies: &id003 [加速线路, 🎯 Direct]}                     # 加速优先
 c: {type: http, behavior: classical, interval: 86400}                                                                                  # classical 规则集基底
 
 proxies: []
-proxy-providers:
-  # Subscribe: {<<: *p, url: https://161.129.35.81/?L1N1YnNjcmlwdGlvbi9DbGFzaD90PWFueXRsc19jbGFzaCZzaWQ9ODY5NTkmdG9rZW49ZjVjODc1YzA2ZGEyZjgmbW09OTcwNDUma3RtbT0xVGc0c0NzYmlTMG91WGprWlpHOXlRPT0mNmYwMjQ5NDhkMjhhNGI1YTgmbW09OTcwNDUma3RtbT0xVGc0c0NzYmlTMG1rRERlaTNwQzRnJTNkJTNkJmRlYjc4NWM=, path: ./AmyTelecom.yaml}
-  Subscribe:
-    type: file
-    path: ./AmyTelecom.yaml
-
 proxy-groups:
 #节点分组（订阅按地区自动测速 / 手动切换；自建节点单列）
 - {name: 加速线路, <<: {type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]} # 加速线路全列表
 , icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Proxy.png, type: select, proxies: [自动选择, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]}
-- {name: 自动选择, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: [Subscribe]}           # 自动测速组基底
-, exclude-filter: "流量|到期|剩余|官网|过期", icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: *id001}
+- {name: 自动选择, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50}                             # 自动测速组基底
+, exclude-filter: "流量|到期|剩余|官网|过期", icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, proxies: []}
   # - {name: 🚀 手动切换, <<: *usel, exclude-filter: "流量|到期|剩余|官网|过期"}
 
 #功能分组
 - {name: 游戏下载, <<: {type: select, proxies: [🎯 Direct, 加速线路]}             # 直连优先 + 加速
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Game.png, type: select, proxies: *id002}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Game.png, type: select, proxies: *id001}
 - {name: SteamCN, <<: {type: select, proxies: [🎯 Direct, 加速线路]}          # 直连优先 + 加速
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png, type: select, proxies: *id002}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png, type: select, proxies: *id001}
 - {name: Steam, <<: {type: select, proxies: [🎯 Direct, 加速线路]}            # 直连优先 + 加速
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png, type: select, proxies: *id002}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png, type: select, proxies: *id001}
 - {name: BiliBili, <<: {type: select, proxies: [🎯 Direct, 加速线路]} # 媒体类（带自建中转）
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/bilibili.png, type: select, proxies: *id003}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/bilibili.png, type: select, proxies: *id002}
 - {name: PT站加速, <<: {type: select, proxies: [🎯 Direct, 加速线路]} # 媒体类（带自建中转）
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Media.png, type: select, proxies: *id003}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Media.png, type: select, proxies: *id002}
 - {name: 国内流媒体, <<: {type: select, proxies: [🎯 Direct, 加速线路]} # 媒体类（带自建中转）
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png, type: select, proxies: *id003}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png, type: select, proxies: *id002}
 - {name: 国外流媒体, <<: {type: select, proxies: [加速线路, 🎯 Direct]}            # 加速优先
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ForeignMedia.png, type: select, proxies: *id004}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ForeignMedia.png, type: select, proxies: *id003}
   # - {name: Adobe,       <<: *sel, proxies: [🎯 Direct, REJECT]}
 - {name: 苹果服务, <<: {type: select, proxies: [🎯 Direct, 加速线路]}             # 直连优先 + 加速
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Apple.png, type: select, proxies: *id002}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Apple.png, type: select, proxies: *id001}
 - {name: 微软服务, <<: {type: select, proxies: [🎯 Direct, 加速线路]}             # 直连优先 + 加速
-, icon: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/icon/qure/color/Microsoft.png, type: select, proxies: *id002}
+, icon: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/icon/qure/color/Microsoft.png, type: select, proxies: *id001}
 - {name: AI服务, <<: {type: select}, proxies: [加速线路, 🇭🇰 香港节点], icon: https://raw.githubusercontent.com/Orz-3/mini/master/Color/OpenAI.png, type: select}
 - {name: 测速工具, <<: {type: select, proxies: [🎯 Direct, 加速线路]}             # 直连优先 + 加速
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Speedtest.png, type: select, proxies: *id002}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Speedtest.png, type: select, proxies: *id001}
 - {name: 国外网站, <<: {type: select, proxies: [加速线路, 🎯 Direct]}             # 加速优先
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Google_Search.png, type: select, proxies: *id004}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Google_Search.png, type: select, proxies: *id003}
 - {name: 隐私广告, <<: {type: select}, proxies: [DIRECT, REJECT, 加速线路], icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Advertising.png, type: select}
 - {name: 🐟 Final, <<: {type: select, proxies: [🎯 Direct, 加速线路]}          # 直连优先 + 加速
-, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png, type: select, proxies: *id002}
+, icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png, type: select, proxies: *id001}
 - {name: 🎯 Direct, <<: {type: select}, proxies: [DIRECT], icon: https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/icon/qure/color/Direct.png, type: select}
-- {name: 🇭🇰 香港节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: [Subscribe]}        # 自动测速组基底
-, filter: "港|HK|(?i)Hong", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: *id001}
-- {name: 🇯🇵 日本节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: [Subscribe]}        # 自动测速组基底
-, filter: "日|东京|JP|(?i)Japan", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: *id001}
-- {name: 🇺🇲 美国节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: [Subscribe]}        # 自动测速组基底
-, filter: "美|US|(?i)States|American", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: *id001}
-- {name: 🇨🇳 台湾节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: [Subscribe]}        # 自动测速组基底
-, filter: "台|湾|TW|(?i)Taiwan", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: *id001}
-- {name: 🇸🇬 新加坡节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: [Subscribe]}       # 自动测速组基底
-, filter: "新|坡|SG|(?i)Singapore", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, use: *id001}
+- {name: 🇭🇰 香港节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50}                          # 自动测速组基底
+, filter: "港|HK|(?i)Hong", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, proxies: []}
+- {name: 🇯🇵 日本节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50}                          # 自动测速组基底
+, filter: "日|东京|JP|(?i)Japan", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, proxies: []}
+- {name: 🇺🇲 美国节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50}                          # 自动测速组基底
+, filter: "美|US|(?i)States|American", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, proxies: []}
+- {name: 🇨🇳 台湾节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50}                          # 自动测速组基底
+, filter: "台|湾|TW|(?i)Taiwan", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, proxies: []}
+- {name: 🇸🇬 新加坡节点, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50}                         # 自动测速组基底
+, filter: "新|坡|SG|(?i)Singapore", hidden: true, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, proxies: []}
 
 rule-providers:
   Direct: {<<: {type: http, behavior: classical, interval: 86400}                                                                      # classical 规则集基底

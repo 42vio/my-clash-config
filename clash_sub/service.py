@@ -10,9 +10,8 @@ from pathlib import Path
 
 import yaml
 
-from clash_sub.checks import CheckError
-from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, AirportProvider, HomeOverlay, RuntimeState
-from clash_sub.sources import HomeSourceError, home_overlay_digest, normalize_xui_endpoints
+from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
+from clash_sub.sources import normalize_xui_endpoints
 from clash_sub.state import StateError
 
 class ServiceError(RuntimeError):
@@ -68,37 +67,34 @@ class _OperationLock:
         if error and exc_type is None: raise ServiceError("operation_lock_invalid")
 
 class ClashSubService:
-    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_document, load_home_overlay, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, state_sink=None, lock_factory=None, clock=None, reinitialize_owner=None, recover_runtime=None):
-        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_document; self._load_home=load_home_overlay; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time; self._reinitialize=reinitialize_owner; self._recover_runtime=recover_runtime or (lambda *_, **__: None)
+    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_document, airport_store, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, state_sink=None, lock_factory=None, clock=None, reinitialize_owner=None, recover_runtime=None):
+        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_document; self._airport=airport_store; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time; self._reinitialize=reinitialize_owner; self._recover_runtime=recover_runtime or (lambda *_, **__: None)
     def sync_all(self):
         with self._lock():
             self._recover()
-            snapshot,state=self._reconciled(); airport,home,owner_error=self._owner_sources(state); next_state=state; candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in state.users.values())
+            snapshot,state=self._reconciled(); self._require_airport(); next_state=state; candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in state.users.values())
             for client in snapshot.clients:
                 user=state.users.get(client.client_id); owner=client.client_id==state.owner_client_id
                 if not user or not client.enabled: continue
-                if owner and owner_error: errors.append(_error(client,owner_error)); continue
                 try:
-                    release=self._prepare(client,owner,snapshot.source_url(client),airport if owner else None,home if owner else None,user,tokens,candidates=candidates)
+                    release=self._prepare(client,owner,snapshot.source_url(client),user,tokens,candidates=candidates)
                     if release: next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
-                except HomeSourceError as error:
-                    # A home overlay failure keeps its stable sanitized code;
-                    # the owner candidate is discarded while members continue.
-                    owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,error.code if owner else "member_update_failed"))
                 except Exception:
                     owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
             try: self._activate(snapshot.clients,next_state,candidates)
             except ServiceError as error: self._journal(errors=(error.code,)); self._discard(candidates); raise
             return self._finish(next_state,candidates,updated,errors)
     def update_airport(self,url):
+        # The airport update only replaces the stable provider file; it never
+        # reconciles state, fetches x-ui, renders profiles, or activates Nginx.
         with self._lock():
-            self._recover()
-            snapshot,state=self._reconciled(); candidates=[]
             try:
-                owner=_client(snapshot.clients,state.owner_client_id); home=self._optional_home(); identity=_identity(state,owner.client_id); airport=self._download(url,self.config.max_source_bytes); release=self._prepare(owner,True,snapshot.source_url(owner),airport,home,identity,tuple(u.token for u in state.users.values()),url,candidates); next_state=state if not release else _with_release(state,owner.client_id,release.release_id)
-                self._activate(snapshot.clients,next_state,candidates)
-            except Exception: self._journal(errors=("airport_activation_failed",)); self._discard(candidates); raise ServiceError("airport_activation_failed") from None
-            return self._finish(next_state,candidates,[_result(owner,release)] if release else [],[])
+                document=self._download(url,self.config.max_source_bytes)
+                self._airport.replace(document,self._validate_airport_candidate)
+            except Exception:
+                self._journal(errors=("airport_update_failed",)); raise ServiceError("airport_update_failed") from None
+            self._journal(self._clock(),())
+            return {"updated": True}
     def traffic_update(self):
         with self._lock():
             self._recover()
@@ -127,9 +123,7 @@ class ClashSubService:
             try:
                 next_state=self._rotate(state,client_id)
                 if client_id==state.owner_client_id:
-                    airport,home,owner_error=self._owner_sources(state)
-                    if owner_error: raise ValueError
-                    release=self._prepare(client,True,snapshot.source_url(client),airport,home,next_state.users[client_id],tuple(u.token for u in next_state.users.values()),candidates=candidates)
+                    release=self._prepare(client,True,snapshot.source_url(client),next_state.users[client_id],tuple(u.token for u in next_state.users.values()),candidates=candidates)
                     if release: next_state=_with_release(next_state,client_id,release.release_id)
                 self._activate(snapshot.clients,next_state,candidates)
             except Exception:
@@ -162,40 +156,47 @@ class ClashSubService:
                 raise ServiceError("owner_reinitialization_failed") from None
             self._observe(next_state); self._journal(self._clock(),())
             return {"owner_client_id":client_id}
-    def _prepare(self,client,owner,url,airport,home,identity,tokens,transient=None,candidates=None):
+    def _prepare(self,client,owner,url,identity,tokens,transient=None,candidates=None):
         xui=normalize_xui_endpoints(self._fetch(url,self.config.max_source_bytes),self.config.xui_public_endpoint)
-        provider=None
-        if owner:
-            if airport is None: raise ValueError("owner requires the airport artifact")
-            provider=AirportProvider(_provider_url(self.config,identity.token),_airport_digest(airport))
-        bundle=self._render(owner,xui,provider,home,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
+        provider=AirportProvider(_provider_url(self.config,identity.token)) if owner else None
+        bundle=self._render(owner,xui,provider,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
         for text in bundle.values(): self._validate(text,forbidden,provider.url if provider else None)
-        inputs={"xui":_digest(xui)} if not owner else {"xui":_digest(xui),"home":_home_digest(home),"airport":_airport_digest(airport)}
-        release=self._releases.prepare(client.client_id,bundle,inputs,airport_document=airport if owner else None)
+        release=self._releases.prepare(client.client_id,bundle,{"xui":_digest(xui)})
         if release:
             if candidates is not None: candidates.append((client.client_id,release))
-            if owner: self._validate_owner_with_mihomo(bundle,airport,home)
+            if owner: self._validate_owner_with_mihomo(bundle)
             else:
                 for path in release.public_paths.values(): self._mihomo.validate(path)
         return release
-    def _validate_owner_with_mihomo(self,bundle,airport,home):
+    def _validate_airport_candidate(self,path):
+        # The staged candidate must be a provider document with real proxy
+        # entries, then survive Mihomo mounted as a local file provider.
+        document=yaml.safe_load(Path(path).read_bytes())
+        if not isinstance(document,dict) or not isinstance(document.get("proxies"),list) or not document["proxies"]: raise ValueError("airport provider document is invalid")
+        probe={"proxy-providers":{"AmyTelecom":{"type":"file","path":str(path)}},"proxy-groups":[{"name":"Provider Check","type":"select","use":["AmyTelecom"]}],"rules":["MATCH,Provider Check"]}
+        with tempfile.TemporaryDirectory(prefix=".clash-sub-provider-validate.") as directory:
+            candidate=Path(directory)/"provider-check.yaml"
+            candidate.write_text(yaml.safe_dump(probe,allow_unicode=True,sort_keys=False),encoding="utf-8")
+            self._mihomo.validate(candidate)
+    def _validate_owner_with_mihomo(self,bundle):
         # The published profile keeps the HTTP provider; Mihomo checks a
-        # non-published equivalent that points at the raw local airport
-        # bytes, which also proves the airport YAML is a usable provider.
+        # non-published equivalent that points at the stable local file.
+        provider_file=Path(self._airport.path)
+        with tempfile.TemporaryDirectory(prefix=".clash-sub-owner-validate.") as directory:
+            for variant,text in bundle.items():
+                document=yaml.safe_load(text)
+                document.setdefault("proxy-providers",{})["AmyTelecom"]={"type":"file","path":str(provider_file)}
+                candidate=Path(directory)/("verify-%s.yaml"%variant)
+                candidate.write_text(yaml.safe_dump(document,allow_unicode=True,sort_keys=False),encoding="utf-8")
+                self._mihomo.validate(candidate)
+    def _require_airport(self):
+        # The stable provider is a hard precondition for preparing any user.
         try:
-            with tempfile.TemporaryDirectory(prefix=".clash-sub-owner-validate.") as directory:
-                airport_file=Path(directory)/"AmyTelecom.yaml"; airport_file.write_bytes(airport)
-                for variant,text in bundle.items():
-                    document=yaml.safe_load(text)
-                    document["proxy-providers"]["AmyTelecom"]={"type":"file","path":str(airport_file)}
-                    candidate=Path(directory)/("verify-%s.yaml"%variant)
-                    candidate.write_text(yaml.safe_dump(document,allow_unicode=True,sort_keys=False),encoding="utf-8")
-                    self._mihomo.validate(candidate)
-        except CheckError:
-            # A Mihomo rejection of a home-bearing owner candidate keeps the
-            # stable home code; home-less owner failures stay generic.
-            if home is None: raise
-            raise HomeSourceError("home_mihomo_validation_failed") from None
+            document=self._airport.read()
+            parsed=yaml.safe_load(document)
+            if not isinstance(parsed,dict) or not isinstance(parsed.get("proxies"),list) or not parsed["proxies"]: raise ValueError
+        except Exception:
+            raise ServiceError("airport_provider_required") from None
     def _activate(self,clients,state,candidates,extra=()):
         try: self._activate_runtime(self.config,state,self._render_routes(self.config,_routable(state),clients),self._runner,tuple(extra)+tuple(self._releases.current_artifact(i,r.release_id) for i,r in candidates))
         except Exception: raise ServiceError("sync_activation_failed") from None
@@ -223,32 +224,6 @@ class ClashSubService:
     def _recover(self):
         try:self._recover_runtime(self.config,self._runner,reload=True)
         except Exception:raise ServiceError("runtime_recovery_failed") from None
-    def _owner_sources(self,state):
-        # The airport supply lives inside the current verified owner release;
-        # the expired upstream URL is never contacted again.  The home file is
-        # loaded once through the server-side boundary; its stable code
-        # survives, while missing airport or current-release data keeps the
-        # generic owner code.
-        try:
-            home=self._optional_home()
-        except HomeSourceError as error:
-            return None,None,error.code
-        except Exception:
-            return None,None,"owner_update_failed"
-        identity=state.users.get(state.owner_client_id)
-        if not identity or not identity.current_release: return None,home,"owner_update_failed"
-        try:
-            airport=self._releases.read_airport_document(state.owner_client_id,identity.current_release)
-        except Exception:
-            return None,home,"owner_update_failed"
-        if airport is None: return None,home,"owner_update_failed"
-        return airport,home,None
-    def _optional_home(self):
-        path=_home_path(self.config)
-        # Only genuine absence is optional; a dangling symlink, insecure
-        # file, or parser failure remains an owner-source failure.
-        if not path.exists() and not path.is_symlink(): return None
-        return self._load_home(path,self.config.max_source_bytes)
     def _observe(self,state):
         try:self._sink(state)
         except Exception:pass
@@ -298,24 +273,13 @@ def _traffic_matches_state(clients,state):
 def _shape(b,owner):
     if tuple(b)!=(OWNER_VARIANTS if owner else MEMBER_VARIANTS):raise ValueError
 def _digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,default=str).encode()).hexdigest()
-def _home_digest(home):return home_overlay_digest(home) if isinstance(home,HomeOverlay) else _digest(home)
-def _airport_digest(document):return hashlib.sha256(document).hexdigest()
-def _provider_url(c,t):return "https://%s/s/%s/AmyTelecom.yaml"%(c.subscription_authority,t)
-def _identity(s,i):
-    identity=s.users.get(i)
-    if not identity:raise ValueError
-    return identity
+def _provider_url(c,t):return "https://%s/s/%s/AmyTelecom-Provider.yaml"%(c.subscription_authority,t)
 def _find(cs,i):return next((c for c in cs if c.client_id==i),None)
-def _client(cs,i):
-    c=_find(cs,i)
-    if not c:raise ValueError
-    return c
 def _client_id(i):
     if isinstance(i,bool) or not isinstance(i,int) or i<1:raise ServiceError("invalid_client")
     return i
-def _urls(c,t,o):return ["https://%s/s/%s/clash-%s.yaml"%(c.subscription_authority,t,v) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
+def _urls(c,t,o):return ["https://%s/s/%s/%s"%(c.subscription_authority,t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}
 def _error(c,code):return {"client_id":c.client_id,"code":code}
 def _pending_source(user,client):return bool(user and client.enabled and user.active and not user.current_release)
 def _state_path(c):return Path(c.private_root)/"state.json"
-def _home_path(c):return Path(c.private_root)/"home.yaml"

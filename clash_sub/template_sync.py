@@ -35,6 +35,9 @@ PUBLIC_TEMPLATE_FILES = (
 OUTPUT_MODES = {relative: 0o644 for relative in PUBLIC_TEMPLATE_FILES}
 MAX_SOURCE_BYTES = 5 * 1024 * 1024
 _PROVIDER_NAME = "AmyTelecom"
+# The local cache filename the airport subscription used before publication;
+# any provider or comment referencing it is private airport machinery.
+_AIRPORT_CACHE_NAME = "AmyTelecom.yaml"
 
 
 class TemplateSyncError(RuntimeError):
@@ -135,6 +138,7 @@ def _sanitize_compat(source):
     if len(proxy_names) != len(source["proxies"]):
         raise TemplateSyncError("template_source_invalid")
     public["proxies"] = CommentedSeq()
+    airports = _airport_provider_names(public.get("proxy-providers"))
     provider_groups, node_groups = [], []
     for group in public["proxy-groups"]:
         if not isinstance(group, Mapping) or not isinstance(group.get("name"), str):
@@ -145,24 +149,108 @@ def _sanitize_compat(source):
             if len(kept) != len(members):
                 node_groups.append(group["name"])
                 group["proxies"] = CommentedSeq(kept)
-        uses = group.get("use")
-        if isinstance(uses, list) and _PROVIDER_NAME in uses:
+        if _drop_airport_group_uses(group, airports):
             provider_groups.append(group["name"])
-            kept = [provider for provider in uses if provider != _PROVIDER_NAME]
-            if kept:
-                group["use"] = CommentedSeq(kept)
-            else:
-                del group["use"]
-                if "proxies" not in group and group.get("include-all") is not True:
-                    group["proxies"] = CommentedSeq()
     if "proxy-providers" in public:
         providers = public["proxy-providers"]
         if not isinstance(providers, Mapping):
             raise TemplateSyncError("template_source_invalid")
-        providers.pop(_PROVIDER_NAME, None)
+        for name in airports:
+            providers.pop(name, None)
         if not providers:
             del public["proxy-providers"]
+    _strip_airport_cache_comments(public)
     return public, (tuple(dict.fromkeys(node_groups)), tuple(dict.fromkeys(provider_groups)))
+
+
+def _airport_provider_names(providers):
+    """The canonical airport provider plus local aliases of its cache file."""
+    names = set()
+    if not isinstance(providers, Mapping):
+        return names
+    for name, mapping in providers.items():
+        if name == _PROVIDER_NAME:
+            names.add(name)
+            continue
+        if not isinstance(mapping, Mapping):
+            continue
+        for field in ("path", "url"):
+            value = mapping.get(field)
+            if isinstance(value, str) and _AIRPORT_CACHE_NAME in value:
+                names.add(name)
+                break
+    return names
+
+
+def _drop_airport_group_uses(group, airports):
+    """Remove airport references from one group's use entries and merges."""
+    referenced = False
+    for entry in list(getattr(group, "merge", None) or []):
+        base = entry[0] if isinstance(entry, (list, tuple)) else entry
+        if not isinstance(base, Mapping):
+            continue
+        base_uses = base.get("use")
+        if isinstance(base_uses, list) and any(name in airports for name in base_uses):
+            referenced = True
+            kept = [name for name in base_uses if name not in airports]
+            if kept:
+                base["use"] = CommentedSeq(kept)
+            else:
+                del base["use"]
+    uses = group.get("use")
+    if isinstance(uses, list) and any(name in airports for name in uses):
+        referenced = True
+        kept = [name for name in uses if name not in airports]
+        if kept:
+            group["use"] = CommentedSeq(kept)
+        else:
+            try:
+                del group["use"]
+            except KeyError:
+                pass
+            if "proxies" not in group and group.get("include-all") is not True:
+                group["proxies"] = CommentedSeq()
+    return referenced
+
+
+def _strip_airport_cache_comments(node):
+    """Drop comment tokens that reference the local airport cache file."""
+    comments = getattr(node, "ca", None)
+    if comments is not None:
+        comment = getattr(comments, "comment", None)
+        if comment is not None:
+            comments.comment = _without_airport_tokens(comment)
+        items = getattr(comments, "items", None)
+        if items:
+            for key, slots in list(items.items()):
+                items[key] = [_without_airport_tokens(slot) for slot in slots]
+    if isinstance(node, Mapping):
+        for value in node.values():
+            _strip_airport_cache_comments(value)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            _strip_airport_cache_comments(value)
+
+
+def _without_airport_tokens(value):
+    """Remove airport-cache comment tokens while preserving the shape."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        if any(item is None or isinstance(item, list) for item in value):
+            # Positional slot lists (root comment pairs) keep their slots.
+            return [_without_airport_tokens(item) for item in value]
+        kept = [item for item in value if not _token_mentions_airport_cache(item)]
+        return kept or None
+    if isinstance(value, str):
+        return None if _AIRPORT_CACHE_NAME in value else value
+    if _token_mentions_airport_cache(value):
+        return None
+    return value
+
+
+def _token_mentions_airport_cache(value):
+    return _AIRPORT_CACHE_NAME in getattr(value, "value", "")
 
 
 def _profiles(injections):
