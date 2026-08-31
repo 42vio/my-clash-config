@@ -1,4 +1,3 @@
-import re
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -24,7 +23,7 @@ _REALITY_FIELDS = {
     "reality-opts",
 }
 _PROVIDER_NAME = "AmyTelecom"
-_PROVIDER_PATH_RE = re.compile(r"^\.\/proxy_providers\/AmyTelecom-[0-9a-f]{64}\.yaml$")
+_PROVIDER_PATH = "./proxy_providers/AmyTelecom-Provider.yaml"
 
 
 def validate_clash(text, forbidden_values, allowed_provider_url=None):
@@ -120,9 +119,8 @@ def _validate_proxy_providers(providers, allowed_provider_url):
         or provider.get("type") != "http"
         or provider.get("url") != allowed_provider_url
         or type(interval) is not int
-        or interval != 0
-        or not isinstance(provider.get("path"), str)
-        or not _PROVIDER_PATH_RE.fullmatch(provider["path"])
+        or interval != 604800
+        or provider.get("path") != _PROVIDER_PATH
     ):
         raise CheckError("airport proxy-provider mapping is invalid")
     return {_PROVIDER_NAME}

@@ -6,9 +6,18 @@ from typing import Mapping
 from urllib.parse import quote
 
 
-VARIANTS = ("compat-office", "compat-universal", "balance-office")
+VARIANTS = ("compat", "balance")
 OWNER_VARIANTS = VARIANTS
-MEMBER_VARIANTS = ("compat-universal",)
+MEMBER_VARIANTS = ("compat",)
+PROFILE_FILENAMES = MappingProxyType({
+    "compat": "Clash-Compat.yaml",
+    "balance": "Clash-Balance.yaml",
+})
+PROFILE_TITLES = MappingProxyType({
+    "compat": "Clash-Compat",
+    "balance": "Clash-Balance",
+})
+AIRPORT_FILENAME = "AmyTelecom-Provider.yaml"
 
 
 @dataclass(frozen=True)
@@ -88,7 +97,6 @@ class AirportProvider:
     """The owner-only stable airport source rendered into owner profiles."""
 
     url: str
-    digest: str
 
 
 @dataclass(frozen=True)
