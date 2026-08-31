@@ -207,6 +207,60 @@ class TemplateSyncTests(unittest.TestCase):
         manifest = (self.root / "templates/profiles.yaml").read_text()
         self.assertIn("Airport Only", published + manifest)
 
+    def test_report_summarizes_compat_structure_changes_and_comments(self):
+        changed = (
+            COMPAT.replace("  enable: true\n", "  enable: false\n")
+            .replace("mixed-port: 7890\n", "")
+            .replace("mode: rule\n", "mode: rule\nnew-key: 1\n")
+        )
+        write(self.compat_source, changed, 0o600)
+
+        report = run_template_sync(self.root, compat=self.compat_source)
+
+        lines = "\n".join(report.lines)
+        self.assertIn("Compat 基础：已更新", lines)
+        self.assertIn("新增 1（new-key）", lines)
+        self.assertIn("删除 1（mixed-port）", lines)
+        self.assertIn("修改 1（dns.enable）", lines)
+        self.assertIn("通用注释：全部保留", lines)
+        self.assertIn("写入：templates/base/Clash-Compat.yaml", lines)
+        self.assertNotIn("192.0.2.1", lines)
+        self.assertNotIn("reality-opts", lines)
+
+    def test_report_counts_compat_comment_loss(self):
+        write(self.compat_source, COMPAT.replace("# compat comment\n", ""), 0o600)
+
+        report = run_template_sync(self.root, compat=self.compat_source)
+
+        lines = "\n".join(report.lines)
+        self.assertIn("通用注释：保留 0/1 行", lines)
+
+    def test_report_summarizes_balance_dns_changes_and_unique_comments(self):
+        changed = BALANCE.replace(
+            "  enable: true  # balance dns comment\n",
+            "  enable: true\n  enhanced-mode: fake-ip  # balance dns comment\n",
+        )
+        write(self.balance_source, changed, 0o600)
+
+        report = run_template_sync(self.root, balance=self.balance_source)
+
+        lines = "\n".join(report.lines)
+        self.assertIn("Balance DNS：已更新", lines)
+        self.assertIn("dns.enhanced-mode", lines)
+        self.assertIn("独有 DNS 注释：1 行（已保留）", lines)
+        self.assertIn("Balance 非 DNS 差异（未合并）：", lines)
+
+    def test_report_states_no_change_cleanly(self):
+        run_template_sync(self.root, compat=self.compat_source, balance=self.balance_source)
+        report = run_template_sync(self.root, compat=self.compat_source, balance=self.balance_source)
+
+        lines = "\n".join(report.lines)
+        self.assertIn("Compat 基础：无变化", lines)
+        self.assertIn("结构：无变化", lines)
+        self.assertIn("通用注释：全部保留", lines)
+        self.assertIn("Balance DNS：无变化", lines)
+        self.assertIn("独有 DNS 注释：1 行（已保留）", lines)
+
     def test_sync_rejects_a_synthetic_renderer_output_before_publishing(self):
         with patch("clash_sub.template_sync.render_user_bundle", return_value={"compat": "not yaml"}):
             with self.assertRaisesRegex(TemplateSyncError, "template_candidate_invalid"):

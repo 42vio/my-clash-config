@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+import yaml
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from clash_sub.checks import CheckError, validate_clash
@@ -94,8 +95,15 @@ def run_template_sync(repo_root: Path, compat: Path | None = None, balance: Path
     lines = []
     if compat_selected:
         lines.append("Compat 基础：%s" % ("已更新" if PUBLIC_TEMPLATE_FILES[0] in changed else "无变化"))
+        lines.append("  " + _structure_summary(_structure_diff(previous[PUBLIC_TEMPLATE_FILES[0]][0], payloads[PUBLIC_TEMPLATE_FILES[0]])))
+        lines.append("  " + _comment_summary(previous[PUBLIC_TEMPLATE_FILES[0]][0], payloads[PUBLIC_TEMPLATE_FILES[0]]))
     if balance_selected:
         lines.append("Balance DNS：%s" % ("已更新" if PUBLIC_TEMPLATE_FILES[1] in changed else "无变化"))
+        lines.append("  " + _structure_summary(_dns_structure_diff(previous[PUBLIC_TEMPLATE_FILES[1]][0], payloads[PUBLIC_TEMPLATE_FILES[1]])))
+        compat_text = payloads.get(PUBLIC_TEMPLATE_FILES[0])
+        if compat_text is None:
+            compat_text = _snapshot_one(root, PUBLIC_TEMPLATE_FILES[0])[0]
+        lines.append("  " + _balance_dns_comment_summary(compat_text, payloads[PUBLIC_TEMPLATE_FILES[1]]))
     if ignored:
         lines.append("Balance 非 DNS 差异（未合并）：%s" % ", ".join(ignored))
     lines.extend("写入：%s" % relative for relative in changed)
@@ -114,6 +122,115 @@ def _read_regular(path, code):
     if len(payload) > MAX_SOURCE_BYTES:
         raise TemplateSyncError(code)
     return payload
+
+
+# Report summaries expose YAML paths, key names, and counts only; scalar
+# values, node content, and credentials never enter a report line.
+_SUMMARY_PATH_LIMIT = 6
+
+
+def _structure_summary(diff):
+    if diff is None:
+        return "结构：对比不可用"
+    added, removed, changed = diff
+    if not (added or removed or changed):
+        return "结构：无变化"
+    parts = []
+    if added:
+        parts.append("新增 %d（%s）" % (len(added), _summarize_paths(added)))
+    if removed:
+        parts.append("删除 %d（%s）" % (len(removed), _summarize_paths(removed)))
+    if changed:
+        parts.append("修改 %d（%s）" % (len(changed), _summarize_paths(changed)))
+    return "结构：" + "，".join(parts)
+
+
+def _structure_diff(previous, candidate):
+    try:
+        previous_document = yaml.safe_load(previous) or {}
+        candidate_document = yaml.safe_load(candidate) or {}
+    except yaml.YAMLError:
+        return None
+    added, removed, changed = [], [], []
+    _walk_structure(previous_document, candidate_document, "", added, removed, changed)
+    return added, removed, changed
+
+
+def _dns_structure_diff(previous, candidate):
+    try:
+        previous_dns = (yaml.safe_load(previous) or {}).get("dns") or {}
+        candidate_dns = (yaml.safe_load(candidate) or {}).get("dns") or {}
+    except yaml.YAMLError:
+        return None
+    added, removed, changed = [], [], []
+    _walk_structure(previous_dns, candidate_dns, "dns", added, removed, changed)
+    return added, removed, changed
+
+
+def _walk_structure(old, new, path, added, removed, changed):
+    if isinstance(old, Mapping) and isinstance(new, Mapping):
+        for key in sorted(set(old) - set(new), key=str):
+            removed.append(_summary_path(path, key))
+        for key in sorted(set(new) - set(old), key=str):
+            added.append(_summary_path(path, key))
+        for key in sorted(set(old) & set(new), key=str):
+            _walk_structure(old[key], new[key], _summary_path(path, key), added, removed, changed)
+        return
+    if isinstance(old, list) and isinstance(new, list):
+        for index in range(min(len(old), len(new))):
+            _walk_structure(old[index], new[index], "%s[%d]" % (path, index), added, removed, changed)
+        if len(new) > len(old):
+            added.append("%s[+%d]" % (path or "(root)", len(new) - len(old)))
+        elif len(old) > len(new):
+            removed.append("%s[-%d]" % (path or "(root)", len(old) - len(new)))
+        return
+    if old != new:
+        changed.append(path or "(root)")
+
+
+def _summary_path(path, key):
+    return "%s.%s" % (path, key) if path else str(key)
+
+
+def _summarize_paths(paths):
+    shown = "、".join(paths[:_SUMMARY_PATH_LIMIT])
+    if len(paths) > _SUMMARY_PATH_LIMIT:
+        shown += " 等 %d 项" % len(paths)
+    return shown
+
+
+def _comment_summary(previous, candidate):
+    previous_comments = _comment_lines(previous)
+    candidate_comments = _comment_lines(candidate)
+    if not previous_comments:
+        return "通用注释：%d 行" % len(candidate_comments)
+    kept = sum(1 for line in previous_comments if line in set(candidate_comments))
+    if kept == len(previous_comments):
+        return "通用注释：全部保留（%d 行）" % kept
+    return "通用注释：保留 %d/%d 行" % (kept, len(previous_comments))
+
+
+def _balance_dns_comment_summary(compat, balance):
+    compat_comments = set(_comment_lines(compat))
+    unique = [line for line in _comment_lines(balance) if line not in compat_comments]
+    if not unique:
+        return "独有 DNS 注释：无"
+    return "独有 DNS 注释：%d 行（已保留）" % len(unique)
+
+
+def _comment_lines(payload):
+    comments = []
+    for line in payload.decode("utf-8", "replace").splitlines():
+        stripped = line.strip()
+        if not stripped or "#" not in stripped:
+            continue
+        if stripped.startswith("#"):
+            comments.append(stripped)
+            continue
+        marker = stripped.find(" #")
+        if marker != -1:
+            comments.append(stripped[marker + 1:].strip())
+    return comments
 
 
 def _load_source(path):
