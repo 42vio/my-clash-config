@@ -135,7 +135,12 @@ def _validate_proxy_providers(providers, allowed_provider_url):
         if provider_type == "http":
             url = extra.get("url")
             interval = extra.get("interval")
-            if not isinstance(url, str) or not url.startswith("https://") or type(interval) is not int or interval <= 0:
+            if (
+                not isinstance(url, str)
+                or not (url.startswith("http://") or url.startswith("https://"))
+                or type(interval) is not int
+                or interval <= 0
+            ):
                 raise CheckError("proxy-providers mapping is invalid")
     return set(providers)
 

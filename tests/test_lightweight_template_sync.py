@@ -86,6 +86,23 @@ class TemplateSyncTests(unittest.TestCase):
         self.assertNotIn("AmyTelecom", sanitized["proxy-providers"])
         self.assertNotIn("AmyTelecom", sanitized["proxy-groups"][0].get("use", []))
 
+    def test_compat_keeps_non_amy_http_provider(self):
+        source = load_round_trip(COMPAT.replace(
+            "proxy-providers:\n",
+            "proxy-providers:\n  Other: {type: http, url: http://provider.example/other.yaml, interval: 3600, path: ./providers/other.yaml}\n",
+        ))
+        sanitized, _injections = template_sync._sanitize_compat(source)
+        self.assertEqual(sanitized["proxy-providers"]["Other"]["url"], "http://provider.example/other.yaml")
+
+    def test_compat_sync_publishes_template_with_non_amy_http_provider(self):
+        source = self.root / "source/Clash-Compat-Other.yaml"
+        write(source, COMPAT.replace(
+            "proxy-providers:\n",
+            "proxy-providers:\n  Other: {type: http, url: http://provider.example/other.yaml, interval: 3600, path: ./providers/other.yaml}\n",
+        ), 0o600)
+        run_template_sync(self.root, compat=source)
+        self.assertIn("http://provider.example/other.yaml", (self.root / "templates/base/Clash-Compat.yaml").read_text())
+
     def test_sync_rejects_a_synthetic_renderer_output_before_publishing(self):
         with patch("clash_sub.template_sync.render_user_bundle", return_value={"compat": "not yaml"}):
             with self.assertRaisesRegex(TemplateSyncError, "template_candidate_invalid"):
