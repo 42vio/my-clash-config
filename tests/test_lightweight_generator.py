@@ -3,9 +3,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import yaml
+from ruamel.yaml.comments import CommentedMap
 
 from clash_sub.domain import AirportProvider
-from clash_sub.generator import render_user_bundle
+from clash_sub.generator import _compose_variant, render_user_bundle
+from clash_sub.yaml_rt import load_round_trip
 
 
 PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
@@ -102,6 +104,33 @@ class LightweightGeneratorTests(unittest.TestCase):
     def test_member_rejects_airport_provider(self):
         with self.assertRaisesRegex(ValueError, "member profiles"):
             render_user_bundle(False, [reality_proxy("Member")], provider(), self.templates)
+
+    def test_manifest_is_strict_and_compose_keeps_round_trip_document(self):
+        document, injections = _compose_variant(self.templates, "compat")
+        self.assertIsInstance(document, CommentedMap)
+        self.assertEqual(injections, {"Public": "all"})
+        self._write("templates/profiles.yaml", PROFILES + "legacy: true\n")
+        with self.assertRaises(ValueError):
+            _compose_variant(self.templates, "compat")
+
+    def test_provider_injection_is_owner_only(self):
+        self._write("templates/base/compat-office.yaml", BASE_COMPAT.replace("rule-providers: {}\n", "- name: Automatic\n  type: url-test\n  proxies: [DIRECT]\nrule-providers: {}\n"))
+        self._write("templates/profiles.yaml", PROFILES.replace("inject-provider-groups: []", "inject-provider-groups: [Automatic]"))
+        owner = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)
+        member = render_user_bundle(False, [reality_proxy("Member")], None, self.templates)
+        self.assertEqual(yaml.safe_load(owner["compat"])["proxy-groups"][1]["use"], ["AmyTelecom"])
+        self.assertNotIn("use", yaml.safe_load(member["compat"])["proxy-groups"][1])
+
+    def test_render_keeps_shared_yaml_aliases(self):
+        self._write("templates/base/compat-office.yaml", BASE_COMPAT.replace("rule-providers: {}\n", "routing-default: &routing-default {interval: 300}\nrouting-default-copy: *routing-default\nrule-providers: {}\n"))
+        rendered = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)["compat"]
+        document = load_round_trip(rendered.encode("utf-8"))
+        self.assertIs(document["routing-default"], document["routing-default-copy"])
+
+    def test_identical_inputs_are_byte_stable(self):
+        first = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)
+        second = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)
+        self.assertEqual(first, second)
 
 
 if __name__ == "__main__":
