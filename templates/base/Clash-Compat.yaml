@@ -97,7 +97,7 @@ auto: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, 
 sel: {type: select}
 fall: {type: fallback}                                                                                                             # 普通手选组
 usel: {type: select, use: [Subscribe]}                                                                                                 # 手动切换（订阅全列）
-a3: {type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]}            # 加速线路全列表
+a3: {type: select, proxies: [自动选择, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]}                       # 加速线路全列表
 g1: {type: select, proxies: &id001 [🎯 Direct, 加速线路]}                     # 直连优先 + 加速
 g2: {type: select, proxies: &id002 [🎯 Direct, 加速线路]}      # 媒体类（带自建中转）
 g3: {type: select, proxies: &id003 [加速线路, 🎯 Direct]}                     # 加速优先
@@ -106,7 +106,7 @@ c: {type: http, behavior: classical, interval: 86400}                           
 proxies: []
 proxy-groups:
 #节点分组（订阅按地区自动测速 / 手动切换；自建节点单列）
-- {name: 加速线路, <<: {type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]} # 加速线路全列表
+- {name: 加速线路, <<: {type: select, proxies: [自动选择, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]}            # 加速线路全列表
 , icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Proxy.png, type: select, proxies: [自动选择, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]}
 - {name: 自动选择, <<: {type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50}                             # 自动测速组基底
 , exclude-filter: "流量|到期|剩余|官网|过期", icon: https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png, type: url-test, url: http://www.google.com/generate_204, interval: 1800, tolerance: 50, proxies: []}

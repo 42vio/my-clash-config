@@ -140,6 +140,18 @@ class ProviderMappingTests(unittest.TestCase):
         with self.assertRaisesRegex(CheckError, "unknown provider"):
             validate_clash(dump(document), ())
 
+    def test_empty_proxy_group_without_use_is_rejected(self):
+        # Mihomo refuses a group whose proxies and use are both empty;
+        # checks must mirror that instead of accepting an unloadable config.
+        document = valid_document()
+        document["proxy-groups"].append({"name": "Empty", "type": "select", "proxies": []})
+        with self.assertRaisesRegex(CheckError, "proxy group must define proxies or include-all"):
+            validate_clash(dump(document), ())
+        document = valid_document()
+        document["proxy-groups"].append({"name": "Empty", "type": "select"})
+        with self.assertRaisesRegex(CheckError, "proxy group must define proxies or include-all"):
+            validate_clash(dump(document), ())
+
     def test_yaml_alias_cycle_fails_closed(self):
         text = "dns: &cycle {enable: true}\nproxies: []\nproxy-groups: []\nrule-providers: {Direct: {type: http}}\nrules: [MATCH,DIRECT]\nnotes: {next: *cycle, self: &inner {peer: *inner}}\n"
         with self.assertRaisesRegex(CheckError, "invalid YAML"):

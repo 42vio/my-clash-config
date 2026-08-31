@@ -47,10 +47,41 @@ def _render_variant(template_root, variant, xui, airport):
     if airport is not None:
         _with_provider(document, airport)
     _inject_proxy_names(document, injections, airport is not None)
+    if airport is None:
+        _drop_unusable_groups(document)
     try:
         return dump_round_trip(document)
     except RoundTripYamlError:
         raise ValueError("rendered template could not be serialized") from None
+
+
+def _drop_unusable_groups(document):
+    """Member profiles drop groups left empty after airport removal.
+
+    Mihomo rejects a group whose proxies and use are both empty, so the
+    provider-only groups — and anything that only referenced them —
+    collapse instead of shipping an unloadable configuration.
+    """
+    groups = document["proxy-groups"]
+    dropped = set()
+    changed = True
+    while changed:
+        changed = False
+        for index in range(len(groups)):
+            group = groups[index]
+            members = group.get("proxies")
+            if isinstance(members, list) and dropped:
+                kept = [member for member in members if member not in dropped]
+                if len(kept) != len(members):
+                    group["proxies"] = CommentedSeq(kept)
+                    members = kept
+            if members or group.get("use") or group.get("include-all") is True:
+                continue
+            del groups[index]
+            dropped.add(group["name"])
+            changed = True
+            break
+    return dropped
 
 
 def _with_provider(document, airport):

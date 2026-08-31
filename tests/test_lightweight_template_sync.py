@@ -75,6 +75,29 @@ rule-providers: {}
 rules: [MATCH,Select]
 """.replace("@OLD@", _OLD_AIRPORT_CACHE)
 
+MERGE_BASE_NODES = """# compat comment
+mixed-port: 7890
+mode: rule
+dns:
+  enable: true
+anchors:
+  a3: {type: select, proxies: [Private Node, DIRECT]}
+proxies:
+- name: Private Node
+  type: ss
+  server: 192.0.2.9
+  port: 8388
+  cipher: aes-128-gcm
+  password: placeholder-password
+proxy-providers: {}
+proxy-groups:
+- name: Select
+  <<: {type: select, proxies: [Private Node, DIRECT]}
+  proxies: [DIRECT]
+rule-providers: {}
+rules: [MATCH,Select]
+"""
+
 def write(path, text, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -163,6 +186,26 @@ class TemplateSyncTests(unittest.TestCase):
         self.assertNotIn(_OLD_AIRPORT_CACHE, text)
         self.assertIn("Airport Only", manifest)
         self.assertIn("Select", manifest)
+
+    def test_compat_strips_private_nodes_from_merge_bases(self):
+        sanitized, _injections = template_sync._sanitize_compat(load_round_trip(MERGE_BASE_NODES))
+
+        text = template_sync._dump(sanitized)
+        self.assertNotIn("Private Node", text)
+        select = sanitized["proxy-groups"][0]
+        self.assertEqual(select["proxies"], ["DIRECT"])
+        anchor = sanitized["anchors"]["a3"]
+        self.assertEqual(anchor["proxies"], ["DIRECT"])
+
+    def test_sync_validates_the_member_render_before_publishing(self):
+        source = self.root / "source/Clash-Compat-Alias.yaml"
+        write(source, AIRPORT_ALIAS, 0o600)
+
+        run_template_sync(self.root, compat=source)
+
+        published = (self.root / "templates/base/Clash-Compat.yaml").read_text()
+        manifest = (self.root / "templates/profiles.yaml").read_text()
+        self.assertIn("Airport Only", published + manifest)
 
     def test_sync_rejects_a_synthetic_renderer_output_before_publishing(self):
         with patch("clash_sub.template_sync.render_user_bundle", return_value={"compat": "not yaml"}):

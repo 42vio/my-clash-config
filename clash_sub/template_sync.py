@@ -151,6 +151,18 @@ def _sanitize_compat(source):
             if len(kept) != len(members):
                 node_groups.append(group["name"])
                 group["proxies"] = CommentedSeq(kept)
+        for entry in list(getattr(group, "merge", None) or []):
+            base = entry[0] if isinstance(entry, (list, tuple)) else entry
+            if not isinstance(base, Mapping):
+                continue
+            base_members = base.get("proxies")
+            if not isinstance(base_members, list):
+                continue
+            kept = [member for member in base_members if member not in proxy_names]
+            if kept:
+                base["proxies"] = CommentedSeq(kept)
+            else:
+                del base["proxies"]
         if _drop_airport_group_uses(group, airports):
             provider_groups.append(group["name"])
     if "proxy-providers" in public:
@@ -161,13 +173,36 @@ def _sanitize_compat(source):
             providers.pop(name, None)
         if not providers:
             del public["proxy-providers"]
+    _strip_private_names_from_anchors(public, proxy_names)
     _strip_airport_cache_comments(public)
     return public, (tuple(dict.fromkeys(node_groups)), tuple(dict.fromkeys(provider_groups)))
 
 
+def _strip_private_names_from_anchors(node, proxy_names):
+    """Remove private node names from top-level anchor merge bases.
+
+    Anchor libraries stay in the template as inert machinery, but their
+    ``proxies`` lists must not carry private node names into any published
+    profile.
+    """
+    if isinstance(node, Mapping):
+        for key, value in list(node.items()):
+            if key == "proxies" and isinstance(value, list):
+                kept = [member for member in value if member not in proxy_names]
+                if kept != value:
+                    node[key] = CommentedSeq(kept)
+            else:
+                _strip_private_names_from_anchors(value, proxy_names)
+    elif isinstance(node, (list, tuple)):
+        for value in node:
+            _strip_private_names_from_anchors(value, proxy_names)
+
+
 def _airport_provider_names(providers):
     """The canonical airport provider plus local aliases of its cache file."""
-    names = set()
+    # The canonical name is always airport machinery: a group `use` of it is
+    # removed even when the source template no longer declares the provider.
+    names = {_PROVIDER_NAME}
     if not isinstance(providers, Mapping):
         return names
     for name, mapping in providers.items():
@@ -313,9 +348,14 @@ def _validate_rendered_candidates(compat, profiles, balance):
             _write_validation_file(templates / "base/Clash-Compat.yaml", compat)
             _write_validation_file(templates / "dns/Clash-Balance.yaml", balance or CommentedMap({"dns": clone_isolated_round_trip(compat["dns"])}))
             _write_validation_file(templates / "profiles.yaml", profiles)
-            rendered = render_user_bundle(True, [probe], provider, templates)
-            for text in rendered.values():
+            rendered_owner = render_user_bundle(True, [probe], provider, templates)
+            for text in rendered_owner.values():
                 validate_clash(text, (), allowed_provider_url=provider.url)
+            # The member render must stay valid too: it drops provider-only
+            # groups instead of shipping them empty.
+            rendered_member = render_user_bundle(False, [probe], None, templates)
+            for text in rendered_member.values():
+                validate_clash(text, (), allowed_provider_url=None)
     except (CheckError, OSError, RoundTripYamlError, ValueError, KeyError, TypeError) as error:
         raise TemplateSyncError("template_candidate_invalid") from error
 

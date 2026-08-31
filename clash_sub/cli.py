@@ -334,8 +334,11 @@ def _menu_error(stderr, code):
 
 
 def _menu_airport(stdin, stdout, stderr, factory):
-    airport_url = _prompt(stdin, stdout, "请输入机场订阅地址：")
-    if airport_url is None:
+    # The airport URL usually carries subscription credentials, so it is
+    # read through the same hidden prompt as the Cloudflare token.
+    try:
+        airport_url = getpass("请输入机场订阅地址：")
+    except (EOFError, KeyboardInterrupt):
         return 0, False
     if not isinstance(airport_url, str) or not airport_url.strip():
         return _error(stderr, "invalid_airport_url", 2), False

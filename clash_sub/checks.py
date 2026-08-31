@@ -201,11 +201,15 @@ def _validate_groups(groups):
         if name in names:
             raise CheckError("duplicate proxy group name")
         names.add(name)
+        proxies = group.get("proxies")
+        uses = group.get("use")
         if (
-            not isinstance(group.get("proxies"), list)
+            (not isinstance(proxies, list) or not proxies)
             and group.get("include-all") is not True
-            and not isinstance(group.get("use"), list)
+            and (not isinstance(uses, list) or not uses)
         ):
+            # Mihomo refuses a group whose proxies and use are both empty;
+            # mirror that instead of accepting an unloadable configuration.
             raise CheckError("proxy group must define proxies or include-all")
     return names
 

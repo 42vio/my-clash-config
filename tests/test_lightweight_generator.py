@@ -44,6 +44,39 @@ inject-node-groups:
 inject-provider-groups: []
 """
 
+AIRPORT_GROUPS_COMPAT = """# compat shared comment
+dns:
+  enable: true
+proxies: []
+proxy-groups:
+- name: Region Auto
+  type: url-test
+  proxies: []
+- name: Main Select
+  type: select
+  proxies: [Region Auto]
+- name: Feature
+  type: select
+  proxies: [Region Auto]
+- name: Public
+  type: select
+  proxies: [DIRECT]
+rule-providers: {}
+rules:
+- MATCH,Main Select
+"""
+
+AIRPORT_GROUPS_PROFILES = """profiles:
+  compat:
+    dns: compat
+  balance:
+    dns: balance
+inject-node-groups:
+- Main Select
+inject-provider-groups:
+- Region Auto
+"""
+
 
 def provider():
     return AirportProvider(PROVIDER_URL)
@@ -112,6 +145,50 @@ class LightweightGeneratorTests(unittest.TestCase):
         self._write("templates/profiles.yaml", PROFILES + "legacy: true\n")
         with self.assertRaises(ValueError):
             _compose_variant(self.templates, "compat")
+
+    def test_member_render_drops_provider_only_groups_and_cascades(self):
+        # Region Auto is a sanitized provider-only group (empty proxies,
+        # no use); members must not ship it, and references to it must
+        # collapse. Main Select keeps the injected member node instead.
+        self._write("templates/base/Clash-Compat.yaml", AIRPORT_GROUPS_COMPAT)
+        self._write("templates/profiles.yaml", AIRPORT_GROUPS_PROFILES)
+        self._write("templates/dns/Clash-Balance.yaml", BALANCE_DNS)
+
+        member = yaml.safe_load(
+            render_user_bundle(False, [reality_proxy("Member")], None, self.templates)["compat"]
+        )
+
+        names = [group["name"] for group in member["proxy-groups"]]
+        self.assertNotIn("Region Auto", names)
+        self.assertNotIn("Feature", names)
+        self.assertIn("Main Select", names)
+        self.assertIn("Public", names)
+        for group in member["proxy-groups"]:
+            self.assertTrue(
+                group.get("proxies") or group.get("use") or group.get("include-all") is True,
+                group["name"],
+            )
+        main = next(g for g in member["proxy-groups"] if g["name"] == "Main Select")
+        self.assertEqual(main["proxies"], ["Member"])
+        rules = member["rules"]
+        self.assertTrue(all(rule.split(",")[-1] in {g["name"] for g in member["proxy-groups"]} for rule in rules))
+
+    def test_owner_render_keeps_provider_groups_with_use(self):
+        self._write("templates/base/Clash-Compat.yaml", AIRPORT_GROUPS_COMPAT)
+        self._write("templates/profiles.yaml", AIRPORT_GROUPS_PROFILES)
+        self._write("templates/dns/Clash-Balance.yaml", BALANCE_DNS)
+
+        owner = yaml.safe_load(
+            render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)["compat"]
+        )
+
+        names = [group["name"] for group in owner["proxy-groups"]]
+        self.assertIn("Region Auto", names)
+        region = next(g for g in owner["proxy-groups"] if g["name"] == "Region Auto")
+        self.assertEqual(region.get("use"), ["AmyTelecom"])
+        main = next(g for g in owner["proxy-groups"] if g["name"] == "Main Select")
+        self.assertIn("Owner", main["proxies"])
+        self.assertIn("Region Auto", main["proxies"])
 
     def test_provider_injection_is_owner_only(self):
         self._write("templates/base/Clash-Compat.yaml", BASE_COMPAT.replace("rule-providers: {}\n", "- name: Automatic\n  type: url-test\n  proxies: [DIRECT]\nrule-providers: {}\n"))
