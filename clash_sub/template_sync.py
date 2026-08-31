@@ -11,6 +11,9 @@ from pathlib import Path
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from clash_sub.checks import CheckError, validate_clash
+from clash_sub.domain import AirportProvider
+from clash_sub.generator import render_user_bundle
 from clash_sub.yaml_rt import (
     RoundTripYamlError,
     clone_isolated_round_trip,
@@ -79,7 +82,7 @@ def run_template_sync(repo_root: Path, compat: Path | None = None, balance: Path
         candidates[PUBLIC_TEMPLATE_FILES[2]] = profiles_candidate
     if balance_selected:
         candidates[PUBLIC_TEMPLATE_FILES[1]] = balance_candidate
-    _validate_candidates(root, candidates)
+    _validate_candidates(root, candidates, compat_candidate, profiles_candidate, balance_candidate)
     payloads = {relative: _dump(document).encode("utf-8") for relative, document in candidates.items()}
     previous = _snapshot_targets(root, tuple(payloads))
     changed = tuple(relative for relative in PUBLIC_TEMPLATE_FILES if relative in payloads and (previous[relative][0] != payloads[relative] or previous[relative][1] != OUTPUT_MODES[relative]))
@@ -150,10 +153,15 @@ def _sanitize_compat(source):
                 group["use"] = CommentedSeq(kept)
             else:
                 del group["use"]
-    # Provider definitions are dynamic source state.  The renderer adds the
-    # authorized AmyTelecom provider for owner output from its private input.
+                if "proxies" not in group and group.get("include-all") is not True:
+                    group["proxies"] = CommentedSeq()
     if "proxy-providers" in public:
-        del public["proxy-providers"]
+        providers = public["proxy-providers"]
+        if not isinstance(providers, Mapping):
+            raise TemplateSyncError("template_source_invalid")
+        providers.pop(_PROVIDER_NAME, None)
+        if not providers:
+            del public["proxy-providers"]
     return public, (tuple(dict.fromkeys(node_groups)), tuple(dict.fromkeys(provider_groups)))
 
 
@@ -180,9 +188,9 @@ def _balance_differences(balance, compat):
     return tuple(str(key) for key in sorted(set(balance_data) | set(compat_data), key=str) if balance_data.get(key) != compat_data.get(key))
 
 
-def _validate_candidates(root, candidates):
+def _validate_candidates(root, candidates, compat, profiles, balance):
     for relative, document in candidates.items():
-        if relative == PUBLIC_TEMPLATE_FILES[0] and (document.get("proxies") != [] or "proxy-providers" in document):
+        if relative == PUBLIC_TEMPLATE_FILES[0] and document.get("proxies") != []:
             raise TemplateSyncError("template_candidate_invalid")
         if relative == PUBLIC_TEMPLATE_FILES[1] and (set(document) != {"dns"} or not isinstance(document["dns"], Mapping)):
             raise TemplateSyncError("template_candidate_invalid")
@@ -195,6 +203,36 @@ def _validate_candidates(root, candidates):
             raise
         except Exception:
             raise TemplateSyncError("template_candidate_invalid") from None
+    _validate_rendered_candidates(compat, profiles, balance)
+
+
+def _validate_rendered_candidates(compat, profiles, balance):
+    """Exercise the public candidates through the production renderer."""
+    probe = {
+        "name": "template-sync-probe",
+        "type": "vless", "server": "192.0.2.1", "port": 443,
+        "uuid": "11111111-1111-4111-8111-111111111111", "network": "tcp",
+        "tls": True, "flow": "xtls-rprx-vision", "servername": "probe.invalid",
+        "client-fingerprint": "chrome",
+        "reality-opts": {"public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "short-id": "1111111111111111"},
+    }
+    provider = AirportProvider("https://template-sync.invalid/AmyTelecom.yaml")
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            templates = Path(directory) / "templates"
+            _write_validation_file(templates / "base/Clash-Compat.yaml", compat)
+            _write_validation_file(templates / "dns/Clash-Balance.yaml", balance or CommentedMap({"dns": clone_isolated_round_trip(compat["dns"])}))
+            _write_validation_file(templates / "profiles.yaml", profiles)
+            rendered = render_user_bundle(True, [probe], provider, templates)
+            for text in rendered.values():
+                validate_clash(text, (), allowed_provider_url=provider.url)
+    except (CheckError, OSError, RoundTripYamlError, ValueError, KeyError, TypeError) as error:
+        raise TemplateSyncError("template_candidate_invalid") from error
+
+
+def _write_validation_file(path, document):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_dump(document), encoding="utf-8")
 
 
 def _load_scanner(root):

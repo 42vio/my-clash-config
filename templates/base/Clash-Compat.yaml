@@ -104,6 +104,12 @@ g3: {type: select, proxies: &id004 [加速线路, 🎯 Direct]}                 
 c: {type: http, behavior: classical, interval: 86400}                                                                                  # classical 规则集基底
 
 proxies: []
+proxy-providers:
+  # Subscribe: {<<: *p, url: https://161.129.35.81/?L1N1YnNjcmlwdGlvbi9DbGFzaD90PWFueXRsc19jbGFzaCZzaWQ9ODY5NTkmdG9rZW49ZjVjODc1YzA2ZGEyZjgmbW09OTcwNDUma3RtbT0xVGc0c0NzYmlTMG91WGprWlpHOXlRPT0mNmYwMjQ5NDhkMjhhNGI1YTgmbW09OTcwNDUma3RtbT0xVGc0c0NzYmlTMG1rRERlaTNwQzRnJTNkJTNkJmRlYjc4NWM=, path: ./AmyTelecom.yaml}
+  Subscribe:
+    type: file
+    path: ./AmyTelecom.yaml
+
 proxy-groups:
 #节点分组（订阅按地区自动测速 / 手动切换；自建节点单列）
 - {name: 加速线路, <<: {type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点]} # 加速线路全列表

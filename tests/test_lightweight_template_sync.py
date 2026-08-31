@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from clash_sub import template_sync
 from clash_sub.template_sync import OUTPUT_MODES, PUBLIC_TEMPLATE_FILES, TemplateSyncError, TemplateSyncReport, default_source_paths, run_template_sync
+from clash_sub.yaml_rt import load_round_trip
 
 COMPAT = """# compat comment
 mixed-port: 7890
@@ -48,9 +49,10 @@ class TemplateSyncTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.compat_source = self.root / "source/Clash-Compat.yaml"; self.balance_source = self.root / "source/Clash-Balance.yaml"
         write(self.compat_source, COMPAT, 0o600); write(self.balance_source, BALANCE, 0o600)
-        write(self.root / "templates/base/Clash-Compat.yaml", COMPAT)
+        current_compat, injections = template_sync._sanitize_compat(load_round_trip(COMPAT))
+        write(self.root / "templates/base/Clash-Compat.yaml", template_sync._dump(current_compat))
         write(self.root / "templates/dns/Clash-Balance.yaml", "dns: {}\n")
-        write(self.root / "templates/profiles.yaml", "profiles: {}\n")
+        write(self.root / "templates/profiles.yaml", template_sync._dump(template_sync._profiles(injections)))
         write(self.root / "scripts/scan_tracked_secrets.py", "def find_content_findings(text, path): return ()\n")
 
     def test_default_sources_use_new_case_sensitive_names(self):
@@ -74,7 +76,24 @@ class TemplateSyncTests(unittest.TestCase):
         self.assertIn("proxies: []", text); self.assertNotIn("AmyTelecom", text); self.assertIn("Select", manifest)
         self.assertNotIn("airport.example", text + manifest)
 
+    def test_compat_keeps_non_amy_provider_mapping_and_group_reference(self):
+        source = load_round_trip(COMPAT.replace(
+            "proxy-providers:\n",
+            "proxy-providers:\n  Other: {type: file, path: ./providers/other.yaml}\n",
+        ))
+        sanitized, _injections = template_sync._sanitize_compat(source)
+        self.assertIn("Other", sanitized["proxy-providers"])
+        self.assertNotIn("AmyTelecom", sanitized["proxy-providers"])
+        self.assertNotIn("AmyTelecom", sanitized["proxy-groups"][0].get("use", []))
+
+    def test_sync_rejects_a_synthetic_renderer_output_before_publishing(self):
+        with patch("clash_sub.template_sync.render_user_bundle", return_value={"compat": "not yaml"}):
+            with self.assertRaisesRegex(TemplateSyncError, "template_candidate_invalid"):
+                run_template_sync(self.root, compat=self.compat_source)
+
     def test_second_replacement_failure_restores_selected_outputs_and_modes(self):
+        base = self.root / "templates/base/Clash-Compat.yaml"
+        write(base, base.read_text().replace("# compat comment", "# prior comment"))
         before = {r: ((self.root / r).read_bytes(), stat.S_IMODE((self.root / r).stat().st_mode)) for r in PUBLIC_TEMPLATE_FILES}
         real_replace = template_sync._os_replace; calls = []
         def fail_second(source, target):

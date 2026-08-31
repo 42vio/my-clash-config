@@ -110,8 +110,8 @@ def _validate_proxy_providers(providers, allowed_provider_url):
         return set()
     if allowed_provider_url is None:
         raise CheckError("rendered config must not contain proxy-providers")
-    if not isinstance(providers, Mapping) or set(providers) != {_PROVIDER_NAME}:
-        raise CheckError("proxy-providers must declare exactly the airport provider")
+    if not isinstance(providers, Mapping) or _PROVIDER_NAME not in providers:
+        raise CheckError("proxy-providers must declare the airport provider")
     provider = providers[_PROVIDER_NAME]
     interval = provider.get("interval") if isinstance(provider, Mapping) else None
     if (
@@ -123,7 +123,21 @@ def _validate_proxy_providers(providers, allowed_provider_url):
         or provider.get("path") != _PROVIDER_PATH
     ):
         raise CheckError("airport proxy-provider mapping is invalid")
-    return {_PROVIDER_NAME}
+    for name, extra in providers.items():
+        if name == _PROVIDER_NAME:
+            continue
+        if not isinstance(name, str) or not name.strip() or not isinstance(extra, Mapping):
+            raise CheckError("proxy-providers mapping is invalid")
+        provider_type = extra.get("type")
+        path = extra.get("path")
+        if provider_type not in {"http", "file"} or not isinstance(path, str) or not path.strip():
+            raise CheckError("proxy-providers mapping is invalid")
+        if provider_type == "http":
+            url = extra.get("url")
+            interval = extra.get("interval")
+            if not isinstance(url, str) or not url.startswith("https://") or type(interval) is not int or interval <= 0:
+                raise CheckError("proxy-providers mapping is invalid")
+    return set(providers)
 
 
 def _validate_proxies(proxies):
@@ -179,7 +193,11 @@ def _validate_groups(groups):
         if name in names:
             raise CheckError("duplicate proxy group name")
         names.add(name)
-        if not isinstance(group.get("proxies"), list) and group.get("include-all") is not True:
+        if (
+            not isinstance(group.get("proxies"), list)
+            and group.get("include-all") is not True
+            and not isinstance(group.get("use"), list)
+        ):
             raise CheckError("proxy group must define proxies or include-all")
     return names
 

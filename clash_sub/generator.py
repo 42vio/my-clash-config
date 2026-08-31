@@ -54,9 +54,11 @@ def _render_variant(template_root, variant, xui, airport):
 
 
 def _with_provider(document, airport):
-    if "proxy-providers" in document:
-        raise ValueError("public template must not carry a provider")
-    providers = CommentedMap()
+    providers = document.get("proxy-providers")
+    if providers is None:
+        providers = CommentedMap()
+    elif not isinstance(providers, Mapping) or PROVIDER_NAME in providers:
+        raise ValueError("public template provider mapping is invalid")
     providers[PROVIDER_NAME] = CommentedMap({
         "type": "http",
         "url": airport.url,
@@ -67,21 +69,20 @@ def _with_provider(document, airport):
         index = list(document).index("proxies") + 1
     except ValueError:
         raise ValueError("public template must declare proxies") from None
-    document.insert(index, "proxy-providers", providers)
+    if "proxy-providers" not in document:
+        document.insert(index, "proxy-providers", providers)
 
 
 def _compose_variant(template_root: Path, variant: str) -> tuple[CommentedMap, dict[str, str]]:
     if variant not in OWNER_VARIANTS:
         raise ValueError("unknown profile")
     root = Path(template_root)
-    document = _load_round_trip(root / "base" / "compat-office.yaml")
+    document = _load_round_trip(_template_path(root / "base", "Clash-Compat.yaml", "compat-office.yaml"))
     if document.get("proxies") != []:
         raise ValueError("public template must carry an empty proxies list")
-    if "proxy-providers" in document:
-        raise ValueError("public template must not carry a provider")
     manifest = _load_manifest(root / "profiles.yaml")
     if manifest["profiles"][variant]["dns"] == "balance":
-        balance = _load_round_trip(root / "dns" / "balance-office.yaml")
+        balance = _load_round_trip(_template_path(root / "dns", "Clash-Balance.yaml", "balance-office.yaml"))
         if set(balance) != {"dns"} or not isinstance(balance.get("dns"), Mapping):
             raise ValueError("balance DNS template must contain only dns")
         base_root_comment = copy.deepcopy(getattr(document.ca, "comment", None))
@@ -94,6 +95,11 @@ def _compose_variant(template_root: Path, variant: str) -> tuple[CommentedMap, d
     for group in manifest["inject-provider-groups"]:
         injections[group] = "all-provider" if group in injections else "provider"
     return document, injections
+
+
+def _template_path(directory, current_name, legacy_name):
+    current = directory / current_name
+    return current if current.exists() else directory / legacy_name
 
 
 def _load_round_trip(path):
