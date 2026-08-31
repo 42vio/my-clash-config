@@ -543,8 +543,8 @@ def _parser():
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
     template = commands.add_parser("template-sync", add_help=False)
-    template.add_argument("--compat-office", type=Path)
-    template.add_argument("--balance-office", type=Path)
+    template.add_argument("--compat", type=Path)
+    template.add_argument("--balance", type=Path)
     commands.add_parser("mihomo-update", add_help=False)
     update = commands.add_parser("update", add_help=False)
     update.add_argument("--post-update", action="store_true")
@@ -856,7 +856,7 @@ def _mihomo_update(stdout, stderr):
 def _template_sync(parsed, stdout, stderr):
     try:
         report = template_sync.run_template_sync(
-            default_repo_root(), parsed.compat_office, parsed.balance_office
+            default_repo_root(), parsed.compat, parsed.balance
         )
     except template_sync.TemplateSyncError as error:
         return _error(stderr, error.code, 1)

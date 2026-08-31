@@ -6,12 +6,4 @@ profiles:
 inject-node-groups:
 - 加速线路
 - AI服务
-inject-provider-groups:
-- 加速线路
-- 自动选择
-- AI服务
-- 🇭🇰 香港节点
-- 🇯🇵 日本节点
-- 🇺🇲 美国节点
-- 🇨🇳 台湾节点
-- 🇸🇬 新加坡节点
+inject-provider-groups: []
