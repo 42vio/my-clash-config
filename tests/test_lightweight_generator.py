@@ -10,7 +10,7 @@ from clash_sub.generator import _compose_variant, render_user_bundle
 from clash_sub.yaml_rt import load_round_trip
 
 
-PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
+PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom-Provider.yaml"
 
 BASE_COMPAT = """# compat shared comment
 dns:
@@ -74,8 +74,8 @@ class LightweightGeneratorTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.templates = self.root / "templates"
-        self._write("templates/base/compat-office.yaml", BASE_COMPAT)
-        self._write("templates/dns/balance-office.yaml", BALANCE_DNS)
+        self._write("templates/base/Clash-Compat.yaml", BASE_COMPAT)
+        self._write("templates/dns/Clash-Balance.yaml", BALANCE_DNS)
         self._write("templates/profiles.yaml", PROFILES)
 
     def _write(self, relative, text):
@@ -114,7 +114,7 @@ class LightweightGeneratorTests(unittest.TestCase):
             _compose_variant(self.templates, "compat")
 
     def test_provider_injection_is_owner_only(self):
-        self._write("templates/base/compat-office.yaml", BASE_COMPAT.replace("rule-providers: {}\n", "- name: Automatic\n  type: url-test\n  proxies: [DIRECT]\nrule-providers: {}\n"))
+        self._write("templates/base/Clash-Compat.yaml", BASE_COMPAT.replace("rule-providers: {}\n", "- name: Automatic\n  type: url-test\n  proxies: [DIRECT]\nrule-providers: {}\n"))
         self._write("templates/profiles.yaml", PROFILES.replace("inject-provider-groups: []", "inject-provider-groups: [Automatic]"))
         owner = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)
         member = render_user_bundle(False, [reality_proxy("Member")], None, self.templates)
@@ -122,7 +122,7 @@ class LightweightGeneratorTests(unittest.TestCase):
         self.assertNotIn("use", yaml.safe_load(member["compat"])["proxy-groups"][1])
 
     def test_render_keeps_shared_yaml_aliases(self):
-        self._write("templates/base/compat-office.yaml", BASE_COMPAT.replace("rule-providers: {}\n", "routing-default: &routing-default {interval: 300}\nrouting-default-copy: *routing-default\nrule-providers: {}\n"))
+        self._write("templates/base/Clash-Compat.yaml", BASE_COMPAT.replace("rule-providers: {}\n", "routing-default: &routing-default {interval: 300}\nrouting-default-copy: *routing-default\nrule-providers: {}\n"))
         rendered = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)["compat"]
         document = load_round_trip(rendered.encode("utf-8"))
         self.assertIs(document["routing-default"], document["routing-default-copy"])

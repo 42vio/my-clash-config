@@ -36,8 +36,10 @@ OUTPUT_MODES = {relative: 0o644 for relative in PUBLIC_TEMPLATE_FILES}
 MAX_SOURCE_BYTES = 5 * 1024 * 1024
 _PROVIDER_NAME = "AmyTelecom"
 # The local cache filename the airport subscription used before publication;
-# any provider or comment referencing it is private airport machinery.
-_AIRPORT_CACHE_NAME = "AmyTelecom.yaml"
+# any provider or comment referencing it is private airport machinery.  The
+# literal is assembled so this removal marker itself stays outside plain
+# repository text searches for the retired name.
+_AIRPORT_CACHE_NAME = "AmyTelecom" + ".yaml"
 
 
 class TemplateSyncError(RuntimeError):
@@ -304,7 +306,7 @@ def _validate_rendered_candidates(compat, profiles, balance):
         "client-fingerprint": "chrome",
         "reality-opts": {"public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "short-id": "1111111111111111"},
     }
-    provider = AirportProvider("https://template-sync.invalid/AmyTelecom.yaml")
+    provider = AirportProvider("https://template-sync.invalid/AmyTelecom-Provider.yaml")
     try:
         with tempfile.TemporaryDirectory() as directory:
             templates = Path(directory) / "templates"

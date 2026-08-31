@@ -139,8 +139,8 @@ class TrackedContentRuleTests(ScannerTestCase):
         token_path = "/s/%s" % SUBSCRIPTION_TOKEN
         leaks = {
             "bare-token.txt": token_path,
-            "wrong-suffix.txt": token_path + "/clash-compat-universal.yaml.bak",
-            "wrong-extension.txt": token_path + "/clash-compat-universal.yml",
+            "wrong-suffix.txt": token_path + "/Clash-Compat.yaml.bak",
+            "wrong-extension.txt": token_path + "/Clash-Compat.yml",
             "unknown-variant.txt": token_path + "/clash-other.yaml",
         }
         with TemporaryDirectory() as directory:
@@ -239,9 +239,9 @@ class TrackedContentRuleTests(ScannerTestCase):
     def test_route_and_url_documentation_placeholders_remain_allowed(self):
         documentation = "\n".join(
             (
-                "route: /s/<token>/clash-compat-office.yaml",
-                "alternate: /s/<other>/clash-compat-universal.yaml",
-                "https://user:pass@192.0.2.9/s/<token>/clash-balance-office.yaml",
+                "route: /s/<token>/Clash-Compat.yaml",
+                "alternate: /s/<other>/Clash-Balance.yaml",
+                "https://user:pass@192.0.2.9/s/<token>/Clash-Balance.yaml",
                 "11111111-1111-4111-8111-111111111111",
             )
         )
@@ -264,7 +264,7 @@ class TrackedContentRuleTests(ScannerTestCase):
             self.stage(
                 repository,
                 "links.txt",
-                "https://sub.example.com:8443/s/%s/clash-compat-universal.yaml\n"
+                "https://sub.example.com:8443/s/%s/Clash-Compat.yaml\n"
                 % SUBSCRIPTION_TOKEN,
             )
             self.stage(repository, "ids.txt", "client id %s\n" % RANDOM_UUID_TEXT)

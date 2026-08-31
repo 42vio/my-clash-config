@@ -10,7 +10,7 @@ from clash_sub.checks import CheckError, MihomoValidator, validate_clash
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS
 
 
-PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
+PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom-Provider.yaml"
 
 
 def valid_document():
@@ -93,7 +93,7 @@ class ProviderMappingTests(unittest.TestCase):
             ("non-weekly interval", {"AmyTelecom": dict(provider, interval=3600)}),
             ("boolean interval", {"AmyTelecom": dict(provider, interval=False)}),
             ("missing interval", {"AmyTelecom": {"type": "http", "url": PROVIDER_URL, "path": provider["path"]}}),
-            ("wrong stable path", {"AmyTelecom": dict(provider, path="./proxy_providers/AmyTelecom.yaml")}),
+            ("wrong stable path", {"AmyTelecom": dict(provider, path="./proxy_providers/airport.yaml")}),
             ("non-mapping provider", {"AmyTelecom": "https://airport.example"}),
         )
         for name, providers in cases:

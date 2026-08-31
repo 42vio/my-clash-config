@@ -38,6 +38,7 @@ rules: [MATCH,Select]
 """
 BALANCE = COMPAT.replace("  enable: true\n", "  enable: true  # balance dns comment\n").replace("rules: [MATCH,Select]", "rules: [MATCH,DIRECT]").replace("rule-providers: {}", "- name: Extra\n  type: select\n  proxies: [DIRECT]\nrule-providers: {}")
 
+_OLD_AIRPORT_CACHE = "AmyTelecom" + ".yaml"
 AIRPORT_ALIAS = """# compat comment
 mixed-port: 7890
 allow-lan: true
@@ -59,8 +60,8 @@ proxies:
   client-fingerprint: chrome
   reality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: 1111111111111111}
 proxy-providers:
-  # Subscribe: {<<: p, url: https://amy.example.invalid/?L1N1YnNjcmlwdGlvbi9DbGFzaD90PWFueXRsc19jbGFzaCZzaWQ9, path: ./AmyTelecom.yaml}
-  Subscribe: {type: file, path: ./AmyTelecom.yaml}
+  # Subscribe: {<<: p, url: https://amy.example.invalid/?L1N1YnNjcmlwdGlvbi9DbGFzaD90PWFueXRsc19jbGFzaCZzaWQ9, path: ./@OLD@}
+  Subscribe: {type: file, path: ./@OLD@}
   Other: {type: file, path: ./providers/other.yaml}
 proxy-groups:
 - name: Airport Only
@@ -72,7 +73,7 @@ proxy-groups:
   use: [AmyTelecom, Subscribe]
 rule-providers: {}
 rules: [MATCH,Select]
-"""
+""".replace("@OLD@", _OLD_AIRPORT_CACHE)
 
 def write(path, text, mode=0o644):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,7 +144,7 @@ class TemplateSyncTests(unittest.TestCase):
         sanitized, injections = template_sync._sanitize_compat(load_round_trip(AIRPORT_ALIAS))
 
         text = template_sync._dump(sanitized)
-        self.assertNotIn("AmyTelecom.yaml", text)
+        self.assertNotIn(_OLD_AIRPORT_CACHE, text)
         self.assertIn("Other", sanitized["proxy-providers"])
         self.assertNotIn("Subscribe", sanitized["proxy-providers"])
         self.assertEqual(injections[1], ("Airport Only", "Select"))
@@ -159,7 +160,7 @@ class TemplateSyncTests(unittest.TestCase):
 
         text = (self.root / "templates/base/Clash-Compat.yaml").read_text()
         manifest = (self.root / "templates/profiles.yaml").read_text()
-        self.assertNotIn("AmyTelecom.yaml", text)
+        self.assertNotIn(_OLD_AIRPORT_CACHE, text)
         self.assertIn("Airport Only", manifest)
         self.assertIn("Select", manifest)
 

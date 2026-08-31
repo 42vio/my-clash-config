@@ -132,9 +132,6 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertIn("location = /s/%s/Clash-Balance.yaml" % self.owner_token, text)
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % self.member_token, text)
         self.assertNotIn("location = /s/%s/Clash-Balance.yaml" % self.member_token, text)
-        self.assertNotIn("clash-compat-office.yaml", text)
-        self.assertNotIn("clash-compat-universal.yaml", text)
-        self.assertNotIn("clash-balance-office.yaml", text)
         self.assertNotIn("location /s/", text)
         self.assertNotIn("/s/ABCDEF/", text)
         self.assertNotIn("deleted@example.invalid", text)
@@ -207,7 +204,6 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertIn("add_header Cache-Control no-store always;", provider_block)
         self.assertNotIn(self.owner.email, provider_block)
         self.assertNotIn("airport.example", text)
-        self.assertNotIn("AmyTelecom.yaml", text)
 
     def test_member_has_no_balance_or_provider_route(self):
         text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))

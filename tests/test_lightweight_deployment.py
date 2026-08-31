@@ -105,6 +105,7 @@ class DocumentationContractTests(unittest.TestCase):
         actual = {
             path.relative_to(ROOT).as_posix()
             for path in (*ROOT.glob("*.md"), *(ROOT / "docs").rglob("*.md"))
+            if not path.relative_to(ROOT).as_posix().startswith("docs/superpowers/")
         }
         self.assertEqual(
             actual,

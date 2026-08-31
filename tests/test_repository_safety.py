@@ -162,6 +162,29 @@ def _runtime_source_files():
     return files
 
 
+PROJECT_USE_DOCUMENTS = (
+    "README.md",
+    "DEPLOYMENT.md",
+    "docs/template-design.md",
+    "docs/operations.md",
+)
+
+# Removed business names may survive only in the development-history
+# documents under docs/superpowers/, never in active runtime code,
+# templates, tests, configuration, deployment assets, or the four
+# project-use manuals.
+LEGACY_BUSINESS_REFERENCES = (
+    "compat-office",
+    "compat-universal",
+    "balance-office",
+    "Clash-Compat-Office.yaml",
+    "Clash-Compat-Universal.yaml",
+    "Clash-Balance-Office.yaml",
+    "AmyTelecom.yaml",
+    "private/home.yaml",
+)
+
+
 class RepositorySafetyTests(unittest.TestCase):
     def test_requirements_pin_exactly_one_ruamel_yaml_version(self):
         lines = [
@@ -354,6 +377,42 @@ class RepositorySafetyTests(unittest.TestCase):
             for relative in TRACKED_DOCUMENT_PATHS
         )
         self.assertNotIn("AmyTelecom", tracked_text)
+
+    def test_project_use_documentation_is_exactly_four_chinese_files(self):
+        actual = {
+            path.relative_to(ROOT).as_posix()
+            for path in (*ROOT.glob("*.md"), *(ROOT / "docs").rglob("*.md"))
+            if not path.relative_to(ROOT).as_posix().startswith("docs/superpowers/")
+        }
+        self.assertEqual(sorted(actual), sorted(PROJECT_USE_DOCUMENTS))
+        for relative in PROJECT_USE_DOCUMENTS:
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertTrue(text.strip(), relative)
+
+    def test_active_sources_contain_no_legacy_business_references(self):
+        search_roots = ("clash_sub", "templates", "config", "deploy", "scripts", "tests")
+        for root_name in search_roots:
+            for path in sorted((ROOT / root_name).rglob("*")):
+                if (
+                    not path.is_file()
+                    or path == Path(__file__).resolve()
+                    or "__pycache__" in path.parts
+                    or path.suffix in (".pyc", ".pyo")
+                ):
+                    # This file defines the reference list it enforces, and
+                    # compiled bytecode caches merely mirror source text.
+                    continue
+                text = path.read_text(encoding="utf-8", errors="ignore")
+                for reference in LEGACY_BUSINESS_REFERENCES:
+                    self.assertNotIn(
+                        reference,
+                        text,
+                        "%s references %r" % (path.relative_to(ROOT).as_posix(), reference),
+                    )
+        for relative in PROJECT_USE_DOCUMENTS:
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            for reference in LEGACY_BUSINESS_REFERENCES:
+                self.assertNotIn(reference, text, relative)
 
     def test_retired_user_documentation_is_absent(self):
         retired = (

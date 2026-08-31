@@ -16,7 +16,7 @@ class MihomoUpdateTests(unittest.TestCase):
         self.binary = self.root / "lib" / "mihomo"
         self.public = self.root / "public"
         self.public.mkdir()
-        (self.public / "clash-compat-universal.yaml").write_text("mixed-port: 7890\n", encoding="utf-8")
+        (self.public / "Clash-Compat.yaml").write_text("mixed-port: 7890\n", encoding="utf-8")
         self.payload = b"#!/bin/sh\necho Mihomo Meta v1.19.28\n"
         self.archive = gzip.compress(self.payload)
         self.digest = hashlib.sha256(self.archive).hexdigest()
@@ -51,7 +51,7 @@ class MihomoUpdateTests(unittest.TestCase):
     def test_installs_latest_stable_release_and_validates_published_configs(self):
         nested = self.public / "owner" / "release"
         nested.mkdir(parents=True)
-        nested_config = nested / "clash-balance-office.yaml"
+        nested_config = nested / "Clash-Balance.yaml"
         nested_config.write_text("mixed-port: 7891\n", encoding="utf-8")
         result = install_latest_mihomo(
             self.root, self._runner, binary=self.binary, public_root=self.public
@@ -60,7 +60,7 @@ class MihomoUpdateTests(unittest.TestCase):
         self.assertEqual(result, {"changed": True, "version": "v1.19.28"})
         self.assertEqual(self.binary.read_bytes(), self.payload)
         self.assertEqual(self.binary.stat().st_mode & 0o777, 0o755)
-        self.assertTrue(any(call[1:] == ["-t", "-f", str(self.public / "clash-compat-universal.yaml")] for call in self.calls))
+        self.assertTrue(any(call[1:] == ["-t", "-f", str(self.public / "Clash-Compat.yaml")] for call in self.calls))
         self.assertTrue(any(call[1:] == ["-t", "-f", str(nested_config)] for call in self.calls))
         self.assertTrue(all("-fsSL" in call for call in self.calls if call[0] == "curl"))
 
