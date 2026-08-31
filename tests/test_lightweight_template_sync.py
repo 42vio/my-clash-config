@@ -235,6 +235,14 @@ class TemplateSyncTests(unittest.TestCase):
         lines = "\n".join(report.lines)
         self.assertIn("通用注释：保留 0/1 行", lines)
 
+    def test_report_counts_duplicate_compat_comment_loss_by_occurrence(self):
+        previous = b"# duplicate comment\n# duplicate comment\n"
+        candidate = b"# duplicate comment\n"
+
+        summary = template_sync._comment_summary(previous, candidate)
+
+        self.assertEqual(summary, "通用注释：保留 1/2 行")
+
     def test_report_summarizes_balance_dns_changes_and_unique_comments(self):
         changed = BALANCE.replace(
             "  enable: true  # balance dns comment\n",

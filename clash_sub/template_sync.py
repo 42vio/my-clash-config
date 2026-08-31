@@ -5,6 +5,7 @@ import importlib.util
 import os
 import stat
 import tempfile
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -204,7 +205,11 @@ def _comment_summary(previous, candidate):
     candidate_comments = _comment_lines(candidate)
     if not previous_comments:
         return "通用注释：%d 行" % len(candidate_comments)
-    kept = sum(1 for line in previous_comments if line in set(candidate_comments))
+    candidate_counts = Counter(candidate_comments)
+    kept = sum(
+        min(count, candidate_counts[line])
+        for line, count in Counter(previous_comments).items()
+    )
     if kept == len(previous_comments):
         return "通用注释：全部保留（%d 行）" % kept
     return "通用注释：保留 %d/%d 行" % (kept, len(previous_comments))
