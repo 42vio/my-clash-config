@@ -188,14 +188,14 @@ provider 的 Clash 显示名称保持 `AmyTelecom`。当前 owner 令牌拥有�
 
 ## 文档结构
 
-仓库只保留四份中文 Markdown 文档：
+项目使用文档只保留以下四份中文 Markdown 文档：
 
 - `README.md`：项目用途、最终输出、身份差异、文档导航和常用命令。
 - `DEPLOYMENT.md`：安装、监听收口、目录权限、升级卸载、首次导入、备份恢复。
 - `docs/template-design.md`：模板组成、注释、iCloud 同步、导出矩阵、机场引用和 Home 脚本。
 - `docs/operations.md`：模板更新、机场更新、provider 刷新、用户管理、同步、回滚、Home 脚本维护和故障处理。
 
-文档按个人运维手册编写，不解释通用基础知识，但保留完整操作顺序、路径、注意事项和恢复条件。
+文档按个人运维手册编写，不解释通用基础知识，但保留完整操作顺序、路径、注意事项和恢复条件。`docs/superpowers/` 下的设计规格与实施计划属于开发过程文档，不计入这四份项目使用文档。
 
 ## 验证标准
 
@@ -211,4 +211,4 @@ provider 的 Clash 显示名称保持 `AmyTelecom`。当前 owner 令牌拥有�
 - Home 脚本只匹配两个精确标题，并把分组放在“自动选择”后；
 - 不残留 privacy、office、旧 universal、旧 URL 或 `home.yaml`；
 - 安装、同步、回滚、恢复和秘密扫描测试通过；
-- 仓库最终只有四份 Markdown 文档。
+- 项目使用文档固定为上述四份；设计规格与实施计划可保留在 `docs/superpowers/`。
