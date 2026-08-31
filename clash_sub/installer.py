@@ -10,6 +10,7 @@ import socket
 import stat
 import subprocess
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -37,7 +38,31 @@ _INSTALL_PHASES = frozenset({
     "preflight", "low_memory", "nginx_packages", "mihomo", "certificate",
     "nginx_activation", "systemd_harden", "subscription_init", "report",
 })
+_INSTALL_PHASE_LABELS = {
+    "preflight": "检查服务器环境",
+    "low_memory": "优化低内存配置",
+    "nginx_packages": "安装并配置 Nginx",
+    "mihomo": "安装 Mihomo 核心",
+    "certificate": "申请 TLS 证书",
+    "nginx_activation": "激活访问路由",
+    "systemd_harden": "配置系统服务",
+    "subscription_init": "初始化订阅服务",
+    "report": "完成安装检查",
+}
+_PROGRESS_WIDTH = 20
 _SYSTEMD_PATH_RE = re.compile(r"^/[A-Za-z0-9._+@=,:~/-]+$")
+
+
+def _progress_line(completed, total):
+    filled = completed * _PROGRESS_WIDTH // total
+    percent = completed * 100 // total
+    return "[%s%s] %d/%d · %d%%" % (
+        "█" * filled,
+        "░" * (_PROGRESS_WIDTH - filled),
+        completed,
+        total,
+        percent,
+    )
 
 
 class InstallerError(RuntimeError):
@@ -238,11 +263,18 @@ def save_install_state(path, state):
 class Installer:
     """Phase-driven installer; every external effect goes through ``runner``."""
 
-    def __init__(self, repo_root, *, paths=None, runner=None, print_fn=None):
+    def __init__(
+        self, repo_root, *, paths=None, runner=None, print_fn=None,
+        progress_offset=0, clock=None,
+    ):
+        if isinstance(progress_offset, bool) or not isinstance(progress_offset, int) or progress_offset < 0:
+            raise ValueError("invalid progress offset")
         self.repo_root = Path(repo_root)
         self.paths = paths or InstallPaths()
         self.runner = runner or subprocess.run
         self.print_fn = print_fn or (lambda message: None)
+        self.progress_offset = progress_offset
+        self.clock = clock or time.monotonic
         self._state_path = self.repo_root / "private" / "install-state.json"
 
     # -- journal ---------------------------------------------------------
@@ -847,24 +879,30 @@ class Installer:
     def install(
         self, *, domain, cf_token, swap_mb=0, owner_email="owner-example", node_host=None
     ):
+        total = self.progress_offset + len(_INSTALL_PHASE_LABELS)
+        preflight_started = self.clock()
         try:
-            snapshot = read_xui_snapshot(self.paths.xui_database)
-        except XuiCompatibilityError:
-            raise InstallerError("xui_incompatible") from None
-        matches = [
-            client
-            for client in snapshot.clients
-            if client.enabled and client.email == owner_email
-        ]
-        if len(matches) != 1:
-            raise InstallerError("owner_email_invalid")
-        node_host = node_host or ("node." + domain)
-        state = self.state()
-        if state.domain and state.domain != domain and state.phases_done:
-            raise InstallerError("domain_mismatch")
-        state.domain = domain
-        state.node_host = node_host
-        self._save_state(state)
+            try:
+                snapshot = read_xui_snapshot(self.paths.xui_database)
+            except XuiCompatibilityError:
+                raise InstallerError("xui_incompatible") from None
+            matches = [
+                client
+                for client in snapshot.clients
+                if client.enabled and client.email == owner_email
+            ]
+            if len(matches) != 1:
+                raise InstallerError("owner_email_invalid")
+            node_host = node_host or ("node." + domain)
+            state = self.state()
+            if state.domain and state.domain != domain and state.phases_done:
+                raise InstallerError("domain_mismatch")
+            state.domain = domain
+            state.node_host = node_host
+            self._save_state(state)
+        except Exception:
+            self._report_preflight_failure(total, preflight_started)
+            raise
         done = set(state.phases_done)
         phases = (
             ("preflight", lambda: self.preflight(domain, node_host)),
@@ -885,12 +923,46 @@ class Installer:
             ),
             ("report", self.finalize),
         )
-        for name, action in phases:
+        completed_count = len(done)
+        if done and completed_count < len(phases):
+            self.print_fn(
+                "检测到未完成的安装记录：已完成 %d/%d，准备继续。"
+                % (self.progress_offset + completed_count, total)
+            )
+        for index, (name, action) in enumerate(phases):
+            position = self.progress_offset + index + 1
+            label = _INSTALL_PHASE_LABELS[name]
             if name in done:
+                self.print_fn("✓ [%d/%d] %s                 沿用记录" % (position, total, label))
                 continue
-            action()
-            self.print_fn("phase %s: done" % name)
+            self.print_fn(_progress_line(self.progress_offset + completed_count, total))
+            self.print_fn("▶ [%d/%d] %s" % (position, total, label))
+            started = self.clock()
+            try:
+                action()
+            except Exception:
+                elapsed = self.clock() - started
+                self.print_fn("✗ [%d/%d] %s：失败  %.1fs" % (position, total, label, elapsed))
+                self.print_fn("已保存安装进度：%d/%d" % (self.progress_offset + completed_count, total))
+                raise
+            completed_count += 1
+            elapsed = self.clock() - started
+            self.print_fn("✓ [%d/%d] %s  已完成  %.1fs" % (position, total, label, elapsed))
+        self.print_fn(_progress_line(total, total))
         return self._report(self.state())
+
+    def _report_preflight_failure(self, total, started):
+        elapsed = self.clock() - started
+        self.print_fn("✗ 安装前验证：失败  %.1fs" % elapsed)
+        if not self._state_path.exists() and not self._state_path.is_symlink():
+            self.print_fn("当前可确认进度：%d/%d" % (self.progress_offset, total))
+            return
+        try:
+            completed_count = len(self.state().phases_done)
+        except Exception:
+            self.print_fn("无法读取已保存安装进度")
+            return
+        self.print_fn("已保存安装进度：%d/%d" % (self.progress_offset + completed_count, total))
 
     def _panel_settings(self):
         try:

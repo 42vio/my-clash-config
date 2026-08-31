@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from clash_sub import manage
 from clash_sub.domain import ServiceConfig
+from clash_sub.installer import InstallerError
 from clash_sub.service import ServiceError, _OperationLock
 from clash_sub.cli import (
     BACKUP_MENU,
@@ -1150,8 +1151,9 @@ class InstallCommandTests(unittest.TestCase):
         captured = {}
 
         class FakeInstaller:
-            def __init__(self, root, print_fn=None):
+            def __init__(self, root, print_fn=None, progress_offset=0):
                 captured["print_fn"] = print_fn
+                captured["progress_offset"] = progress_offset
 
             def install(self, **kwargs):
                 captured["kwargs"] = kwargs
@@ -1179,7 +1181,7 @@ class InstallCommandTests(unittest.TestCase):
         captured = {}
 
         class FakeInstaller:
-            def __init__(self, root, print_fn=None):
+            def __init__(self, root, print_fn=None, progress_offset=0):
                 pass
 
             def install(self, **kwargs):
@@ -1250,7 +1252,7 @@ class InstallCommandTests(unittest.TestCase):
         captured = {}
 
         class FakeInstaller:
-            def __init__(self, root, print_fn=None):
+            def __init__(self, root, print_fn=None, progress_offset=0):
                 pass
 
             def install(self, **kwargs):
@@ -1281,7 +1283,7 @@ class InstallCommandTests(unittest.TestCase):
         captured = {}
 
         class FakeInstaller:
-            def __init__(self, root, print_fn=None):
+            def __init__(self, root, print_fn=None, progress_offset=0):
                 pass
 
             def install(self, **kwargs):
@@ -1306,6 +1308,84 @@ class InstallCommandTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(captured["kwargs"]["owner_email"], "env-owner@x")
         suggest.assert_not_called()
+
+    def test_install_passes_safe_progress_offset_without_echoing_secrets(self):
+        captured = {}
+
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None, progress_offset=0):
+                captured["progress_offset"] = progress_offset
+
+            def install(self, **kwargs):
+                return {"panel_url": "", "gate_instruction": ""}
+
+        stdout = io.StringIO()
+        with patch.dict(
+            "os.environ",
+            {
+                "CLASH_SUB_DOMAIN": "example.com",
+                "CLASH_SUB_OWNER_EMAIL": "owner@x",
+                "CLASH_SUB_PROGRESS_OFFSET": "3",
+            },
+            clear=False,
+        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch("clash_sub.cli.os.geteuid", return_value=0):
+            status = main(["install"], stdout=stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["progress_offset"], 3)
+        self.assertNotIn("owner@x", stdout.getvalue())
+        self.assertNotIn("tok", stdout.getvalue())
+
+    def test_install_ignores_malformed_progress_offset_and_prints_heading(self):
+        captured = {}
+
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None, progress_offset=0):
+                captured["progress_offset"] = progress_offset
+
+            def install(self, **kwargs):
+                return {"panel_url": "", "gate_instruction": ""}
+
+        stdout = io.StringIO()
+        with patch.dict(
+            "os.environ",
+            {
+                "CLASH_SUB_DOMAIN": "example.com",
+                "CLASH_SUB_OWNER_EMAIL": "owner@x",
+                "CLASH_SUB_PROGRESS_OFFSET": "not-a-number",
+            },
+            clear=False,
+        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch("clash_sub.cli.os.geteuid", return_value=0):
+            status = main(["install"], stdout=stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["progress_offset"], 0)
+        self.assertIn("clash-sub 安装程序", stdout.getvalue())
+
+    def test_install_failure_includes_retry_guidance(self):
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None, progress_offset=0):
+                pass
+
+            def install(self, **kwargs):
+                raise InstallerError("certificate_issue_failed")
+
+        with patch.dict(
+            "os.environ",
+            {"CLASH_SUB_DOMAIN": "example.com", "CLASH_SUB_OWNER_EMAIL": "owner@x"},
+            clear=False,
+        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch("clash_sub.cli.os.geteuid", return_value=0):
+            status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
+
+        self.assertEqual(status, 1)
+        self.assertIn("certificate_issue_failed", self.stderr.getvalue())
+        self.assertIn("修正问题后重新执行：bash install.sh", self.stderr.getvalue())
 
     def test_rollback_with_user_only_is_invalid(self):
         status = main(["rollback", "1"], stdout=io.StringIO(), stderr=self.stderr)

@@ -35,6 +35,8 @@ bash install.sh
 
 按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录、Nginx 配置和 `clash-sub-traffic.timer`。
 
+安装过程按 12 个步骤显示当前操作和已完成进度；百分比表示完成的步骤比例，不是剩余时间估算。若 Python 安装阶段失败，修正错误后重新执行 `bash install.sh`，安装器会读取安装记录并沿用已经完成的阶段。
+
 ## 首次初始化
 
 1. 用 SFTP 人工覆盖服务器 `/var/lib/clash-sub/private/home.yaml`；该文件是唯一的 Home 落位方式，随后确认权限为 `0600`。不使用上传命令。

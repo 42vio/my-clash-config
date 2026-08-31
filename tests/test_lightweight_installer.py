@@ -19,6 +19,7 @@ from clash_sub.installer import (
     InstallState,
     Installer,
     InstallerError,
+    _progress_line,
     _swap_active,
     load_install_state,
     save_install_state,
@@ -1360,6 +1361,18 @@ class OwnerValidationTests(unittest.TestCase):
         self.assertFalse((self.root / "private" / "install-state.json").exists())
 
 
+class InstallProgressFormattingTests(unittest.TestCase):
+    def test_progress_line_uses_twenty_cells_and_floor_percentage(self):
+        self.assertEqual(
+            _progress_line(3, 12),
+            "[█████░░░░░░░░░░░░░░░] 3/12 · 25%",
+        )
+
+    def test_progress_line_handles_empty_and_complete(self):
+        self.assertEqual(_progress_line(0, 9), "[░░░░░░░░░░░░░░░░░░░░] 0/9 · 0%")
+        self.assertEqual(_progress_line(9, 9), "[████████████████████] 9/9 · 100%")
+
+
 class InstallOrchestrationTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -1411,7 +1424,8 @@ class InstallOrchestrationTests(unittest.TestCase):
 
         preflight.assert_not_called()
         low_memory.assert_not_called()
-        self.assertFalse(any("preflight" in message for message in self.printed))
+        self.assertTrue(any("检查服务器环境" in message for message in self.printed))
+        self.assertTrue(any("沿用记录" in message for message in self.printed))
         pkg.assert_called_once()
         mihomo.assert_called_once()
         cert.assert_called_once_with("example.com", "tok")
@@ -1426,6 +1440,165 @@ class InstallOrchestrationTests(unittest.TestCase):
         self.assertEqual(state.domain, "example.com")
         self.assertEqual(state.node_host, "node.example.com")
         self.assertIn("report", state.phases_done)
+
+    def test_progress_offset_rejects_invalid_values(self):
+        for value in (-1, True, "3"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "invalid progress offset"):
+                    Installer(self.root, progress_offset=value)
+
+    def test_install_reports_failed_phase_and_saved_progress(self):
+        clock = iter((1.0, 10.0, 12.5))
+        installer = Installer(
+            self.root,
+            paths=self.paths,
+            runner=self._noop_runner,
+            print_fn=self.printed.append,
+            progress_offset=3,
+            clock=lambda: next(clock),
+        )
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="example.com", phases_done=["preflight", "low_memory"]),
+        )
+
+        with patch.object(
+            Installer, "install_nginx_packages", side_effect=InstallerError("command_failed")
+        ), patch(
+            "clash_sub.installer.read_xui_snapshot",
+            lambda path: fake_snapshot(FakeSnapshotClient("owner-example", True)),
+        ):
+            with self.assertRaisesRegex(InstallerError, "command_failed"):
+                installer.install(
+                    domain="example.com", cf_token="tok", owner_email="owner-example"
+                )
+
+        self.assertTrue(any("✓ [4/12] 检查服务器环境" in line for line in self.printed))
+        self.assertTrue(any("✓ [5/12] 优化低内存配置" in line for line in self.printed))
+        self.assertIn("▶ [6/12] 安装并配置 Nginx", self.printed)
+        self.assertTrue(any("✗ [6/12] 安装并配置 Nginx：失败" in line for line in self.printed))
+        self.assertIn("已保存安装进度：5/12", self.printed)
+        self.assertFalse(any("安装 Mihomo 核心" in line for line in self.printed))
+
+    def test_snapshot_failure_reports_preflight_progress_without_running_phase(self):
+        clock = iter((10.0, 12.5))
+        installer = Installer(
+            self.root, paths=self.paths, runner=self._noop_runner,
+            print_fn=self.printed.append, progress_offset=3, clock=lambda: next(clock),
+        )
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="example.com", phases_done=["preflight", "low_memory"]),
+        )
+
+        with patch(
+            "clash_sub.installer.read_xui_snapshot",
+            side_effect=XuiCompatibilityError("boom"),
+        ), patch.object(Installer, "preflight") as preflight:
+            with self.assertRaisesRegex(InstallerError, "xui_incompatible"):
+                installer.install(domain="example.com", cf_token="tok", owner_email="owner-example")
+
+        self.assertTrue(any("✗ 安装前验证：失败" in line for line in self.printed))
+        self.assertIn("已保存安装进度：5/12", self.printed)
+        self.assertFalse(any(line.startswith("✗ [") for line in self.printed))
+        preflight.assert_not_called()
+
+    def test_owner_failure_reports_preflight_progress_without_running_phase(self):
+        clock = iter((10.0, 12.5))
+        installer = Installer(
+            self.root, paths=self.paths, runner=self._noop_runner,
+            print_fn=self.printed.append, progress_offset=3, clock=lambda: next(clock),
+        )
+
+        with patch(
+            "clash_sub.installer.read_xui_snapshot",
+            lambda path: fake_snapshot(FakeSnapshotClient("member@x", True)),
+        ), patch.object(Installer, "preflight") as preflight:
+            with self.assertRaisesRegex(InstallerError, "owner_email_invalid"):
+                installer.install(domain="example.com", cf_token="tok", owner_email="owner-example")
+
+        self.assertTrue(any("✗ 安装前验证：失败" in line for line in self.printed))
+        self.assertIn("当前可确认进度：3/12", self.printed)
+        preflight.assert_not_called()
+
+    def test_domain_mismatch_reports_preflight_progress_without_running_phase(self):
+        clock = iter((10.0, 12.5))
+        installer = Installer(
+            self.root, paths=self.paths, runner=self._noop_runner,
+            print_fn=self.printed.append, progress_offset=3, clock=lambda: next(clock),
+        )
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(domain="other.example", phases_done=["preflight"]),
+        )
+
+        with patch(
+            "clash_sub.installer.read_xui_snapshot",
+            lambda path: fake_snapshot(FakeSnapshotClient("owner-example", True)),
+        ), patch.object(Installer, "preflight") as preflight:
+            with self.assertRaisesRegex(InstallerError, "domain_mismatch"):
+                installer.install(domain="example.com", cf_token="tok", owner_email="owner-example")
+
+        self.assertTrue(any("✗ 安装前验证：失败" in line for line in self.printed))
+        self.assertIn("已保存安装进度：4/12", self.printed)
+        preflight.assert_not_called()
+
+    def test_invalid_journal_reports_unreadable_saved_progress(self):
+        clock = iter((10.0, 12.5))
+        installer = Installer(
+            self.root, paths=self.paths, runner=self._noop_runner,
+            print_fn=self.printed.append, progress_offset=3, clock=lambda: next(clock),
+        )
+        (self.root / "private" / "install-state.json").write_text(
+            '{"schema_version": 1, "phases_done": ["unknown"]}', encoding="utf-8"
+        )
+
+        with patch(
+            "clash_sub.installer.read_xui_snapshot",
+            lambda path: fake_snapshot(FakeSnapshotClient("owner-example", True)),
+        ), patch.object(Installer, "preflight") as preflight:
+            with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
+                installer.install(domain="example.com", cf_token="tok", owner_email="owner-example")
+
+        self.assertTrue(any("✗ 安装前验证：失败" in line for line in self.printed))
+        self.assertIn("无法读取已保存安装进度", self.printed)
+        preflight.assert_not_called()
+
+    def test_full_journal_rerun_does_not_claim_an_unfinished_install(self):
+        installer = Installer(
+            self.root, paths=self.paths, runner=self._noop_runner,
+            print_fn=self.printed.append, progress_offset=3,
+        )
+        save_install_state(
+            self.root / "private" / "install-state.json",
+            InstallState(
+                domain="example.com",
+                phases_done=[
+                    "preflight", "low_memory", "nginx_packages", "mihomo", "certificate",
+                    "nginx_activation", "systemd_harden", "subscription_init", "report",
+                ],
+            ),
+        )
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch(
+                "clash_sub.installer.read_xui_snapshot",
+                lambda path: fake_snapshot(FakeSnapshotClient("owner-example", True)),
+            ))
+            actions = [
+                stack.enter_context(patch.object(Installer, name))
+                for name in (
+                    "preflight", "optimize_low_memory", "install_nginx_packages",
+                    "install_mihomo", "issue_certificate", "_activate_with_panel",
+                    "harden_systemd", "initialize_subscription", "finalize",
+                )
+            ]
+            installer.install(domain="example.com", cf_token="tok", owner_email="owner-example")
+
+        self.assertFalse(any("检测到未完成的安装记录" in line for line in self.printed))
+        self.assertTrue(any("✓ [12/12] 完成安装检查" in line for line in self.printed))
+        for action in actions:
+            action.assert_not_called()
 
     def test_finalize_reports_panel_url_and_gate(self):
         installer = Installer(self.root, paths=self.paths, runner=self._noop_runner)

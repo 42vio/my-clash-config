@@ -148,6 +148,16 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("clash-sub install", text)
         self.assertIn("python3-venv", text)
         self.assertIn("git", text)
+        self.assertIn("▶ [1/12] 检查基础工具", text)
+        self.assertIn("▶ [2/12] 创建 Python 环境", text)
+        self.assertIn("▶ [3/12] 安装项目依赖", text)
+        self.assertIn("CLASH_SUB_PROGRESS_OFFSET=3", text)
+
+    def test_install_sh_has_valid_posix_shell_syntax(self):
+        result = subprocess.run(
+            ["sh", "-n", str(INSTALL_SH)], capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_deployment_prerequisites_install_git_before_clone(self):
         deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")

@@ -757,8 +757,18 @@ def _install(stdout, stderr):
             return _error(stderr, "owner_email_required", 2)
     node_host = os.environ.get("CLASH_SUB_NODE_HOST", "") or None
     try:
+        progress_offset = int(os.environ.get("CLASH_SUB_PROGRESS_OFFSET", "0"))
+    except ValueError:
+        progress_offset = 0
+    if progress_offset < 0:
+        progress_offset = 0
+    if progress_offset == 0:
+        stdout.write("\nclash-sub 安装程序\n")
+    try:
         installer = Installer(
-            default_repo_root(), print_fn=lambda message: stdout.write("%s\n" % message)
+            default_repo_root(),
+            print_fn=lambda message: stdout.write("%s\n" % message),
+            progress_offset=progress_offset,
         )
         report = installer.install(
             domain=domain,
@@ -768,6 +778,7 @@ def _install(stdout, stderr):
             node_host=node_host,
         )
     except InstallerError as error:
+        stderr.write("修正问题后重新执行：bash install.sh\n")
         return _error(stderr, error.code, 1)
     stdout.write("面板地址：%s\n" % report.get("panel_url", ""))
     stdout.write("%s\n" % report.get("gate_instruction", ""))
