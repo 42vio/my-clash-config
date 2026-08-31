@@ -33,8 +33,8 @@ FORBIDDEN_SUBSTRINGS = (
 )
 
 TRACKED_DOCUMENT_PATHS = (
-    "templates/base/compat-office.yaml",
-    "templates/dns/balance-office.yaml",
+    "templates/base/Clash-Compat.yaml",
+    "templates/dns/Clash-Balance.yaml",
     "templates/profiles.yaml",
 )
 
@@ -149,6 +149,19 @@ DOCUMENTED_CLI_COMMANDS = frozenset(
 )
 
 
+def _runtime_source_files():
+    files = []
+    for relative in ACTIVE_RUNTIME_PATHS:
+        path = ROOT / relative
+        if path.is_file():
+            files.append(path)
+        elif path.is_dir():
+            files.extend(
+                child for child in sorted(path.rglob("*")) if child.is_file()
+            )
+    return files
+
+
 class RepositorySafetyTests(unittest.TestCase):
     def test_requirements_pin_exactly_one_ruamel_yaml_version(self):
         lines = [
@@ -260,14 +273,49 @@ class RepositorySafetyTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, path)
 
-    def test_secret_scanner_pins_the_root_home_overlay(self):
-        # The private-value comparison must keep covering the ignored
-        # root home overlay; dropping the file from the scanner would
-        # silently stop catching home credential leaks.
+    def test_home_script_targets_only_new_titles(self):
+        script = ROOT / "private" / "clash-verge-home.js"
+        if not script.is_file():
+            self.skipTest("local-only home script is absent from this checkout")
+        source = script.read_text(encoding="utf-8")
+        self.assertIn('"Clash-Compat"', source)
+        self.assertIn('"Clash-Balance"', source)
+        self.assertNotIn("Clash Compat Universal", source)
+        self.assertNotIn("Clash Balance Universal", source)
+
+    def test_server_home_yaml_is_not_a_runtime_contract(self):
+        tracked = "\n".join(
+            path.read_text(encoding="utf-8", errors="ignore")
+            for path in _runtime_source_files()
+        )
+        self.assertNotIn("HomeOverlay", tracked)
+        self.assertNotIn("private/home.yaml", tracked)
+
+    def test_private_tree_stays_ignored_and_the_home_script_stays_untracked(self):
+        for relative in ("private/clash-verge-home.js", "private/home.yaml"):
+            result = subprocess.run(
+                ["git", "check-ignore", "-q", relative],
+                cwd=ROOT,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, relative)
+        completed = subprocess.run(
+            ["git", "ls-files", "--", "private"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(completed.stdout.split(), [])
+
+    def test_secret_scanner_drops_the_home_overlay_boundary(self):
+        # Home data lives only in the local machine's Clash Verge script;
+        # the scanner must not expect or parse a server home overlay.
         source = (ROOT / "scripts" / "scan_tracked_secrets.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn('"home.yaml"', source)
+        self.assertNotIn("home.yaml", source)
+        self.assertNotIn("HomeOverlay", source)
         self.assertNotIn("work" + "bench", source)
 
     def test_reference_sources_are_not_tracked(self):
@@ -296,7 +344,7 @@ class RepositorySafetyTests(unittest.TestCase):
             self.assertFalse((ROOT / relative).exists(), relative)
 
         compat = yaml.safe_load(
-            (ROOT / "templates/base/compat-office.yaml").read_text(encoding="utf-8")
+            (ROOT / "templates/base/Clash-Compat.yaml").read_text(encoding="utf-8")
         )
         self.assertEqual(compat.get("proxies"), [])
         self.assertNotIn("proxy-providers", compat)
@@ -306,41 +354,6 @@ class RepositorySafetyTests(unittest.TestCase):
             for relative in TRACKED_DOCUMENT_PATHS
         )
         self.assertNotIn("AmyTelecom", tracked_text)
-
-        home_path = ROOT / "private/home.yaml"
-        if home_path.is_file():
-            home = yaml.safe_load(home_path.read_text(encoding="utf-8"))
-            private_values = {
-                item.get("name")
-                for key in ("proxies", "proxy-groups")
-                for item in home.get(key, [])
-                if isinstance(item, dict) and isinstance(item.get("name"), str)
-            }
-            private_values.update(
-                rule for rule in home.get("rules", []) if isinstance(rule, str)
-            )
-
-            tracked_scalars = set()
-
-            def collect_scalars(node):
-                if isinstance(node, dict):
-                    for key, value in node.items():
-                        collect_scalars(key)
-                        collect_scalars(value)
-                elif isinstance(node, list):
-                    for value in node:
-                        collect_scalars(value)
-                elif isinstance(node, str):
-                    tracked_scalars.add(node)
-
-            for relative in TRACKED_DOCUMENT_PATHS:
-                collect_scalars(
-                    yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
-                )
-            self.assertFalse(
-                private_values & tracked_scalars,
-                "tracked templates contain private home content",
-            )
 
     def test_retired_user_documentation_is_absent(self):
         retired = (
