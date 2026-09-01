@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import email.message
 import io
 import os
 import stat
@@ -33,7 +34,9 @@ class FakeResponse:
     def __init__(self, body, url, headers=None):
         self.body = body
         self.url = url
-        self.headers = headers or {}
+        self.headers = email.message.Message()
+        for name, value in (headers or {}).items():
+            self.headers[name] = value
         self.read_sizes = []
 
     def __enter__(self):
@@ -142,13 +145,14 @@ class SourceFetchingTests(unittest.TestCase):
             "https://airport.example/private-token", 1024, opener=self.opener_for(response)
         )
 
-        self.assertEqual(result, body)
-        self.assertIn(b"# airport header comment", result)
-        self.assertIn(b"# trailing comment kept verbatim", result)
-        self.assertIn(b"mixed-port", result)
-        self.assertIn(b"proxy-groups", result)
-        self.assertIn(b"rules:", result)
-        self.assertIsInstance(result, bytes)
+        self.assertEqual(result.document, body)
+        self.assertIn(b"# airport header comment", result.document)
+        self.assertIn(b"# trailing comment kept verbatim", result.document)
+        self.assertIn(b"mixed-port", result.document)
+        self.assertIn(b"proxy-groups", result.document)
+        self.assertIn(b"rules:", result.document)
+        self.assertIsInstance(result.document, bytes)
+        self.assertIsNone(result.traffic)
 
     def test_airport_download_accepts_non_empty_bytes_without_parsing(self):
         # The server never validates or converts airport content: a non-YAML
@@ -169,7 +173,7 @@ class SourceFetchingTests(unittest.TestCase):
                     1024,
                     opener=self.opener_for(response),
                 )
-                self.assertEqual(result, body)
+                self.assertEqual(result.document, body)
 
     def test_airport_download_rejects_an_empty_response(self):
         response = FakeResponse(b"", "https://airport.example/final")
@@ -189,6 +193,109 @@ class SourceFetchingTests(unittest.TestCase):
                 "https://airport.example/private-token", 32, opener=self.opener_for(oversized)
             )
         self.assertEqual(oversized.read_sizes, [33])
+
+    def test_airport_download_returns_the_document_with_final_traffic(self):
+        body = airport_document()
+        response = FakeResponse(
+            body,
+            "https://airport.example/final",
+            headers={"Subscription-Userinfo": "upload=12; download=34; total=56; expire=78"},
+        )
+
+        result = download_airport_document(
+            "https://airport.example/private-token", 1024, opener=self.opener_for(response)
+        )
+
+        self.assertEqual(result.document, body)
+        self.assertEqual(
+            result.traffic, Traffic(upload=12, download=34, total=56, expiry_ms=78)
+        )
+
+    def test_airport_download_traffic_is_none_without_the_header(self):
+        body = airport_document()
+        response = FakeResponse(body, "https://airport.example/final")
+
+        result = download_airport_document(
+            "https://airport.example/private-token", 1024, opener=self.opener_for(response)
+        )
+
+        self.assertIsNone(result.traffic)
+        self.assertEqual(result.document, body)
+
+    def test_airport_download_traffic_is_none_for_invalid_header_values(self):
+        body = airport_document()
+        for value in (
+            "upload=1; upload=2; download=3; total=4; expire=5",
+            "upload=-1; download=2; total=3; expire=4",
+            "upload=1; download=2; total=3; expire=4; other=5",
+            "upload=one; download=2; total=3; expire=4",
+            "upload=1; download=2; total=3; expire=4\r\nX-Injected: yes",
+            "upload=1\r\n: 2; download=2; total=3; expire=4",
+        ):
+            response = FakeResponse(
+                body,
+                "https://airport.example/final",
+                headers={"Subscription-Userinfo": value},
+            )
+            with self.subTest(value=value):
+                result = download_airport_document(
+                    "https://airport.example/private-token",
+                    1024,
+                    opener=self.opener_for(response),
+                )
+                self.assertIsNone(result.traffic)
+                self.assertEqual(result.document, body)
+
+    def test_airport_download_traffic_is_none_for_duplicate_response_headers(self):
+        body = airport_document()
+        response = FakeResponse(body, "https://airport.example/final")
+        response.headers["Subscription-Userinfo"] = "upload=1; download=2; total=3; expire=4"
+        response.headers["Subscription-Userinfo"] = "upload=9; download=9; total=9; expire=9"
+
+        result = download_airport_document(
+            "https://airport.example/private-token", 1024, opener=self.opener_for(response)
+        )
+
+        self.assertIsNone(result.traffic)
+        self.assertEqual(result.document, body)
+
+    def test_airport_download_traffic_is_none_when_the_header_cannot_be_read(self):
+        body = airport_document()
+        response = FakeResponse(body, "https://airport.example/final")
+
+        class ExplodingHeaders:
+            def get_all(self, name):
+                raise TypeError("synthetic header read failure")
+
+        response.headers = ExplodingHeaders()
+
+        result = download_airport_document(
+            "https://airport.example/private-token", 1024, opener=self.opener_for(response)
+        )
+
+        self.assertIsNone(result.traffic)
+        self.assertEqual(result.document, body)
+
+    def test_airport_download_captures_traffic_from_the_final_redirected_response(self):
+        body = airport_document()
+        response = FakeResponse(
+            body,
+            "https://airport.example/final-after-redirect",
+            headers={
+                "Subscription-Userinfo": "upload=5; download=6; total=7; expire=8",
+                "Content-Type": "application/yaml",
+                "Server": "upstream-cdn",
+            },
+        )
+
+        result = download_airport_document(
+            "https://airport.example/private-token", 1024, opener=self.opener_for(response)
+        )
+
+        self.assertEqual(result.document, body)
+        self.assertEqual(
+            result.traffic, Traffic(upload=5, download=6, total=7, expiry_ms=8)
+        )
 
     def test_airport_redirect_policy_allows_only_three_https_hops(self):
         handler = _HttpsRedirectHandler()
@@ -318,9 +425,9 @@ class SourceFetchingTests(unittest.TestCase):
             return CapturingOpener()
 
         with patch("urllib.request.build_opener", side_effect=build_opener) as builder:
-            document = download_airport_document("https://airport.example/private-token", 1024)
+            download = download_airport_document("https://airport.example/private-token", 1024)
 
-        self.assertEqual(document, proxy_yaml())
+        self.assertEqual(download.document, proxy_yaml())
         builder.assert_called_once()
         self.assertEqual(len(captured["handlers"]), 2)
         self.assertIsInstance(captured["handlers"][0], urllib.request.ProxyHandler)

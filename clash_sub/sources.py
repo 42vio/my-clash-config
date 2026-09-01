@@ -10,7 +10,7 @@ from urllib.request import HTTPRedirectHandler, Request
 
 import yaml
 
-from clash_sub.domain import Traffic
+from clash_sub.domain import AirportDownload, Traffic
 
 
 class SourceError(RuntimeError):
@@ -34,10 +34,12 @@ def fetch_xui_proxies(url, max_bytes, opener=None):
 
 
 def download_airport_document(url, max_bytes, opener=None):
-    """Fetch an HTTPS airport body and return its exact bytes unchanged.
+    """Fetch an HTTPS airport body unchanged with its traffic metadata.
 
     The body is never parsed or converted: any non-empty response within
-    the transport limits publishes verbatim, byte for byte.
+    the transport limits publishes verbatim, byte for byte.  The final
+    response's single Subscription-Userinfo header rides along as
+    ``traffic`` when present and valid; no other header is captured.
     """
     if not _valid_airport_url(url):
         raise SourceError("airport_url_invalid")
@@ -60,16 +62,32 @@ def _fetch_document(url, max_bytes, opener):
             if not _valid_airport_url(final_url):
                 raise SourceError("airport_redirect_invalid")
             body = response.read(max_bytes + 1)
+            traffic = _final_traffic(response)
         if not isinstance(body, bytes) or len(body) > max_bytes:
             raise SourceError("airport_document_too_large")
         if not body:
             raise SourceError("airport_download_failed")
-        return body
+        return AirportDownload(document=body, traffic=traffic)
     except SourceError:
         raise
     except Exception:
         pass
     raise SourceError("airport_download_failed")
+
+
+def _final_traffic(response):
+    """Read the final response's single Subscription-Userinfo header.
+
+    A missing, duplicated, unreadable, or unparsable header only drops
+    the metadata; the downloaded document itself is never rejected for it.
+    """
+    try:
+        values = response.headers.get_all("Subscription-Userinfo")
+        if values is None or len(values) != 1:
+            return None
+        return parse_subscription_userinfo(values[0])
+    except Exception:
+        return None
 
 
 def load_proxy_snapshot(path):

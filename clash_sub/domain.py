@@ -92,6 +92,14 @@ class Traffic:
 
 
 @dataclass(frozen=True)
+class AirportDownload:
+    """One verbatim airport document and its final response traffic header."""
+
+    document: bytes
+    traffic: Traffic | None
+
+
+@dataclass(frozen=True)
 class AirportProvider:
     """The owner-only stable airport source rendered into owner profiles."""
 

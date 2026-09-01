@@ -1,5 +1,6 @@
 """End-to-end acceptance tests for the lightweight static subscription service."""
 
+import email.message
 import hashlib
 import io
 import os
@@ -40,6 +41,7 @@ class FakeResponse:
     def __init__(self, url, body):
         self._url = url
         self._body = body
+        self.headers = email.message.Message()
 
     def __enter__(self):
         return self
@@ -243,7 +245,9 @@ class AcceptanceHarness:
         return fetch_xui_proxies(url, maximum, opener=self._xui_opener)
 
     def _download_airport(self, url, maximum):
-        return download_airport_document(url, maximum, opener=self._airport_opener)
+        # The service consumes the provider bytes; traffic metadata is a
+        # later service-layer concern, so the adapter unwraps it here.
+        return download_airport_document(url, maximum, opener=self._airport_opener).document
 
     def _render(self, owner, xui, airport, template_root):
         self.render_calls += 1
