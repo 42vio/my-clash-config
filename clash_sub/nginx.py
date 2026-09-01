@@ -720,6 +720,7 @@ def _route_block(token, variant, alias, userinfo):
             '    add_header Profile-Title "%s";' % title,
             "    add_header Content-Disposition 'attachment; filename=%s';" % filename,
             '    add_header Subscription-Userinfo "%s";' % userinfo,
+            '    add_header Profile-Update-Interval "24";',
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",
             "}",

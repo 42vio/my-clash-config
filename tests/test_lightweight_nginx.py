@@ -143,6 +143,7 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertIn('add_header Profile-Title "Clash-Compat";', text)
         self.assertIn("add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml';", text)
         self.assertIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8";', text)
+        self.assertIn('add_header Profile-Update-Interval "24";', text)
         self.assertNotIn('add_header Profile-Title "Clash-Compat" always;', text)
         self.assertNotIn("add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml' always;", text)
         self.assertNotIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8" always;', text)
@@ -193,6 +194,7 @@ class LightweightNginxTests(unittest.TestCase):
             provider_lines[: next(i for i, line in enumerate(provider_lines) if line == "}") + 1]
         )
         self.assertNotIn("Subscription-Userinfo", provider_block)
+        self.assertNotIn("Profile-Update-Interval", provider_block)
         self.assertIn("if ($request_method !~ ^(GET|HEAD)$) { return 404; }", provider_block)
         self.assertIn('if ($args != "") { return 404; }', provider_block)
         self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", provider_block)
