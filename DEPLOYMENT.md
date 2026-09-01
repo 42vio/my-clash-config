@@ -48,12 +48,12 @@ bash install.sh
 
 ```text
 /var/lib/clash-sub/
-├── private/          0700，root 所有：state.json、airport-source.json、traffic-cache.json、operation.lock、releases、current、staging
+├── private/          0700，root 所有：state.json、status.json、airport-source.json、traffic-cache.json、operation.lock、releases、current、staging
 └── public/           02750，root:www-data：releases/
     └── provider/     02750，root:www-data：AmyTelecom.yaml (0640)
 ```
 
-机场 provider 文件是 public 下唯一的非发布目录内容；它由机场更新流程原子写入，不随主配置发布。`airport-source.json`（机场来源记录：订阅链接与最近保存的流量）与 `traffic-cache.json`（3x-ui 流量缓存）都是 0600、root:root 的私密文件，与 provider 文件经日志式事务同时切换。
+机场 provider 文件是 public 下唯一的非发布目录内容；它由机场更新流程原子写入，不随主配置发布。`airport-source.json`（机场来源记录：订阅链接与最近保存的流量）与 `traffic-cache.json`（3x-ui 流量缓存）都是 0600、root:root 的私密文件：来源记录与 provider 文件经日志式事务同时切换，崩溃中断的事务在下一次机场操作时恢复到完整的旧状态或完整的新状态；流量缓存则由元数据服务在五分钟刷新时独立原子更新。
 
 流量元数据 Socket 在运行时目录之外：`/run/clash-sub/metadata.sock`（0660 root:www-data），父目录 `/run/clash-sub`（0750 root:www-data）由 tmpfiles 规则在启动时建立，socket 由 `clash-sub-metadata.socket` 监听并按需激活 `clash-sub-metadata.service`。
 
