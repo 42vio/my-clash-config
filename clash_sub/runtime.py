@@ -45,7 +45,7 @@ def build_service(root=None, runner=None):
         reinitialize_owner=reinitialize_owner,
         fetch_xui_proxies=fetch_xui_proxies,
         download_airport_document=download_airport_document,
-        airport_store=AirportStore(config.public_root),
+        airport_store=AirportStore(config.private_root, config.public_root),
         render_user_bundle=render_user_bundle,
         validate_clash=validate_clash,
         mihomo_validator=MihomoValidator(config.mihomo_binary, runner=runner),

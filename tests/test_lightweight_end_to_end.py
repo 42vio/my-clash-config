@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from unittest.mock import patch
 
 import yaml
 
+from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStore
 from clash_sub.checks import MihomoValidator, validate_clash
 from clash_sub.cli import main as cli_main
@@ -85,6 +87,28 @@ class FakeRunner:
         ]
 
 
+class LegacyAirportStoreAdapter:
+    """Task 2 interim: the service still calls replace(document); supply the
+    matching source record until Task 3 passes it through the service."""
+
+    def __init__(self, harness, store):
+        self._harness = harness
+        self._store = store
+
+    @property
+    def path(self):
+        return self._store.path
+
+    def read(self):
+        return self._store.read()
+
+    def replace(self, document):
+        return self._store.replace(
+            document,
+            AirportSource(self._harness.airport_url, None, int(time.time())),
+        )
+
+
 class AcceptanceHarness:
     """A real temporary runtime with only HTTP and process boundaries faked."""
 
@@ -103,6 +127,7 @@ class AcceptanceHarness:
         self.render_calls = 0
         self.fail_render = False
         self.fail_xui_source = False
+        self.airport_url = "https://airport.example.test/import/live"
         self.airport_body = (
             b"# AmyTelecom upstream snapshot\n"
             b"proxies:\n"
@@ -200,7 +225,7 @@ class AcceptanceHarness:
 
         self.runner = FakeRunner(self)
         self.release_store = ReleaseStore(self.private_root, self.public_root)
-        self.airport_store = AirportStore(self.public_root)
+        self.airport_store = AirportStore(self.private_root, self.public_root)
         self.service = ClashSubService(
             self.config,
             read_snapshot=read_xui_snapshot,
@@ -209,7 +234,7 @@ class AcceptanceHarness:
             rotate_user_token=rotate_user_token,
             fetch_xui_proxies=self._fetch_xui,
             download_airport_document=self._download_airport,
-            airport_store=self.airport_store,
+            airport_store=LegacyAirportStoreAdapter(self, self.airport_store),
             render_user_bundle=self._render,
             validate_clash=validate_clash,
             mihomo_validator=MihomoValidator(self.config.mihomo_binary, runner=self.runner),
@@ -247,7 +272,9 @@ class AcceptanceHarness:
     def _download_airport(self, url, maximum):
         # The service consumes the provider bytes; traffic metadata is a
         # later service-layer concern, so the adapter unwraps it here.
-        return download_airport_document(url, maximum, opener=self._airport_opener).document
+        result = download_airport_document(url, maximum, opener=self._airport_opener)
+        self.airport_url = url
+        return result.document
 
     def _render(self, owner, xui, airport, template_root):
         self.render_calls += 1
