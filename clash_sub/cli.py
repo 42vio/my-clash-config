@@ -768,7 +768,9 @@ def _format_expiry(value):
         return "未获取"
     if value <= 0:
         return "未设置"
-    return datetime.fromtimestamp(value / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    # traffic_expiry_ms is legacy-named: the unified contract carries the
+    # Subscription-Userinfo expire value in Unix SECONDS.
+    return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
 def _write_history(stdout, user, history):

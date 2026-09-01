@@ -69,7 +69,9 @@ class FakeService:
             "traffic_total": 107374182400,
             "traffic_used": 21474836480,
             "traffic_remaining": 85899345920,
-            "traffic_expiry_ms": 1893456000000,
+            # The unified contract carries the Subscription-Userinfo expire
+            # value in SECONDS under the legacy-named key.
+            "traffic_expiry_ms": 1893456000,
             "last_success": 1750000000,
             "provider_present": True,
         }
@@ -344,6 +346,8 @@ class LightweightCliTests(unittest.TestCase):
             "AmyTelecom.yaml：存在",
         ):
             self.assertIn(line, stdout)
+        # A seconds value misread as milliseconds would render ~1970-01.
+        self.assertNotIn("1970", stdout)
         self.assertNotIn("https://", stdout)
         self.assertNotIn("token", stdout)
         self.assertEqual(stderr, "")
