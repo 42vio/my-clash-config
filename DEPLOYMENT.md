@@ -50,14 +50,14 @@ bash install.sh
 /var/lib/clash-sub/
 ├── private/          0700，root 所有：state.json、releases、current、staging、journals
 └── public/           02750，root:www-data：releases/
-    └── provider/     02750，root:www-data：AmyTelecom-Provider.yaml (0640)
+    └── provider/     02750，root:www-data：AmyTelecom.yaml (0640)
 ```
 
 机场 provider 文件是 public 下唯一的非发布目录内容；它由机场更新流程原子写入，不随主配置发布。
 
 ## 首次初始化
 
-1. 执行 `clash-sub`，在主菜单选择 `1`，按可见提示粘贴机场订阅地址；输入会自动清理首尾空白，成功后生成 `AmyTelecom-Provider.yaml`。
+1. 执行 `clash-sub`，在主菜单选择 `1`，按可见提示粘贴机场订阅地址；输入会自动清理首尾空白，成功后生成 `AmyTelecom.yaml`。
 2. 依次执行首次生成与检查：
 
    ```bash
@@ -117,7 +117,7 @@ clash-sub rollback --install
 1. 恢复 3x-ui 数据库（`/etc/x-ui/x-ui.db`）。
 2. 恢复 `state.json`。
 3. 重新安装项目并重新签发证书。
-4. 重新导入机场订阅，生成 `AmyTelecom-Provider.yaml`。
+4. 重新导入机场订阅，生成 `AmyTelecom.yaml`。
 5. 执行 `clash-sub sync`。
 6. 核对并恢复两份 Nginx 配置。
 
@@ -132,7 +132,7 @@ clash-sub rollback --install
 | 3x-ui 数据库 | `/etc/x-ui/x-ui.db` |
 | 私密运行时目录 | `/var/lib/clash-sub/private` |
 | 公开发布目录 | `/var/lib/clash-sub/public` |
-| 机场 provider | `/var/lib/clash-sub/public/provider/AmyTelecom-Provider.yaml` |
+| 机场 provider | `/var/lib/clash-sub/public/provider/AmyTelecom.yaml` |
 | 服务配置 | `/var/lib/clash-sub/private/config/service.yaml` |
 | Nginx 路由 | `/etc/nginx/clash-sub/routes.conf` |
 | Nginx stream / HTTP 配置 | `/etc/nginx/stream-conf.d/clash-sub.conf` / `/etc/nginx/conf.d/clash-sub.conf` |

@@ -17,6 +17,10 @@ class MihomoUpdateTests(unittest.TestCase):
         self.public = self.root / "public"
         self.public.mkdir()
         (self.public / "Clash-Compat.yaml").write_text("mixed-port: 7890\n", encoding="utf-8")
+        self.provider_directory = self.public / "provider"
+        self.provider_directory.mkdir()
+        self.airport = self.provider_directory / "AmyTelecom.yaml"
+        self.airport.write_bytes(b"proxies: []\nnot a complete main config\n")
         self.payload = b"#!/bin/sh\necho Mihomo Meta v1.19.28\n"
         self.archive = gzip.compress(self.payload)
         self.digest = hashlib.sha256(self.archive).hexdigest()
@@ -63,6 +67,15 @@ class MihomoUpdateTests(unittest.TestCase):
         self.assertTrue(any(call[1:] == ["-t", "-f", str(self.public / "Clash-Compat.yaml")] for call in self.calls))
         self.assertTrue(any(call[1:] == ["-t", "-f", str(nested_config)] for call in self.calls))
         self.assertTrue(all("-fsSL" in call for call in self.calls if call[0] == "curl"))
+
+    def test_the_stable_airport_provider_is_never_validated_as_a_main_config(self):
+        install_latest_mihomo(
+            self.root, self._runner, binary=self.binary, public_root=self.public
+        )
+
+        validated = {tuple(call[3:]) for call in self.calls if call[1:3] == ["-t", "-f"]}
+        self.assertNotIn((str(self.airport),), validated)
+        self.assertIn((str(self.public / "Clash-Compat.yaml"),), validated)
 
     def test_current_latest_version_skips_binary_download(self):
         self.binary.parent.mkdir(parents=True)

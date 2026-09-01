@@ -14,7 +14,7 @@ import yaml
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from clash_sub.checks import CheckError, validate_clash
-from clash_sub.domain import AirportProvider
+from clash_sub.domain import AIRPORT_FILENAME, AirportProvider
 from clash_sub.generator import render_user_bundle
 from clash_sub.yaml_rt import (
     RoundTripYamlError,
@@ -37,11 +37,9 @@ PUBLIC_TEMPLATE_FILES = (
 OUTPUT_MODES = {relative: 0o644 for relative in PUBLIC_TEMPLATE_FILES}
 MAX_SOURCE_BYTES = 5 * 1024 * 1024
 _PROVIDER_NAME = "AmyTelecom"
-# The local cache filename the airport subscription used before publication;
-# any provider or comment referencing it is private airport machinery.  The
-# literal is assembled so this removal marker itself stays outside plain
-# repository text searches for the retired name.
-_AIRPORT_CACHE_NAME = "AmyTelecom" + ".yaml"
+# The published airport provider file; any provider or comment referencing
+# it is private airport machinery and must stay out of public templates.
+_AIRPORT_CACHE_NAME = AIRPORT_FILENAME
 
 
 class TemplateSyncError(RuntimeError):
@@ -463,7 +461,7 @@ def _validate_rendered_candidates(compat, profiles, balance):
         "client-fingerprint": "chrome",
         "reality-opts": {"public-key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "short-id": "1111111111111111"},
     }
-    provider = AirportProvider("https://template-sync.invalid/AmyTelecom-Provider.yaml")
+    provider = AirportProvider("https://template-sync.invalid/%s" % AIRPORT_FILENAME)
     try:
         with tempfile.TemporaryDirectory() as directory:
             templates = Path(directory) / "templates"

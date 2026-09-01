@@ -96,7 +96,7 @@ class LightweightNginxTests(unittest.TestCase):
                 )
                 path.write_text("proxies: []\n", encoding="utf-8")
                 os.chmod(path, 0o640)
-        provider_path = self.public_root / "provider" / "AmyTelecom-Provider.yaml"
+        provider_path = self.public_root / "provider" / "AmyTelecom.yaml"
         provider_path.parent.mkdir(parents=True)
         provider_path.write_text("proxies:\n- name: Amy\n", encoding="utf-8")
         os.chmod(provider_path, 0o640)
@@ -171,21 +171,21 @@ class LightweightNginxTests(unittest.TestCase):
         )
 
     def _provider_alias(self):
-        return self.public_root / "provider" / "AmyTelecom-Provider.yaml"
+        return self.public_root / "provider" / "AmyTelecom.yaml"
 
     def test_owner_routes_use_exact_case_and_stable_provider(self):
         alias = self._provider_alias()
 
         text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
 
-        block = "location = /s/%s/AmyTelecom-Provider.yaml {" % self.owner_token
+        block = "location = /s/%s/AmyTelecom.yaml {" % self.owner_token
         self.assertIn(block, text)
         self.assertEqual(text.count("location = /s/%s/" % self.owner_token), 3)
         self.assertEqual(text.count("location = /s/%s/" % self.member_token), 1)
         self.assertIn("alias %s;" % alias, text)
         self.assertIn('add_header Profile-Title "AmyTelecom";', text)
         self.assertIn(
-            "add_header Content-Disposition 'attachment; filename=AmyTelecom-Provider.yaml';",
+            "add_header Content-Disposition 'attachment; filename=AmyTelecom.yaml';",
             text,
         )
         provider_lines = text[text.index(block) :].splitlines()
@@ -218,7 +218,7 @@ class LightweightNginxTests(unittest.TestCase):
             ["location = /s/%s/Clash-Compat.yaml {" % self.member_token],
         )
         self.assertNotIn("/s/%s/Clash-Balance.yaml" % self.member_token, text)
-        self.assertNotIn("/s/%s/AmyTelecom-Provider.yaml" % self.member_token, text)
+        self.assertNotIn("/s/%s/AmyTelecom.yaml" % self.member_token, text)
 
     def test_owner_routes_require_the_stable_provider(self):
         self._provider_alias().unlink()

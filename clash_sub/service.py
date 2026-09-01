@@ -8,10 +8,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-import yaml
-
 from clash_sub.airport_store import AirportStoreError
-from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
+from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
 from clash_sub.sources import SourceError, normalize_xui_endpoints
 from clash_sub.state import StateError
 
@@ -87,11 +85,12 @@ class ClashSubService:
             return self._finish(next_state,candidates,updated,errors)
     def update_airport(self,url):
         # The airport update only replaces the stable provider file; it never
-        # reconciles state, fetches x-ui, renders profiles, or activates Nginx.
+        # reconciles state, fetches x-ui, renders profiles, validates with
+        # Mihomo, or activates Nginx.  The bytes publish verbatim.
         with self._lock():
             try:
                 document=self._download(url,self.config.max_source_bytes)
-                self._airport.replace(document,self._validate_airport_candidate)
+                self._airport.replace(document)
             except SourceError as error:
                 code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
                 self._journal(errors=(code,)); raise ServiceError(code) from None
@@ -171,37 +170,16 @@ class ClashSubService:
         release=self._releases.prepare(client.client_id,bundle,{"xui":_digest(xui)})
         if release:
             if candidates is not None: candidates.append((client.client_id,release))
-            if owner: self._validate_owner_with_mihomo(bundle)
-            else:
-                for path in release.public_paths.values(): self._mihomo.validate(path)
+            # Owner and member releases alike are validated as published;
+            # the local airport file is never handed to Mihomo.
+            for path in release.public_paths.values(): self._mihomo.validate(path)
         return release
-    def _validate_airport_candidate(self,path):
-        # The staged candidate must be a provider document with real proxy
-        # entries, then survive Mihomo mounted as a local file provider.
-        document=yaml.safe_load(Path(path).read_bytes())
-        if not isinstance(document,dict) or not isinstance(document.get("proxies"),list) or not document["proxies"]: raise ValueError("airport provider document is invalid")
-        probe={"proxy-providers":{"AmyTelecom":{"type":"file","path":str(path)}},"proxy-groups":[{"name":"Provider Check","type":"select","use":["AmyTelecom"]}],"rules":["MATCH,Provider Check"]}
-        with tempfile.TemporaryDirectory(prefix=".clash-sub-provider-validate.") as directory:
-            candidate=Path(directory)/"provider-check.yaml"
-            candidate.write_text(yaml.safe_dump(probe,allow_unicode=True,sort_keys=False),encoding="utf-8")
-            self._mihomo.validate(candidate)
-    def _validate_owner_with_mihomo(self,bundle):
-        # The published profile keeps the HTTP provider; Mihomo checks a
-        # non-published equivalent that points at the stable local file.
-        provider_file=Path(self._airport.path)
-        with tempfile.TemporaryDirectory(prefix=".clash-sub-owner-validate.") as directory:
-            for variant,text in bundle.items():
-                document=yaml.safe_load(text)
-                document.setdefault("proxy-providers",{})["AmyTelecom"]={"type":"file","path":str(provider_file)}
-                candidate=Path(directory)/("verify-%s.yaml"%variant)
-                candidate.write_text(yaml.safe_dump(document,allow_unicode=True,sort_keys=False),encoding="utf-8")
-                self._mihomo.validate(candidate)
     def _require_airport(self):
-        # The stable provider is a hard precondition for preparing any user.
+        # The stable provider is a hard precondition for preparing any user:
+        # it must exist with safe ownership and be non-empty, but its
+        # content is never parsed or validated here.
         try:
-            document=self._airport.read()
-            parsed=yaml.safe_load(document)
-            if not isinstance(parsed,dict) or not isinstance(parsed.get("proxies"),list) or not parsed["proxies"]: raise ValueError
+            self._airport.read()
         except Exception:
             raise ServiceError("airport_provider_required") from None
     def _activate(self,clients,state,candidates,extra=()):
@@ -280,7 +258,7 @@ def _traffic_matches_state(clients,state):
 def _shape(b,owner):
     if tuple(b)!=(OWNER_VARIANTS if owner else MEMBER_VARIANTS):raise ValueError
 def _digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,default=str).encode()).hexdigest()
-def _provider_url(c,t):return "https://%s/s/%s/AmyTelecom-Provider.yaml"%(c.subscription_authority,t)
+def _provider_url(c,t):return "https://%s/s/%s/%s"%(c.subscription_authority,t,AIRPORT_FILENAME)
 def _find(cs,i):return next((c for c in cs if c.client_id==i),None)
 def _client_id(i):
     if isinstance(i,bool) or not isinstance(i,int) or i<1:raise ServiceError("invalid_client")

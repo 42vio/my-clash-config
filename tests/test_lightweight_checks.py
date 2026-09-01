@@ -10,7 +10,7 @@ from clash_sub.checks import CheckError, MihomoValidator, validate_clash
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS
 
 
-PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom-Provider.yaml"
+PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
 
 
 def valid_document():
@@ -38,7 +38,7 @@ def owner_document():
     document["proxy-providers"] = {
         "AmyTelecom": {
             "type": "http", "url": PROVIDER_URL,
-            "path": "./proxy_providers/AmyTelecom-Provider.yaml", "interval": 604800,
+            "path": "./proxy_providers/AmyTelecom.yaml", "interval": 604800,
         }
     }
     return document

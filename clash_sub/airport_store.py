@@ -69,13 +69,12 @@ class AirportStore:
             raise AirportStoreError("airport_provider_invalid")
         return payload
 
-    def replace(self, document, validator) -> Path:
-        """Validate and atomically publish one provider candidate."""
+    def replace(self, document) -> Path:
+        """Atomically publish one provider document without inspecting it."""
         if (
             not isinstance(document, bytes)
             or not document
             or len(document) > MAX_PROVIDER_BYTES
-            or not callable(validator)
         ):
             raise AirportStoreError("airport_provider_invalid")
         directory = self._require_provider_directory()
@@ -94,11 +93,6 @@ class AirportStore:
         except OSError:
             _remove_quietly(temporary)
             raise AirportStoreError("airport_provider_write_failed") from None
-        try:
-            validator(temporary)
-        except Exception:
-            _remove_quietly(temporary)
-            raise AirportStoreError("airport_provider_invalid") from None
         try:
             _os_replace(temporary, self.path)
         except OSError:

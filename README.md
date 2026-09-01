@@ -12,7 +12,7 @@
 | owner | `Clash-Balance.yaml` | `Clash-Balance` | 有（`AmyTelecom`） |
 | 普通用户 | `Clash-Compat.yaml` | `Clash-Compat` | 无 |
 
-owner 与普通用户不通过文件名区分，由订阅令牌和服务端授权决定。普通用户不生成 Balance，也不包含或访问任何机场 provider。机场节点由独立文件 `AmyTelecom-Provider.yaml` 单独发布，只挂在 owner 的订阅路由下。
+owner 与普通用户不通过文件名区分，由订阅令牌和服务端授权决定。普通用户不生成 Balance，也不包含或访问任何机场 provider。机场节点由独立文件 `AmyTelecom.yaml` 单独发布，只挂在 owner 的订阅路由下。
 
 本次为不兼容升级：旧订阅文件名与旧 URL 已全部删除，没有重定向或兼容入口，旧客户端必须用 `clash-sub links` 重新获取新链接。
 

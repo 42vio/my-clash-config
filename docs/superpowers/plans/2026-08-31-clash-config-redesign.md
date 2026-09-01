@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the old office/universal/privacy model with exact `Clash-Compat` and `Clash-Balance` outputs, a client-only Home overlay, and an independently updated owner-only `AmyTelecom-Provider.yaml`.
+**Goal:** Replace the old office/universal/privacy model with exact `Clash-Compat` and `Clash-Balance` outputs, a client-only Home overlay, and an independently updated owner-only `AmyTelecom.yaml`.
 
 **Architecture:** Keep the existing state, release, Nginx activation, installer, and user-management framework. Centralize the two-profile contract, simplify round-trip template composition, move the airport artifact into a dedicated stable store, and remove all server-side Home behavior and legacy routes.
 
@@ -15,8 +15,8 @@
 - Exact profile filenames and titles are `Clash-Compat.yaml` / `Clash-Compat` and `Clash-Balance.yaml` / `Clash-Balance`.
 - Owner receives `compat` and `balance`; a member receives only `compat`.
 - Only owner configurations contain the `AmyTelecom` proxy provider.
-- The provider file and URL are exactly `AmyTelecom-Provider.yaml`; the provider key/title remains `AmyTelecom`.
-- The provider cache path is `./proxy_providers/AmyTelecom-Provider.yaml` and `interval` is exactly `604800`.
+- The provider file and URL are exactly `AmyTelecom.yaml`; the provider key/title remains `AmyTelecom`.
+- The provider cache path is `./proxy_providers/AmyTelecom.yaml` and `interval` is exactly `604800`.
 - Compat common comments and Balance DNS-specific comments must survive template synchronization and final rendering.
 - Airport update must not generate or activate a main configuration release.
 - Server-side `home.yaml`, office variants, privacy, legacy filenames, redirects, and compatibility routes are removed.
@@ -89,7 +89,7 @@ def test_owner_provider_requires_stable_filename_and_weekly_interval(self):
         "AmyTelecom": {
             "type": "http",
             "url": PROVIDER_URL,
-            "path": "./proxy_providers/AmyTelecom-Provider.yaml",
+            "path": "./proxy_providers/AmyTelecom.yaml",
             "interval": 604800,
         }
     }
@@ -120,7 +120,7 @@ PROFILE_TITLES = MappingProxyType({
     "compat": "Clash-Compat",
     "balance": "Clash-Balance",
 })
-AIRPORT_FILENAME = "AmyTelecom-Provider.yaml"
+AIRPORT_FILENAME = "AmyTelecom.yaml"
 
 @dataclass(frozen=True)
 class AirportProvider:
@@ -136,7 +136,7 @@ providers[PROVIDER_NAME] = CommentedMap({
     "type": "http",
     "url": airport.url,
     "interval": 604800,
-    "path": "./proxy_providers/AmyTelecom-Provider.yaml",
+    "path": "./proxy_providers/AmyTelecom.yaml",
 })
 ```
 
@@ -265,7 +265,7 @@ git commit -m "feat: sync compat and balance templates"
 **Interfaces:**
 - Produces: `AirportStore(public_root: Path, *, expected_uid: int | None = None, expected_public_gid: int | None = None)`.
 - Produces: `AirportStoreError(code: str)` with sanitized stable error codes.
-- Produces: `AirportStore.path -> Path`, always `public_root / "provider" / "AmyTelecom-Provider.yaml"`.
+- Produces: `AirportStore.path -> Path`, always `public_root / "provider" / "AmyTelecom.yaml"`.
 - Produces: `AirportStore.read() -> bytes` and `AirportStore.replace(document: bytes, validator: Callable[[Path], None]) -> Path`.
 - Consumes later: service update/sync and Nginx route generation use the secure stable path.
 
@@ -276,7 +276,7 @@ def test_replace_validates_temporary_file_then_atomically_publishes(self):
     seen = []
     path = self.store.replace(PROVIDER_BYTES, lambda candidate: seen.append(candidate.read_bytes()))
     self.assertEqual(seen, [PROVIDER_BYTES])
-    self.assertEqual(path.name, "AmyTelecom-Provider.yaml")
+    self.assertEqual(path.name, "AmyTelecom.yaml")
     self.assertEqual(path.read_bytes(), PROVIDER_BYTES)
     self.assertEqual(path.stat().st_mode & 0o777, 0o640)
 
@@ -301,7 +301,7 @@ The replacement sequence must be:
 
 ```python
 descriptor, temporary_name = tempfile.mkstemp(
-    prefix=".AmyTelecom-Provider.", dir=provider_directory
+    prefix=".AmyTelecom.", dir=provider_directory
 )
 os.fchmod(descriptor, 0o640)
 os.fchown(descriptor, expected_uid, expected_public_gid)
@@ -387,7 +387,7 @@ git commit -m "refactor: keep airport outside profile releases"
 
 **Interfaces:**
 - Consumes: `PROFILE_FILENAMES`, `PROFILE_TITLES`, and `AIRPORT_FILENAME` from `domain.py`.
-- Produces: owner routes for `Clash-Compat.yaml`, `Clash-Balance.yaml`, and `AmyTelecom-Provider.yaml`; member route only for `Clash-Compat.yaml`.
+- Produces: owner routes for `Clash-Compat.yaml`, `Clash-Balance.yaml`, and `AmyTelecom.yaml`; member route only for `Clash-Compat.yaml`.
 - Preserves: `render_routes(config, state, clients) -> str` and atomic runtime activation interface.
 
 - [ ] **Step 1: Write failing exact-route and authorization tests**
@@ -397,7 +397,7 @@ def test_owner_routes_use_exact_case_and_stable_provider(self):
     routes = render_routes(self.config, self.owner_state, self.clients)
     self.assertIn("/s/%s/Clash-Compat.yaml" % OWNER_TOKEN, routes)
     self.assertIn("/s/%s/Clash-Balance.yaml" % OWNER_TOKEN, routes)
-    self.assertIn("/s/%s/AmyTelecom-Provider.yaml" % OWNER_TOKEN, routes)
+    self.assertIn("/s/%s/AmyTelecom.yaml" % OWNER_TOKEN, routes)
     self.assertNotIn("clash-compat-office.yaml", routes)
 
 def test_member_has_no_balance_or_provider_route(self):
@@ -405,10 +405,10 @@ def test_member_has_no_balance_or_provider_route(self):
     member_block = routes_for_token(routes, MEMBER_TOKEN)
     self.assertIn("Clash-Compat.yaml", member_block)
     self.assertNotIn("Clash-Balance.yaml", member_block)
-    self.assertNotIn("AmyTelecom-Provider.yaml", member_block)
+    self.assertNotIn("AmyTelecom.yaml", member_block)
 ```
 
-Create the stable provider fixture at `self.config.public_root / "provider" / "AmyTelecom-Provider.yaml"` with `0640`, expected uid/gid, and one link.
+Create the stable provider fixture at `self.config.public_root / "provider" / "AmyTelecom.yaml"` with `0640`, expected uid/gid, and one link.
 
 - [ ] **Step 2: Run Nginx tests and confirm legacy routes fail**
 
@@ -425,7 +425,7 @@ location = "/s/%s/%s" % (token, PROFILE_FILENAMES[variant])
 title = PROFILE_TITLES[variant]
 ```
 
-Resolve the provider from `public_root / "provider" / "AmyTelecom-Provider.yaml"`, requiring its directory/file owner, group, mode `0640`, regular-file status, and link count. Add the provider block only for the current owner. Set `Profile-Title: AmyTelecom` and `Content-Disposition: attachment; filename=AmyTelecom-Provider.yaml`.
+Resolve the provider from `public_root / "provider" / "AmyTelecom.yaml"`, requiring its directory/file owner, group, mode `0640`, regular-file status, and link count. Add the provider block only for the current owner. Set `Profile-Title: AmyTelecom` and `Content-Disposition: attachment; filename=AmyTelecom.yaml`.
 
 - [ ] **Step 4: Run Nginx tests**
 
@@ -503,17 +503,17 @@ Use the exact provider URL:
 
 ```python
 def _provider_url(config, token):
-    return "https://%s/s/%s/AmyTelecom-Provider.yaml" % (
+    return "https://%s/s/%s/AmyTelecom.yaml" % (
         config.subscription_authority,
         token,
     )
 ```
 
-`update_airport()` acquires the existing operation lock, downloads exact bytes, and calls `airport_store.replace(document, self._validate_airport_candidate)`. The validator builds a temporary Mihomo configuration that references the candidate as `type: file` and validates actual proxy entries before replacement. It must not reconcile state, fetch x-ui, render profiles, prepare releases, or activate Nginx.
+`update_airport()` acquires the existing operation lock, downloads exact bytes, and calls `airport_store.replace(document)`. The store publishes non-empty bounded bytes verbatim without any content validation; it must not reconcile state, fetch x-ui, render profiles, validate with Mihomo, prepare releases, or activate Nginx.
 
-`sync_all()` securely reads and validates the stable provider before preparing any user. Owner render receives `AirportProvider(_provider_url(...))`; member render receives `None`. Release input hashes contain `xui` only, so provider-byte changes cannot create a new main release.
+`sync_all()` securely reads the stable provider (existence, safe ownership, non-empty) before preparing any user; its content is never parsed. Owner render receives `AirportProvider(_provider_url(...))`; member render receives `None`. Release input hashes contain `xui` only, so provider-byte changes cannot create a new main release.
 
-Delete `_home_path`, `_optional_home`, `_home_digest`, `_owner_sources`, Home exceptions, Home constructor arguments, and Home-specific Mihomo error mapping. Owner main-profile Mihomo checks rewrite only the published HTTP provider to the stable local file provider.
+Delete `_home_path`, `_optional_home`, `_home_digest`, `_owner_sources`, Home exceptions, Home constructor arguments, and Home-specific Mihomo error mapping. Owner and member main profiles alike are validated by Mihomo exactly as published; the local airport provider file is never handed to Mihomo.
 
 - [ ] **Step 5: Wire `AirportStore` in `runtime.py` and update CLI messages**
 

@@ -31,72 +31,47 @@ class AirportStoreTests(unittest.TestCase):
     def test_path_is_always_the_stable_provider_file(self):
         self.assertEqual(
             self.store.path,
-            self.public_root / "provider" / "AmyTelecom-Provider.yaml",
+            self.public_root / "provider" / "AmyTelecom.yaml",
         )
 
-    def test_replace_validates_temporary_file_then_atomically_publishes(self):
-        seen = []
-        modes = []
-
-        def validator(candidate):
-            seen.append(candidate.read_bytes())
-            modes.append(stat.S_IMODE(candidate.stat().st_mode))
-            self.assertEqual(candidate.parent, self.provider_directory)
-            self.assertTrue(candidate.name.startswith(".AmyTelecom-Provider."))
-
-        path = self.store.replace(PROVIDER_BYTES, validator)
-        self.assertEqual(seen, [PROVIDER_BYTES])
-        self.assertEqual(modes, [0o640])
+    def test_replace_atomically_publishes_the_exact_bytes(self):
+        path = self.store.replace(PROVIDER_BYTES)
         self.assertEqual(path, self.store.path)
-        self.assertEqual(path.name, "AmyTelecom-Provider.yaml")
+        self.assertEqual(path.name, "AmyTelecom.yaml")
         self.assertEqual(path.read_bytes(), PROVIDER_BYTES)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o640)
-        self.assertEqual(self.remaining_names(), ["AmyTelecom-Provider.yaml"])
+        self.assertEqual(self.remaining_names(), ["AmyTelecom.yaml"])
 
     def test_read_returns_exact_bytes_of_the_current_provider(self):
-        self.store.replace(OLD_BYTES, lambda candidate: None)
+        self.store.replace(OLD_BYTES)
         self.assertEqual(self.store.read(), OLD_BYTES)
 
     def test_read_requires_an_existing_provider(self):
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
             self.store.read()
 
-    def test_validator_failure_keeps_previous_provider(self):
-        self.store.replace(OLD_BYTES, lambda candidate: None)
-
-        def reject(candidate):
-            raise ValueError("candidate rejected")
-
-        with self.assertRaises(AirportStoreError) as caught:
-            self.store.replace(NEW_BYTES, reject)
-        self.assertEqual(caught.exception.code, "airport_provider_invalid")
-        self.assertEqual(self.store.read(), OLD_BYTES)
-        self.assertEqual(self.remaining_names(), ["AmyTelecom-Provider.yaml"])
-
     def test_failed_replacement_keeps_previous_provider_and_cleans_up(self):
-        self.store.replace(OLD_BYTES, lambda candidate: None)
+        self.store.replace(OLD_BYTES)
         with patch.object(airport_store, "_os_replace", side_effect=OSError("injected")):
             with self.assertRaises(AirportStoreError) as caught:
-                self.store.replace(NEW_BYTES, lambda candidate: None)
+                self.store.replace(NEW_BYTES)
         self.assertEqual(caught.exception.code, "airport_provider_write_failed")
         self.assertEqual(self.store.read(), OLD_BYTES)
-        self.assertEqual(self.remaining_names(), ["AmyTelecom-Provider.yaml"])
+        self.assertEqual(self.remaining_names(), ["AmyTelecom.yaml"])
 
     def test_empty_input_is_rejected(self):
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(b"", lambda candidate: None)
+            self.store.replace(b"")
         self.assertFalse(self.store.path.exists())
 
     def test_non_bytes_input_is_rejected(self):
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(PROVIDER_BYTES.decode("utf-8"), lambda candidate: None)
+            self.store.replace(PROVIDER_BYTES.decode("utf-8"))
         self.assertFalse(self.store.path.exists())
 
     def test_oversized_input_is_rejected(self):
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(
-                b"x" * (airport_store.MAX_PROVIDER_BYTES + 1), lambda candidate: None
-            )
+            self.store.replace(b"x" * (airport_store.MAX_PROVIDER_BYTES + 1))
         self.assertFalse(self.store.path.exists())
 
     def test_oversized_stored_provider_is_rejected_on_read(self):
@@ -113,39 +88,39 @@ class AirportStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
             self.store.read()
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(NEW_BYTES, lambda candidate: None)
+            self.store.replace(NEW_BYTES)
         self.assertTrue(self.store.path.is_symlink())
         self.assertEqual(outside.read_bytes(), PROVIDER_BYTES)
 
     def test_directory_target_is_rejected(self):
         self.store.path.mkdir()
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(NEW_BYTES, lambda candidate: None)
+            self.store.replace(NEW_BYTES)
         self.assertTrue(self.store.path.is_dir())
 
     def test_hard_linked_provider_is_rejected_for_read_and_replace(self):
-        self.store.replace(OLD_BYTES, lambda candidate: None)
+        self.store.replace(OLD_BYTES)
         link = Path(self.tmp.name) / "hardlink.yaml"
         os.link(self.store.path, link)
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
             self.store.read()
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(NEW_BYTES, lambda candidate: None)
+            self.store.replace(NEW_BYTES)
         self.assertEqual(self.store.path.read_bytes(), OLD_BYTES)
 
     def test_wrong_mode_provider_is_rejected_for_read_and_replace(self):
-        self.store.replace(OLD_BYTES, lambda candidate: None)
+        self.store.replace(OLD_BYTES)
         self.store.path.chmod(0o644)
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
             self.store.read()
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(NEW_BYTES, lambda candidate: None)
+            self.store.replace(NEW_BYTES)
         self.assertEqual(self.store.path.read_bytes(), OLD_BYTES)
 
     def test_missing_provider_directory_is_rejected(self):
         store = AirportStore(Path(self.tmp.name) / "absent")
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            store.replace(PROVIDER_BYTES, lambda candidate: None)
+            store.replace(PROVIDER_BYTES)
 
     def test_symlinked_provider_directory_is_rejected(self):
         real = Path(self.tmp.name) / "real-provider"
@@ -157,29 +132,18 @@ class AirportStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
             self.store.read()
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(NEW_BYTES, lambda candidate: None)
+            self.store.replace(NEW_BYTES)
         self.assertEqual(sorted(entry.name for entry in real.iterdir()), ["ignored.yaml"])
 
-    def test_non_callable_validator_is_rejected(self):
-        with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
-            self.store.replace(PROVIDER_BYTES, None)
-
     def test_errors_never_expose_paths_or_document_values(self):
-        self.store.replace(OLD_BYTES, lambda candidate: None)
-
-        def reject(candidate):
-            raise ValueError(NEW_BYTES)
+        self.store.replace(OLD_BYTES)
 
         messages = []
         with patch.object(
             airport_store, "_os_replace", side_effect=OSError(str(self.tmp.name))
         ):
             with self.assertRaises(AirportStoreError) as caught:
-                self.store.replace(NEW_BYTES, reject)
-            self.assertEqual(caught.exception.code, "airport_provider_invalid")
-            messages.append(str(caught.exception))
-            with self.assertRaises(AirportStoreError) as caught:
-                self.store.replace(NEW_BYTES, lambda candidate: None)
+                self.store.replace(NEW_BYTES)
             self.assertEqual(caught.exception.code, "airport_provider_write_failed")
             messages.append(str(caught.exception))
         self.store.path.unlink()

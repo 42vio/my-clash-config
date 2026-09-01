@@ -55,9 +55,10 @@ def proxy_yaml(name="Example"):
 
 
 def airport_document():
-    """An upstream airport body whose exact bytes must survive the pipeline."""
+    """A complete upstream Clash profile whose exact bytes must survive."""
     return (
         "# airport header comment\n"
+        "mixed-port: 7890\n"
         "proxies:\n"
         "- {name: 'Amy 01', type: ss, server: a.example, port: 443}\n"
         "- name: Amy 02\n"
@@ -65,6 +66,12 @@ def airport_document():
         "  server: b.example\n"
         "  port: 443\n"
         "# trailing comment kept verbatim\n"
+        "proxy-groups:\n"
+        "- name: Upstream Select\n"
+        "  type: select\n"
+        "  proxies: [Amy 01, Amy 02]\n"
+        "rules:\n"
+        "- MATCH,Upstream Select\n"
     ).encode("utf-8")
 
 
@@ -113,19 +120,19 @@ class SourceFetchingTests(unittest.TestCase):
                 "http://airport.example/private-token", 1024, opener=self.opener_for(response)
             )
 
-    def test_airport_reports_download_and_document_failures_without_the_url(self):
+    def test_airport_reports_download_failures_without_the_url(self):
         secret = "https://airport.example/private-token"
         with self.assertRaisesRegex(SourceError, "airport_download_failed") as download:
             download_airport_document(secret, 1024, opener=self.failing_opener)
-        with self.assertRaisesRegex(SourceError, "airport_document_invalid") as document:
+        with self.assertRaisesRegex(SourceError, "airport_download_failed") as empty:
             download_airport_document(
                 secret,
                 1024,
-                opener=self.opener_for(FakeResponse(b"proxies: []\n", secret)),
+                opener=self.opener_for(FakeResponse(b"", secret)),
             )
 
         self.assertNotIn(secret, str(download.exception))
-        self.assertNotIn(secret, str(document.exception))
+        self.assertNotIn(secret, str(empty.exception))
 
     def test_airport_download_preserves_the_exact_response_bytes(self):
         body = airport_document()
@@ -136,26 +143,42 @@ class SourceFetchingTests(unittest.TestCase):
         )
 
         self.assertEqual(result, body)
+        self.assertIn(b"# airport header comment", result)
+        self.assertIn(b"# trailing comment kept verbatim", result)
+        self.assertIn(b"mixed-port", result)
+        self.assertIn(b"proxy-groups", result)
+        self.assertIn(b"rules:", result)
         self.assertIsInstance(result, bytes)
 
-    def test_airport_download_validates_only_a_non_empty_proxy_document(self):
+    def test_airport_download_accepts_non_empty_bytes_without_parsing(self):
+        # The server never validates or converts airport content: a non-YAML
+        # body still publishes verbatim, byte for byte.
         for body in (
-            b"",
+            b"just text, not yaml at all\n",
             b"[]\n",
             b"proxies: []\n",
             b"rules:\n- MATCH,DIRECT\n",
-            b"proxies: not-a-list\n",
             b"!!python/object/apply:os.system ['echo unsafe']\n",
             b"proxies: [\n",
+            b"\x00\xff binary \xfe bytes\n",
         ):
             response = FakeResponse(body, "https://airport.example/final")
             with self.subTest(body=body):
-                with self.assertRaises(SourceError):
-                    download_airport_document(
-                        "https://airport.example/private-token",
-                        1024,
-                        opener=self.opener_for(response),
-                    )
+                result = download_airport_document(
+                    "https://airport.example/private-token",
+                    1024,
+                    opener=self.opener_for(response),
+                )
+                self.assertEqual(result, body)
+
+    def test_airport_download_rejects_an_empty_response(self):
+        response = FakeResponse(b"", "https://airport.example/final")
+        with self.assertRaisesRegex(SourceError, "airport_download_failed"):
+            download_airport_document(
+                "https://airport.example/private-token",
+                1024,
+                opener=self.opener_for(response),
+            )
 
     def test_airport_download_reads_only_the_bounded_extra_byte(self):
         oversized = FakeResponse(

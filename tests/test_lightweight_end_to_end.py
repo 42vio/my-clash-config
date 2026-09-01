@@ -262,7 +262,7 @@ class AcceptanceHarness:
 
     @property
     def provider_path(self):
-        return self.public_root / "provider" / "AmyTelecom-Provider.yaml"
+        return self.public_root / "provider" / "AmyTelecom.yaml"
 
     def set_traffic(self, client_id, upload, download):
         connection = sqlite3.connect(self.database)
@@ -374,7 +374,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(member_names, ["Member 3x-ui"])
 
         owner_token = harness.state().users[harness.owner_id].token
-        expected_url = "https://sub.example.test:443/s/%s/AmyTelecom-Provider.yaml" % owner_token
+        expected_url = "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % owner_token
         for variant, document in owner_documents.items():
             provider = document["proxy-providers"]["AmyTelecom"]
             self.assertEqual(provider["type"], "http", variant)
@@ -382,7 +382,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
             self.assertEqual(provider["interval"], 604800, variant)
             self.assertEqual(
                 provider["path"],
-                "./proxy_providers/AmyTelecom-Provider.yaml",
+                "./proxy_providers/AmyTelecom.yaml",
                 variant,
             )
             groups = {group["name"]: group for group in document["proxy-groups"]}
@@ -428,10 +428,10 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertIn("alias %s;" % provider, routes)
         owner_token = harness.state().users[harness.owner_id].token
         self.assertIn(
-            "location = /s/%s/AmyTelecom-Provider.yaml" % owner_token, routes
+            "location = /s/%s/AmyTelecom.yaml" % owner_token, routes
         )
         self.assertNotIn(
-            "location = /s/%s/AmyTelecom-Provider.yaml" % member_token, routes
+            "location = /s/%s/AmyTelecom.yaml" % member_token, routes
         )
 
     def test_first_sync_without_a_provider_fails_closed(self):
@@ -496,9 +496,11 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         old_body = harness.airport_body
         secret = "https://airport.example.test/import/temporary-secret"
 
-        harness.airport_body = old_body.replace(b"airport-old", b"airport-new")
-        harness.runner.fail_mihomo = True
-        with self.assertRaisesRegex(ServiceError, "airport_provider_invalid") as caught:
+        def failing(request, _timeout):
+            raise OSError("upstream failed")
+
+        harness._airport_opener = failing
+        with self.assertRaisesRegex(ServiceError, "airport_download_failed") as caught:
             harness.import_airport(secret)
 
         self.assertNotIn(secret, str(caught.exception))
@@ -557,17 +559,17 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % member.token, routes)
         self.assertNotIn("location = /s/%s/Clash-Balance.yaml" % member.token, routes)
         self.assertNotIn(
-            "location = /s/%s/AmyTelecom-Provider.yaml" % member.token, routes
+            "location = /s/%s/AmyTelecom.yaml" % member.token, routes
         )
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % owner.token, routes)
         self.assertIn("location = /s/%s/Clash-Balance.yaml" % owner.token, routes)
         self.assertIn(
-            "location = /s/%s/AmyTelecom-Provider.yaml" % owner.token, routes
+            "location = /s/%s/AmyTelecom.yaml" % owner.token, routes
         )
         self.assertEqual(routes.count("location = /s/%s/" % member.token), 1)
         self.assertEqual(routes.count("location = /s/%s/" % owner.token), 3)
         block = routes[
-            routes.index("location = /s/%s/AmyTelecom-Provider.yaml" % owner.token):
+            routes.index("location = /s/%s/AmyTelecom.yaml" % owner.token):
         ]
         self.assertNotIn("Subscription-Userinfo", block[: block.index("\n}")])
 
@@ -682,7 +684,10 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotIn(airport_url, observed)
         self.assertNotIn(airport_credential, observed)
 
-        harness.runner.fail_mihomo = True
+        def failing(request, _timeout):
+            raise OSError("upstream failed")
+
+        harness._airport_opener = failing
         stdout = io.StringIO()
         stderr = io.StringIO()
         with patch("clash_sub.cli.getpass", return_value=airport_url):
@@ -732,7 +737,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(harness.active_view(), before)
         self.assertEqual(harness.route_text(), old_routes)
         self.assertIn(
-            "location = /s/%s/AmyTelecom-Provider.yaml" % old_token, harness.route_text()
+            "location = /s/%s/AmyTelecom.yaml" % old_token, harness.route_text()
         )
         harness.assert_candidate_cleanup(self)
         harness.assert_lock_and_markers(self)
@@ -753,13 +758,13 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(rolled.release_id, first_release)
         routes = harness.route_text()
         self.assertIn(
-            "location = /s/%s/AmyTelecom-Provider.yaml" % old_token, routes
+            "location = /s/%s/AmyTelecom.yaml" % old_token, routes
         )
         self.assertIn("alias %s;" % harness.provider_path, routes)
         compat = yaml.safe_load(rolled.public_paths["compat"].read_text())
         self.assertEqual(
             compat["proxy-providers"]["AmyTelecom"]["url"],
-            "https://sub.example.test:443/s/%s/AmyTelecom-Provider.yaml" % old_token,
+            "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % old_token,
         )
 
         rotated = harness.service.rotate_link(harness.owner_id)
@@ -769,7 +774,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotIn("location = /s/%s/" % old_token, routes)
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % rotated["token"], routes)
         self.assertIn(
-            "location = /s/%s/AmyTelecom-Provider.yaml" % rotated["token"], routes
+            "location = /s/%s/AmyTelecom.yaml" % rotated["token"], routes
         )
         # Rotation and rollback never change the provider bytes.
         self.assertEqual(harness.provider_path.read_bytes(), old_body)
@@ -778,7 +783,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual(
             rotated_compat["proxy-providers"]["AmyTelecom"]["url"],
-            "https://sub.example.test:443/s/%s/AmyTelecom-Provider.yaml" % rotated["token"],
+            "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % rotated["token"],
         )
         harness.assert_lock_and_markers(self)
 

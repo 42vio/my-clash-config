@@ -32,12 +32,12 @@ owner 主配置中的机场 provider 固定为：
 proxy-providers:
   AmyTelecom:
     type: http
-    url: "https://订阅域名/s/<owner-token>/AmyTelecom-Provider.yaml"
-    path: ./proxy_providers/AmyTelecom-Provider.yaml
+    url: "https://订阅域名/s/<owner-token>/AmyTelecom.yaml"
+    path: ./proxy_providers/AmyTelecom.yaml
     interval: 604800
 ```
 
-provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL，Clash Verge 可单独手动刷新，自动刷新间隔 7 天。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom-Provider.yaml`，只通过 owner 令牌路由访问；普通用户令牌没有任何机场路由。
+provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL，Clash Verge 可单独手动刷新，自动刷新间隔 7 天。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`，只通过 owner 令牌路由访问；普通用户令牌没有任何机场路由。
 
 模板同步会在净化时移除机场在本机的痕迹：机场 provider 本体、以机场缓存文件为 `path`/`url` 的本地别名 provider、这些 provider 在策略组 `use` 与 YAML merge/锚点中的引用，以及提及该缓存文件名的注释。受影响的策略组记入 `profiles.yaml` 的机场注入列表，owner 发布时重新挂上 `AmyTelecom`。
 

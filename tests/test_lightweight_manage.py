@@ -244,6 +244,7 @@ class UpdateTests(unittest.TestCase):
             run_post_update(self.root, self._runner)
 
         installer.return_value.harden_systemd.assert_called_once()
+        installer.return_value._prepare_runtime_directories.assert_called_once_with()
         paths = installer.call_args.kwargs["paths"]
         self.assertEqual((paths.private_root, paths.public_root, paths.routes_conf), (config.private_root, config.public_root, config.nginx_routes))
         self.assertEqual(rerender.call_args.kwargs["paths"], paths)
@@ -262,6 +263,28 @@ class UpdateTests(unittest.TestCase):
             run_post_update(self.root, self._runner)
         installer.assert_not_called()
         self.assertEqual(self.runner_calls, [])
+
+    def test_post_update_recreates_a_missing_provider_directory(self):
+        from clash_sub.manage import run_post_update
+
+        # An older server predates the provider directory: post-update must
+        # recreate it idempotently with the published setgid permissions.
+        runtime = self.root / "runtime"
+        (runtime / "private").mkdir(parents=True, mode=0o700)
+        public = runtime / "public"
+        public.mkdir()
+        state = InstallState(domain="example.com", panel_port=2053, panel_base_path="/p-x")
+        config = ServiceConfig("owner@example.com", "sub.example.com:443", "node.example.com:443", self.root / "xui.db", runtime / "private", public, self.root / "nginx" / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), self.root / "templates")
+        with patch("clash_sub.manage.load_config", return_value=config), patch(
+            "clash_sub.manage._load_install_state", return_value=state
+        ), patch("clash_sub.manage._rerender_nginx"), patch(
+            "clash_sub.installer.Installer.harden_systemd"
+        ):
+            run_post_update(self.root, self._runner)
+
+        provider = public / "provider"
+        self.assertTrue(provider.is_dir())
+        self.assertEqual(provider.stat().st_mode & 0o7777, 0o2750)
 
     def test_rerender_uses_configured_runtime_paths_and_journal(self):
         from clash_sub.manage import _rerender_nginx

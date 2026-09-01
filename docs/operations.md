@@ -50,6 +50,8 @@ git diff --check
 
 模板同步只更新仓库模板，不触碰服务器。模板变更生效需要提交、推送，并在服务器 `clash-sub update` 后 `sync`。
 
+服务器执行 `clash-sub update` 时，post-update 会幂等补齐并校正运行时目录（包括机场 provider 目录），再更新 systemd 与 Nginx；旧安装无需手工追补新目录。
+
 ## 机场更新
 
 机场更新与主配置发布完全解耦：只更新 provider 文件，不生成、不发布、不切换任何主配置。
@@ -60,7 +62,7 @@ git diff --check
 clash-sub status
 ```
 
-更新流程下载原始字节到同目录随机临时文件，验证（YAML 结构、非空代理列表、Mihomo 以本地文件 provider 装载校验）后原子替换 `/var/lib/clash-sub/public/provider/AmyTelecom-Provider.yaml`。失败时保留当前 provider，只输出隐藏了源 URL、令牌、UUID 和节点敏感字段的稳定错误码。
+更新流程只负责下载与发布：清除输入首尾空白后按 HTTPS 下载原始字节（保留 HTTPS、最多三次 HTTPS 重定向、超时与 5 MB 大小限制），拒绝空响应，然后把非空响应原字节、原注释写入同目录随机临时文件并原子替换 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`（权限 `0640 root:www-data` 不变）。服务器不校验、不解析、不转换机场内容——完整 Clash 配置、注释与字节顺序原样保留。失败时保留当前 provider，只输出隐藏了源 URL、令牌、UUID 和节点敏感字段的稳定错误码。
 
 机场字节变化本身不会创建新发布：发布输入哈希只含 3x-ui 数据。需要把新机场节点刷进客户端时，在 Clash Verge 中手动刷新 provider（见下节），或在内容需要重排时执行 `clash-sub sync`。
 
@@ -78,7 +80,7 @@ clash-sub status
 clash-sub links
 ```
 
-`sync` 要求当前机场 provider 存在且有效，然后恢复中断的运行时发布、准备并验证候选、最后激活；机场 provider 缺失或无效时整体拒绝（`airport_provider_required`）。若输出“同步部分完成”，按其中公开的客户端 ID 与错误代码处理，且以 `status` 的最近错误和 pending 项为准。`links` 输出可用订阅链接（owner 两条、普通用户一条），屏幕录制或终端转存前先避免泄露。
+`sync` 要求当前机场 provider 文件存在、权限安全且非空（内容本身不解析、不校验），然后恢复中断的运行时发布、准备并验证候选、最后激活；机场 provider 缺失或不合规时整体拒绝（`airport_provider_required`）。若输出“同步部分完成”，按其中公开的客户端 ID 与错误代码处理，且以 `status` 的最近错误和 pending 项为准。`links` 输出可用订阅链接（owner 两条、普通用户一条），屏幕录制或终端转存前先避免泄露。
 
 日常代码维护使用：
 
@@ -189,10 +191,9 @@ systemctl status clash-sub-traffic.timer clash-sub-traffic.service
 
    - `airport_url_invalid`：不是允许的 HTTPS 地址；
    - `airport_redirect_invalid`：重定向超过三次或转向非 HTTPS 地址；
-   - `airport_download_failed`：网络、TLS 证书或上游响应失败；
-   - `airport_document_invalid`：返回内容不是顶层含非空 `proxies:` 的 Clash YAML；
-   - `airport_document_too_large`：返回内容超过允许大小；
-   - `airport_provider_invalid`：Mihomo 无法把候选内容作为文件 provider 装载，或现有 provider 权限/类型不合规；
+   - `airport_download_failed`：网络、TLS 证书、上游响应失败，或响应为空；
+   - `airport_document_too_large`：返回内容超过传输大小限制；
+   - `airport_provider_invalid`：provider 目录或文件的安全属性不合规（属主、组、类型、权限、硬链数），或待发布字节为空/超限；
    - `airport_provider_write_failed`：服务器无法原子写入 provider 文件。
 
    不要反复粘贴地址或把地址发送到日志；只记录上述错误码。
@@ -224,7 +225,7 @@ ls -l backups/clash-sub-backup-*.tar.gz
 1. 从受保护备份恢复 3x-ui 数据库与入站/client 配置；按[部署清单](../DEPLOYMENT.md#3x-ui-关键配置)检查面板、Reality 入站和端口。
 2. 恢复备份中的 `state.json` 到新服务器的私密运行时目录。
 3. 克隆仓库到 `/opt/my-clash-config`，按[部署清单](../DEPLOYMENT.md#全新安装)执行 `bash install.sh`；安装时仅在隐藏提示输入新主机所需的域名、Cloudflare token 与 owner email。证书由安装流程重新签发。
-4. 通过可见提示重新导入机场订阅，生成 `AmyTelecom-Provider.yaml`，然后发布并验收：
+4. 通过可见提示重新导入机场订阅，生成 `AmyTelecom.yaml`，然后发布并验收：
 
    ```bash
    clash-sub sync

@@ -96,7 +96,7 @@ Compat 完整基础模板
 原始机场订阅只进入同目录的随机临时文件，不长期保存。下载、转换和验证成功后，使用 `os.replace` 原子替换：
 
 ```text
-/var/lib/clash-sub/public/provider/AmyTelecom-Provider.yaml
+/var/lib/clash-sub/public/provider/AmyTelecom.yaml
 ```
 
 权限为 `root:www-data`、`0640`。只保留当前有效版本，不保留历史或机场回滚版本。
@@ -109,8 +109,8 @@ owner 主配置使用：
 proxy-providers:
   AmyTelecom:
     type: http
-    url: "https://订阅域名/s/<owner-token>/AmyTelecom-Provider.yaml"
-    path: ./proxy_providers/AmyTelecom-Provider.yaml
+    url: "https://订阅域名/s/<owner-token>/AmyTelecom.yaml"
+    path: ./proxy_providers/AmyTelecom.yaml
     interval: 604800
 ```
 
@@ -145,7 +145,7 @@ provider 的 Clash 显示名称保持 `AmyTelecom`。当前 owner 令牌拥有�
 │   └── journals/
 └── public/
     └── provider/
-        └── AmyTelecom-Provider.yaml
+        └── AmyTelecom.yaml
 ```
 
 `state.json` 保存 owner、普通用户、x-ui 客户端映射及订阅令牌。旧订阅文件名和路由直接删除，不提供兼容入口。旧客户端必须重新添加新链接。
@@ -168,7 +168,7 @@ provider 的 Clash 显示名称保持 `AmyTelecom`。当前 owner 令牌拥有�
 1. 恢复 3x-ui 数据库。
 2. 恢复 `state.json`。
 3. 重新安装项目并重新签发证书。
-4. 重新导入机场订阅，生成 `AmyTelecom-Provider.yaml`。
+4. 重新导入机场订阅，生成 `AmyTelecom.yaml`。
 5. 执行 `sync`。
 6. 核对并恢复 Nginx 配置。
 

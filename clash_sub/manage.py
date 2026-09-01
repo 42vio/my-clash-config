@@ -279,7 +279,9 @@ def run_post_update(repo_root, runner):
         routes_conf=config.nginx_routes,
         mihomo_binary=config.mihomo_binary,
     )
-    Installer(repo_root, paths=paths, runner=runner).harden_systemd()
+    installer = Installer(repo_root, paths=paths, runner=runner)
+    installer._prepare_runtime_directories()
+    installer.harden_systemd()
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
     return True

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from clash_sub.domain import AIRPORT_FILENAME
+
 
 class CheckError(ValueError):
     """Raised when a candidate Clash configuration is unsafe."""
@@ -23,7 +25,7 @@ _REALITY_FIELDS = {
     "reality-opts",
 }
 _PROVIDER_NAME = "AmyTelecom"
-_PROVIDER_PATH = "./proxy_providers/AmyTelecom-Provider.yaml"
+_PROVIDER_PATH = "./proxy_providers/%s" % AIRPORT_FILENAME
 
 
 def validate_clash(text, forbidden_values, allowed_provider_url=None):

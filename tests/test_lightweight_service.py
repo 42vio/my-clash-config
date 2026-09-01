@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
-from clash_sub.airport_store import AirportStore, AirportStoreError
+from clash_sub.airport_store import MAX_PROVIDER_BYTES, AirportStore, AirportStoreError
 from clash_sub.domain import (
     PROFILE_FILENAMES,
     PreparedRelease,
@@ -151,7 +151,7 @@ class ServiceTests(unittest.TestCase):
         os.chmod(private_root, 0o700)
         self.clock_value = 1750000000.0
         self.config = ServiceConfig("owner@example.test", "sub.example.test:8443", "example.com:443", root / "xui.db", private_root, root / "public", root / "routes.conf", Path("/bin/mihomo"), Path("/bin/nginx"), Path("/bin/systemctl"), root / "templates")
-        self.airport_file = root / "public" / "provider" / "AmyTelecom-Provider.yaml"
+        self.airport_file = root / "public" / "provider" / "AmyTelecom.yaml"
         self.airport_file.parent.mkdir(parents=True)
         self.airport_file.write_bytes(PROVIDER_DOCUMENT)
         os.chmod(self.airport_file, 0o640)
@@ -194,13 +194,11 @@ class ServiceTests(unittest.TestCase):
         """One successful sync with the stable provider already in place."""
         return self.service.sync_all()
 
-    def _replace_provider(self, document, validator):
-        # Mirrors the real store: the validator sees a staged candidate and
-        # the stable file only changes after validation succeeds.
-        with tempfile.TemporaryDirectory() as directory:
-            candidate = Path(directory) / "AmyTelecom-Provider.yaml"
-            candidate.write_bytes(document)
-            validator(candidate)
+    def _replace_provider(self, document):
+        # Mirrors the real store: the input invariant (non-empty bounded
+        # bytes) rejects before anything is published.
+        if not isinstance(document, bytes) or not document or len(document) > MAX_PROVIDER_BYTES:
+            raise AirportStoreError("airport_provider_invalid")
         self.airport_file.write_bytes(document)
         self.replaced_documents.append(document)
         return self.airport_file
@@ -246,7 +244,7 @@ class ServiceTests(unittest.TestCase):
             return {
                 variant: (
                     "proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\n"
-                    "    path: ./proxy_providers/AmyTelecom-Provider.yaml\n    interval: 604800\n"
+                    "    path: ./proxy_providers/AmyTelecom.yaml\n    interval: 604800\n"
                     "proxies:\n- name: Owner %s\n" % (airport.url, variant)
                 )
                 for variant in ("compat", "balance")
@@ -283,11 +281,14 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.store.prepared, [])
         self.assertEqual(self.activator.calls, [])
 
-    def test_sync_rejects_an_invalid_stored_provider_document(self):
-        self.airport_store.read.return_value = b"proxies: []\n"
+    def test_sync_requires_only_a_present_non_empty_stored_provider(self):
+        # The sync precondition never parses airport content: any non-empty
+        # stored document is accepted as long as the file itself is sound.
+        self.airport_store.read.return_value = b"\x00not yaml at all\n"
 
-        with self.assertRaisesRegex(ServiceError, "airport_provider_required"):
-            self.service.sync_all()
+        result = self.service.sync_all()
+
+        self.assertFalse(result["errors"])
 
     def test_member_render_receives_no_provider(self):
         self.bootstrap()
@@ -302,7 +303,7 @@ class ServiceTests(unittest.TestCase):
     def test_owner_render_receives_the_stable_provider_url(self):
         self.bootstrap()
 
-        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom-Provider.yaml" % token(bytes([7]), "ABCDEF")
+        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "ABCDEF")
         self.assertEqual(
             {call[1].url for call in self.generator_calls if call[0]},
             {provider_url},
@@ -315,27 +316,26 @@ class ServiceTests(unittest.TestCase):
         member_calls = [call for call in self.validation_calls if call[1] is None]
         self.assertTrue(owner_calls)
         self.assertTrue(member_calls)
-        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom-Provider.yaml" % token(bytes([7]), "ABCDEF")
+        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "ABCDEF")
         self.assertEqual({call[1] for call in owner_calls}, {provider_url})
         seen = set(owner_calls[0][0])
         self.assertIn(token(bytes([8]), "GHJKMN"), seen)
         self.assertIn("sub-7", seen)
 
-    def test_owner_mihomo_validation_swaps_in_the_stable_local_file_provider(self):
-        snapshots = []
-
-        def snapshot(path):
-            snapshots.append(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
-
-        self.service._mihomo.validate = snapshot
+    def test_owner_release_files_are_validated_by_mihomo_without_the_local_airport(self):
         self.bootstrap()
 
-        owner_snapshots = [document for document in snapshots if "proxy-providers" in document]
-        self.assertTrue(owner_snapshots)
-        for document in owner_snapshots:
-            provider = document["proxy-providers"]["AmyTelecom"]
-            self.assertEqual(provider["type"], "file")
-            self.assertEqual(provider["path"], str(self.airport_file))
+        owner_release = self.state.users[7].current_release
+        expected = {
+            "/releases/7/%s/Clash-Compat.yaml" % owner_release,
+            "/releases/7/%s/Clash-Balance.yaml" % owner_release,
+        }
+        self.assertTrue(expected.intersection(str(path) for path in self.mihomo_calls))
+        for path in self.mihomo_calls:
+            # Every Mihomo call sees a published release file only; the
+            # local airport provider file is never handed to Mihomo.
+            self.assertTrue(str(path).startswith("/releases/"), path)
+            self.assertNotIn(str(self.airport_file), str(path))
 
     def test_sync_all_reuses_the_release_artifact_without_touching_the_upstream(self):
         self.bootstrap()
@@ -369,6 +369,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.store.prepared, [])
         self.assertEqual(self.activator.calls, [])
         self.assertEqual(self.fetch_calls, [])
+        self.assertEqual(self.mihomo_calls, [])
 
     def test_update_airport_only_replaces_the_provider_file(self):
         self.bootstrap()
@@ -385,36 +386,21 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(self.activator.calls), before_activations)
         self.assertEqual(len(self.store.prepared), 2)
 
-    def test_update_airport_validates_the_candidate_with_mihomo_as_a_file_provider(self):
-        def fail_first(candidate):
-            raise RuntimeError("mihomo rejected the provider")
+    def test_update_airport_publishes_non_yaml_bytes_verbatim(self):
+        raw = b"\x00raw airport bytes \xff- not yaml\n"
+        self.download_document = raw
 
-        original_validate = self.service._mihomo.validate
-        seen = []
+        result = self.service.update_airport("https://airport.example/binary")
 
-        def capture(path):
-            document = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-            provider_path = Path(document["proxy-providers"]["AmyTelecom"]["path"])
-            seen.append((document, provider_path.read_bytes()))
-
-        self.service._mihomo.validate = capture
-
-        self.service.update_airport("https://airport.example/sub")
-
-        self.service._mihomo.validate = original_validate
-        self.assertEqual(len(seen), 1)
-        document, candidate_bytes = seen[0]
-        provider = document["proxy-providers"]["AmyTelecom"]
-        self.assertEqual(provider["type"], "file")
-        self.assertTrue(provider["path"].endswith("AmyTelecom-Provider.yaml"))
-        self.assertEqual(candidate_bytes, PROVIDER_DOCUMENT)
-        self.assertEqual(document["rules"], ["MATCH,%s" % document["proxy-groups"][0]["name"]])
-        self.assertEqual(document["proxy-groups"][0]["use"], ["AmyTelecom"])
+        self.assertEqual(result, {"updated": True})
+        self.assertEqual(self.airport_file.read_bytes(), raw)
+        self.assertEqual(self.replaced_documents, [raw])
+        self.assertEqual(self.mihomo_calls, [])
 
     def test_update_airport_failure_keeps_the_previous_provider_and_emits_one_code(self):
         self.bootstrap()
         secret = "https://airport.example/temporary-secret"
-        self.airport_store.replace.side_effect = lambda document, validator: (_ for _ in ()).throw(AirportStoreError("airport_provider_write_failed"))
+        self.airport_store.replace.side_effect = lambda document: (_ for _ in ()).throw(AirportStoreError("airport_provider_write_failed"))
 
         with self.assertRaises(ServiceError) as caught:
             self.service.update_airport(secret)
@@ -439,12 +425,15 @@ class ServiceTests(unittest.TestCase):
             self.service.status()["last_errors"], ("airport_download_failed",)
         )
 
-    def test_update_airport_rejects_a_non_provider_document(self):
-        self.download_document = b"proxies: []\n"
+    def test_update_airport_rejects_an_empty_download_without_replacing(self):
+        self.download_document = b""
 
-        with self.assertRaisesRegex(ServiceError, "airport_update_failed"):
+        with self.assertRaises(ServiceError) as caught:
             self.service.update_airport("https://airport.example/empty")
 
+        # Empty bytes never reach the stable file; the store's non-empty
+        # guarantee is a file-safety invariant, not content validation.
+        self.assertEqual(caught.exception.code, "airport_provider_invalid")
         self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
         self.assertEqual(self.replaced_documents, [])
 
@@ -461,7 +450,7 @@ class ServiceTests(unittest.TestCase):
         new_provider_urls = {call[1].url for call in self.generator_calls if call[0]} - old_provider_urls
         self.assertEqual(len(new_provider_urls), 1)
         self.assertIn(token(b"r", "PQRSTU"), next(iter(new_provider_urls)))
-        self.assertIn("AmyTelecom-Provider.yaml", next(iter(new_provider_urls)))
+        self.assertIn("AmyTelecom.yaml", next(iter(new_provider_urls)))
         self.assertEqual(len(rotated["urls"]), 2)
 
     def test_member_rotation_changes_routes_without_touching_provider_bytes(self):

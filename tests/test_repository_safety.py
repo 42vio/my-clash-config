@@ -172,7 +172,10 @@ PROJECT_USE_DOCUMENTS = (
 # Removed business names may survive only in the development-history
 # documents under docs/superpowers/, never in active runtime code,
 # templates, tests, configuration, deployment assets, or the four
-# project-use manuals.
+# project-use manuals.  The published airport file AmyTelecom.yaml is a
+# current, sanctioned name and is deliberately absent here; the public
+# templates stay free of every AmyTelecom reference through the dedicated
+# template assertions below.
 LEGACY_BUSINESS_REFERENCES = (
     "compat-office",
     "compat-universal",
@@ -180,7 +183,6 @@ LEGACY_BUSINESS_REFERENCES = (
     "Clash-Compat-Office.yaml",
     "Clash-Compat-Universal.yaml",
     "Clash-Balance-Office.yaml",
-    "AmyTelecom.yaml",
     "private/home.yaml",
 )
 

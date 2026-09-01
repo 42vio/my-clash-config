@@ -16,7 +16,7 @@ PROFILE_TITLES = MappingProxyType({
     "compat": "Clash-Compat",
     "balance": "Clash-Balance",
 })
-AIRPORT_FILENAME = "AmyTelecom-Provider.yaml"
+AIRPORT_FILENAME = "AmyTelecom.yaml"
 
 
 @dataclass(frozen=True)

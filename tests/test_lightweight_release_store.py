@@ -974,7 +974,7 @@ class ReleaseArtifactMatrixTests(unittest.TestCase):
     def test_verify_release_rejects_an_injected_provider_file(self):
         release = self.prepare_owner()
         public_release = release.public_paths["compat"].parent
-        injected = public_release / "AmyTelecom-Provider.yaml"
+        injected = public_release / "AmyTelecom.yaml"
         injected.write_bytes(b"proxies: []\n")
         os.chmod(injected, 0o640)
         os.chown(injected, -1, os.getegid())

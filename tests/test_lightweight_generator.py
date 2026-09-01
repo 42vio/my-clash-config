@@ -10,7 +10,7 @@ from clash_sub.generator import _compose_variant, render_user_bundle
 from clash_sub.yaml_rt import load_round_trip
 
 
-PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom-Provider.yaml"
+PROVIDER_URL = "https://sub.example.test:443/s/owner-token/AmyTelecom.yaml"
 
 BASE_COMPAT = """# compat shared comment
 dns:

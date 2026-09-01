@@ -36,8 +36,8 @@ def fetch_xui_proxies(url, max_bytes, opener=None):
 def download_airport_document(url, max_bytes, opener=None):
     """Fetch an HTTPS airport body and return its exact bytes unchanged.
 
-    The document is parsed only far enough to confirm a non-empty proxy
-    list; comments, formatting, and ordering survive for publication.
+    The body is never parsed or converted: any non-empty response within
+    the transport limits publishes verbatim, byte for byte.
     """
     if not _valid_airport_url(url):
         raise SourceError("airport_url_invalid")
@@ -62,27 +62,14 @@ def _fetch_document(url, max_bytes, opener):
             body = response.read(max_bytes + 1)
         if not isinstance(body, bytes) or len(body) > max_bytes:
             raise SourceError("airport_document_too_large")
-        _require_proxy_document(body)
+        if not body:
+            raise SourceError("airport_download_failed")
         return body
     except SourceError:
         raise
     except Exception:
         pass
     raise SourceError("airport_download_failed")
-
-
-def _require_proxy_document(body):
-    try:
-        document = yaml.safe_load(body)
-        valid = (
-            isinstance(document, Mapping)
-            and isinstance(document.get("proxies"), list)
-            and bool(document["proxies"])
-        )
-    except (TypeError, ValueError, yaml.YAMLError, UnicodeError, RecursionError):
-        raise SourceError("airport_document_invalid") from None
-    if not valid:
-        raise SourceError("airport_document_invalid")
 
 
 def load_proxy_snapshot(path):
