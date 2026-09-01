@@ -941,6 +941,57 @@ class CertificatePhaseTests(unittest.TestCase):
             installer.issue_certificate("example.com", "token")
         self.assertFalse(any(call["argv"][:1] == ["tar"] for call in self.runner_calls))
 
+    def _installer_with_existing_acme(self):
+        acme = self.paths.acme_home / "acme.sh"
+        acme.parent.mkdir(parents=True, exist_ok=True)
+        acme.write_text("#!/bin/sh\n", encoding="utf-8")
+        return self._installer()
+
+    def test_accepts_acme_skip_exit_code_when_cert_still_valid(self):
+        installer = self._installer_with_existing_acme()
+        acme = str(self.paths.acme_home / "acme.sh")
+
+        def runner(arguments, **_):
+            self.runner_calls.append({"argv": list(arguments), "env": None})
+            if arguments[:1] == [acme] and "--install-cert" in arguments:
+                self.paths.fullchain().parent.mkdir(parents=True, exist_ok=True)
+                self.paths.fullchain().write_text("CERT", encoding="ascii")
+                self.paths.privkey().write_text("KEY", encoding="ascii")
+                return subprocess.CompletedProcess(list(arguments), 0)
+            if arguments[:1] == [acme] and "--issue" in arguments:
+                # acme.sh exits 2 when the cert exists and is not due for renewal.
+                return subprocess.CompletedProcess(list(arguments), 2)
+            return subprocess.CompletedProcess(list(arguments), 0)
+
+        installer.runner = runner
+        installer.issue_certificate("dom.example", "cf-token")
+
+        self.assertTrue(
+            any("--issue" in call["argv"] for call in self.runner_calls),
+            "--issue must still be invoked",
+        )
+        self.assertTrue(
+            any("--install-cert" in call["argv"] for call in self.runner_calls),
+            "existing cert must still be installed",
+        )
+        self.assertEqual(self.paths.fullchain().read_text(encoding="ascii"), "CERT")
+        state = load_install_state(self.root / "private" / "install-state.json")
+        self.assertIn("certificate", state.phases_done)
+
+    def test_issue_command_failure_still_raises(self):
+        installer = self._installer_with_existing_acme()
+        acme = str(self.paths.acme_home / "acme.sh")
+
+        def runner(arguments, **_):
+            self.runner_calls.append({"argv": list(arguments), "env": None})
+            if arguments[:1] == [acme] and "--issue" in arguments:
+                return subprocess.CompletedProcess(list(arguments), 1)
+            return subprocess.CompletedProcess(list(arguments), 0)
+
+        installer.runner = runner
+        with self.assertRaisesRegex(InstallerError, "command_failed"):
+            installer.issue_certificate("dom.example", "cf-token")
+
 
 class NginxActivationPhaseTests(unittest.TestCase):
     def setUp(self):

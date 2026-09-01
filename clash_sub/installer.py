@@ -614,6 +614,9 @@ class Installer:
             source = bootstrap.parent / "acme.sh-3.1.4" / "acme.sh"
             self._run(["sh", str(source), "--install", "--home", str(self.paths.acme_home)])
         environment = {"CF_Token": cf_token}
+        # acme.sh --issue exits 2 when the cert already exists and is not due
+        # for renewal ("Skipping. Next renewal time is ..."); the existing
+        # cert is still installed via --install-cert below.
         self._run(
             [
                 str(acme),
@@ -632,6 +635,7 @@ class Installer:
                 str(self.paths.acme_home),
             ],
             env=environment,
+            allowed_exit_codes=(0, 2),
         )
         self.paths.ssl_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.paths.ssl_dir, 0o700)
@@ -1120,7 +1124,7 @@ class Installer:
             if Path(temporary).exists():
                 Path(temporary).unlink(missing_ok=True)
 
-    def _run(self, arguments, env=None):
+    def _run(self, arguments, env=None, allowed_exit_codes=(0,)):
         try:
             result = self.runner(
                 list(arguments),
@@ -1133,7 +1137,7 @@ class Installer:
             )
         except Exception:
             raise InstallerError("command_failed") from None
-        if result.returncode != 0:
+        if result.returncode not in allowed_exit_codes:
             raise InstallerError("command_failed")
         return result
 
