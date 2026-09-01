@@ -22,6 +22,7 @@ from clash_sub.domain import (
     XuiSnapshot,
 )
 from clash_sub.state import StateError
+from clash_sub.sources import SourceError
 
 try:
     from clash_sub.service import ClashSubService, ServiceError, _OperationLock
@@ -418,10 +419,25 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ServiceError) as caught:
             self.service.update_airport(secret)
 
-        self.assertEqual(caught.exception.code, "airport_update_failed")
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
         self.assertNotIn(secret, str(caught.exception))
         self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
-        self.assertEqual(self.service.status()["last_errors"], ("airport_update_failed",))
+        self.assertEqual(self.service.status()["last_errors"], ("airport_provider_write_failed",))
+
+    def test_update_airport_preserves_a_sanitized_source_failure_code(self):
+        secret = "https://airport.example/temporary-secret"
+        self.service._download = MagicMock(
+            side_effect=SourceError("airport_download_failed")
+        )
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.update_airport(secret)
+
+        self.assertEqual(caught.exception.code, "airport_download_failed")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(
+            self.service.status()["last_errors"], ("airport_download_failed",)
+        )
 
     def test_update_airport_rejects_a_non_provider_document(self):
         self.download_document = b"proxies: []\n"

@@ -185,7 +185,17 @@ systemctl status clash-sub-traffic.timer clash-sub-traffic.service
 
    `clash-sub-recover.service` 也会在启动时于 Nginx 之前处理这类激活日志；手动恢复成功后再决定是否重试 `sync`。
 
-4. `airport_provider_required` 表示稳定 provider 缺失或无效：按[机场更新](#机场更新)重新导入订阅，再 `sync`。机场更新失败则保留原 provider 排查，不要反复粘贴地址或把地址发送到日志。
+4. `airport_provider_required` 表示稳定 provider 缺失或无效：按[机场更新](#机场更新)重新导入订阅，再 `sync`。机场更新失败会保留原 provider，并给出不含订阅地址的分类错误码：
+
+   - `airport_url_invalid`：不是允许的 HTTPS 地址；
+   - `airport_redirect_invalid`：重定向超过三次或转向非 HTTPS 地址；
+   - `airport_download_failed`：网络、TLS 证书或上游响应失败；
+   - `airport_document_invalid`：返回内容不是顶层含非空 `proxies:` 的 Clash YAML；
+   - `airport_document_too_large`：返回内容超过允许大小；
+   - `airport_provider_invalid`：Mihomo 无法把候选内容作为文件 provider 装载，或现有 provider 权限/类型不合规；
+   - `airport_provider_write_failed`：服务器无法原子写入 provider 文件。
+
+   不要反复粘贴地址或把地址发送到日志；只记录上述错误码。
 
 5. 本地模板变更后失败时，回到开发 Mac 运行模板同步与两种密钥扫描；不要从服务器或日志取回私密内容。
 

@@ -40,15 +40,15 @@ def download_airport_document(url, max_bytes, opener=None):
     list; comments, formatting, and ordering survive for publication.
     """
     if not _valid_airport_url(url):
-        _source_fail()
+        raise SourceError("airport_url_invalid")
     return _fetch_document(url, max_bytes, opener)
 
 
 def _fetch_document(url, max_bytes, opener):
     if type(max_bytes) is not int or max_bytes <= 0:
-        _source_fail()
-    request = Request(url, headers={"Accept": "application/yaml"})
+        raise SourceError("airport_download_failed")
     try:
+        request = Request(url, headers={"Accept": "application/yaml"})
         active_opener = opener
         if active_opener is None:
             active_opener = urllib.request.build_opener(
@@ -58,17 +58,17 @@ def _fetch_document(url, max_bytes, opener):
         with response:
             final_url = response.geturl()
             if not _valid_airport_url(final_url):
-                _source_fail()
+                raise SourceError("airport_redirect_invalid")
             body = response.read(max_bytes + 1)
         if not isinstance(body, bytes) or len(body) > max_bytes:
-            _source_fail()
+            raise SourceError("airport_document_too_large")
         _require_proxy_document(body)
         return body
     except SourceError:
         raise
     except Exception:
         pass
-    raise SourceError(_SOURCE_ERROR)
+    raise SourceError("airport_download_failed")
 
 
 def _require_proxy_document(body):
@@ -80,9 +80,9 @@ def _require_proxy_document(body):
             and bool(document["proxies"])
         )
     except (TypeError, ValueError, yaml.YAMLError, UnicodeError, RecursionError):
-        raise SourceError(_SOURCE_ERROR) from None
+        raise SourceError("airport_document_invalid") from None
     if not valid:
-        _source_fail()
+        raise SourceError("airport_document_invalid")
 
 
 def load_proxy_snapshot(path):
@@ -215,7 +215,7 @@ class _HttpsRedirectHandler(HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, new_url):
         self._redirects += 1
         if self._redirects > _MAX_AIRPORT_REDIRECTS or not _valid_airport_url(new_url):
-            _source_fail()
+            raise SourceError("airport_redirect_invalid")
         return super().redirect_request(
             request, response, code, message, headers, new_url
         )

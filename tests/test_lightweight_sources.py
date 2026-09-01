@@ -108,10 +108,24 @@ class SourceFetchingTests(unittest.TestCase):
             download_airport_document(
                 "https://airport.example/private-token", 1024, opener=self.opener_for(response)
             )
-        with self.assertRaises(SourceError):
+        with self.assertRaisesRegex(SourceError, "airport_url_invalid"):
             download_airport_document(
                 "http://airport.example/private-token", 1024, opener=self.opener_for(response)
             )
+
+    def test_airport_reports_download_and_document_failures_without_the_url(self):
+        secret = "https://airport.example/private-token"
+        with self.assertRaisesRegex(SourceError, "airport_download_failed") as download:
+            download_airport_document(secret, 1024, opener=self.failing_opener)
+        with self.assertRaisesRegex(SourceError, "airport_document_invalid") as document:
+            download_airport_document(
+                secret,
+                1024,
+                opener=self.opener_for(FakeResponse(b"proxies: []\n", secret)),
+            )
+
+        self.assertNotIn(secret, str(download.exception))
+        self.assertNotIn(secret, str(document.exception))
 
     def test_airport_download_preserves_the_exact_response_bytes(self):
         body = airport_document()

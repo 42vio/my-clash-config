@@ -10,8 +10,9 @@ from pathlib import Path
 
 import yaml
 
+from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
-from clash_sub.sources import normalize_xui_endpoints
+from clash_sub.sources import SourceError, normalize_xui_endpoints
 from clash_sub.state import StateError
 
 class ServiceError(RuntimeError):
@@ -91,6 +92,12 @@ class ClashSubService:
             try:
                 document=self._download(url,self.config.max_source_bytes)
                 self._airport.replace(document,self._validate_airport_candidate)
+            except SourceError as error:
+                code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
+            except AirportStoreError as error:
+                code=error.code if error.code in {"airport_provider_invalid","airport_provider_write_failed"} else "airport_update_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
             except Exception:
                 self._journal(errors=("airport_update_failed",)); raise ServiceError("airport_update_failed") from None
             self._journal(self._clock(),())

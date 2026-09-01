@@ -510,6 +510,7 @@ def _menu_user_id(stdin, stdout, stderr):
 
 def _prompt(stdin, stdout, message):
     stdout.write(message)
+    stdout.flush()
     try:
         line = stdin.readline()
     except (EOFError, KeyboardInterrupt):

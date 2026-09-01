@@ -498,7 +498,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
         harness.airport_body = old_body.replace(b"airport-old", b"airport-new")
         harness.runner.fail_mihomo = True
-        with self.assertRaisesRegex(ServiceError, "airport_update_failed") as caught:
+        with self.assertRaisesRegex(ServiceError, "airport_provider_invalid") as caught:
             harness.import_airport(secret)
 
         self.assertNotIn(secret, str(caught.exception))

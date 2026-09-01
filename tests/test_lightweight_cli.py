@@ -7,7 +7,7 @@ from collections import namedtuple
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from clash_sub import manage
 from clash_sub import template_sync
@@ -22,6 +22,7 @@ from clash_sub.cli import (
     USER_MENU,
     _call,
     _parser,
+    _prompt,
     _suggest_owner_email,
     main,
 )
@@ -178,6 +179,13 @@ class LightweightCliTests(unittest.TestCase):
         signature = inspect.signature(main)
         self.assertEqual(tuple(signature.parameters), ("argv", "stdin", "stdout", "stderr", "service_factory"))
         self.assertTrue(all(parameter.default is None for parameter in signature.parameters.values()))
+
+    def test_prompt_is_flushed_before_waiting_for_input(self):
+        stdout = MagicMock()
+
+        self.assertEqual(_prompt(io.StringIO("value\n"), stdout, "Prompt: "), "value")
+
+        self.assertEqual(stdout.method_calls[:2], [call.write("Prompt: "), call.flush()])
 
     def test_no_arguments_shows_the_full_menu_and_exits_on_eof(self):
         code, stdout, stderr = run_cli(None, self.service)
