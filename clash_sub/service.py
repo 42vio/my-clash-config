@@ -187,7 +187,7 @@ class ClashSubService:
             for variant,text in bundle.items():
                 document=yaml.safe_load(text)
                 provider=document["proxy-providers"]["AmyTelecom"]
-                provider.clear(); provider.update({"type":"file","path":str(provider_path)})
+                provider.clear(); provider.update({"type":"file","path":"./provider.yaml"})
                 candidate=directory/(variant+".yaml"); candidate.write_text(yaml.safe_dump(document,sort_keys=False),encoding="utf-8")
                 self._mihomo.validate(candidate)
     def _require_airport(self):

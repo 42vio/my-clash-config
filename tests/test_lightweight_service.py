@@ -334,7 +334,7 @@ class ServiceTests(unittest.TestCase):
                     return
                 document = yaml.safe_load(candidate.read_text(encoding="utf-8"))
                 provider = document["proxy-providers"]["AmyTelecom"]
-                provider_file = Path(provider["path"])
+                provider_file = candidate.parent / provider["path"]
                 seen.append((candidate, provider, provider_file, provider_file.read_text(encoding="utf-8"), candidate.read_text(encoding="utf-8"), document["proxy-groups"][0]["use"]))
 
         self.service._mihomo = Validator()
@@ -348,6 +348,7 @@ class ServiceTests(unittest.TestCase):
             self.assertNotIn("/releases/", str(candidate))
             self.assertNotEqual(candidate, self.airport_file)
             self.assertEqual(provider["type"], "file")
+            self.assertEqual(provider["path"], "./provider.yaml")
             self.assertNotIn("url", provider)
             self.assertEqual(provider_use, ["AmyTelecom"])
             self.assertNotEqual(provider_file, self.airport_file)
