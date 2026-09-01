@@ -1,3 +1,4 @@
+import configparser
 import re
 import subprocess
 import unittest
@@ -12,6 +13,9 @@ TRAFFIC_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-traffic.service"
 TRAFFIC_TIMER = ROOT / "deploy" / "systemd" / "clash-sub-traffic.timer"
 RECOVERY_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-recover.service"
 RECOVERY_DROP_IN = ROOT / "deploy" / "systemd" / "nginx.service.d" / "clash-sub-recover.conf"
+METADATA_SOCKET = ROOT / "deploy" / "systemd" / "clash-sub-metadata.socket"
+METADATA_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-metadata.service"
+METADATA_TMPFILES = ROOT / "deploy" / "systemd" / "tmpfiles.d" / "clash-sub-metadata.conf"
 REQUIREMENTS = ROOT / "requirements.txt"
 
 
@@ -200,6 +204,90 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertEqual(_unit_value(timer, "Persistent"), ["true"])
         self.assertIn("WantedBy=timers.target", timer)
         self.assertNotRegex(timer, r"\b(?:sync|airport|generate|render)\b")
+
+    def test_metadata_socket_unit_fixes_one_group_readable_unix_socket(self):
+        text = METADATA_SOCKET.read_text(encoding="utf-8")
+        self.assertIn("[Socket]", text)
+        self.assertEqual(
+            _unit_value(text, "ListenStream"), ["/run/clash-sub/metadata.sock"]
+        )
+        # The parent directory belongs to the tmpfiles rule (see below):
+        # the systemd runtime-directory mechanism cannot own /run/clash-sub
+        # as root:www-data, and the two mechanisms must not fight over it.
+        self.assertEqual(_unit_value(text, "RuntimeDirectory"), [])
+        self.assertEqual(_unit_value(text, "RuntimeDirectoryMode"), [])
+        self.assertEqual(_unit_value(text, "SocketUser"), ["root"])
+        self.assertEqual(_unit_value(text, "SocketGroup"), ["www-data"])
+        self.assertEqual(_unit_value(text, "SocketMode"), ["0660"])
+        self.assertEqual(_unit_value(text, "Accept"), ["no"])
+        self.assertIn("WantedBy=sockets.target", text)
+        # No datagram or TCP-style listener may exist anywhere in the unit.
+        self.assertNotIn("ListenDatagram", text)
+        self.assertNotIn("ListenSequentialPacket", text)
+        self.assertNotRegex(text, r"Listen\w+=\s*(?:[0-9]{1,3}\.){3}[0-9]{1,3}:\d+")
+        parser = configparser.ConfigParser()
+        parser.read_string(text)
+        self.assertEqual(set(parser.sections()), {"Unit", "Socket", "Install"})
+
+    def test_metadata_runtime_directory_contract_comes_from_one_tmpfiles_rule(self):
+        text = METADATA_TMPFILES.read_text(encoding="utf-8")
+        rules = [
+            line
+            for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(rules, ["d /run/clash-sub 0750 root www-data -"])
+        fields = rules[0].split()
+        self.assertEqual(
+            fields,
+            ["d", "/run/clash-sub", "0750", "root", "www-data", "-"],
+        )
+        # The rule is the single source of the parent-directory contract
+        # and must cover exactly the fixed socket path's parent.
+        socket_text = METADATA_SOCKET.read_text(encoding="utf-8")
+        self.assertEqual(
+            str(Path(_unit_value(socket_text, "ListenStream")[0]).parent),
+            fields[1],
+        )
+        # The installer (Task 7) owns shipping this file to /etc/tmpfiles.d/.
+        self.assertIn("/etc/tmpfiles.d/", text)
+
+    def test_metadata_service_unit_is_socket_activated_and_tightly_hardened(self):
+        text = METADATA_SERVICE.read_text(encoding="utf-8")
+        self.assertIn("[Service]", text)
+        required = {
+            "Type": "simple",
+            "ExecStart": "/usr/local/bin/clash-sub metadata-serve",
+            "Sockets": "clash-sub-metadata.socket",
+            "User": "root",
+            "Group": "root",
+            "UMask": "0077",
+            "NoNewPrivileges": "true",
+            "PrivateNetwork": "true",
+            "PrivateTmp": "true",
+            "ProtectSystem": "strict",
+            "ProtectHome": "true",
+            "PrivateDevices": "true",
+            "ProtectKernelTunables": "true",
+            "ProtectKernelModules": "true",
+            "ProtectControlGroups": "true",
+            "RestrictSUIDSGID": "true",
+            "LockPersonality": "true",
+            "RestrictAddressFamilies": "AF_UNIX",
+            "ReadOnlyPaths": "/etc/x-ui",
+            "ReadWritePaths": "/var/lib/clash-sub/private",
+        }
+        for key, value in required.items():
+            with self.subTest(key=key):
+                self.assertEqual(_unit_value(text, key), [value])
+        # Socket-activated only: the service itself never listens and is
+        # never started directly at boot.
+        self.assertNotIn("ListenStream", text)
+        self.assertNotIn("ListenDatagram", text)
+        self.assertNotIn("[Install]", text)
+        parser = configparser.ConfigParser()
+        parser.read_string(text)
+        self.assertEqual(set(parser.sections()), {"Unit", "Service"})
 
     def test_recovery_oneshot_runs_before_nginx_without_adding_a_resident_service(self):
         service = RECOVERY_SERVICE.read_text(encoding="utf-8")

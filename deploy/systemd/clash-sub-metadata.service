@@ -1,0 +1,24 @@
+[Unit]
+Description=Serve Clash subscription traffic metadata on demand
+
+[Service]
+Type=simple
+Sockets=clash-sub-metadata.socket
+ExecStart=/usr/local/bin/clash-sub metadata-serve
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/etc/x-ui
+ReadWritePaths=/var/lib/clash-sub/private

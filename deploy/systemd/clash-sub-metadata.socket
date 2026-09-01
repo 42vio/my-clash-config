@@ -1,0 +1,17 @@
+[Unit]
+Description=Clash subscription metadata activation socket
+
+[Socket]
+# /run/clash-sub (0750 root:www-data) is created by the tmpfiles rule
+# deploy/systemd/tmpfiles.d/clash-sub-metadata.conf, which the installer
+# ships as /etc/tmpfiles.d/clash-sub-metadata.conf: SocketGroup only owns
+# the socket node, and RuntimeDirectory cannot own the directory as
+# root:www-data.
+ListenStream=/run/clash-sub/metadata.sock
+SocketUser=root
+SocketGroup=www-data
+SocketMode=0660
+Accept=no
+
+[Install]
+WantedBy=sockets.target

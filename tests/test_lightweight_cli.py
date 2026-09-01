@@ -1647,3 +1647,59 @@ class ServiceCommandMessageTests(unittest.TestCase):
         self.assertEqual(code, 0)
         service.reinitialize_owner.assert_called_once_with(7)
         self.assertEqual(stdout.getvalue(), "所有者已重新初始化；请执行 sync。\n")
+
+
+class MetadataServeCommandTests(unittest.TestCase):
+    """The internal systemd entry: wired, hidden from the menus, injectable."""
+
+    def test_metadata_serve_is_a_parser_command_absent_from_every_menu(self):
+        parsed = _parser().parse_args(["metadata-serve"])
+
+        self.assertEqual(parsed.command, "metadata-serve")
+        menus = MENU + AIRPORT_MENU + MAINTENANCE_MENU + CERT_MENU + BACKUP_MENU + USER_MENU
+        self.assertNotIn("metadata-serve", menus)
+
+    def test_metadata_serve_builds_and_serves_through_the_injected_seam(self):
+        constructed = []
+        listener = object()
+        store = object()
+        served = []
+
+        with patch(
+            "clash_sub.cli.metadata_server.listener_from_environment",
+            return_value=listener,
+        ) as listener_factory, patch(
+            "clash_sub.cli._default_metadata_store", return_value=store
+        ) as build_store, patch(
+            "clash_sub.cli.metadata_server.serve",
+            side_effect=lambda store, listener: served.append((store, listener)),
+        ):
+            code = main(
+                ["metadata-serve"],
+                stdin=io.StringIO(),
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+                service_factory=lambda: constructed.append(object()),
+            )
+
+        self.assertEqual(code, 0)
+        listener_factory.assert_called_once_with()
+        build_store.assert_called_once_with()
+        self.assertEqual(served, [(store, listener)])
+        self.assertEqual(constructed, [])
+
+    def test_metadata_serve_failure_reports_one_stable_code_without_details(self):
+        with patch(
+            "clash_sub.cli.metadata_server.listener_from_environment",
+            side_effect=RuntimeError("boom http://secret"),
+        ):
+            stderr = io.StringIO()
+            code = main(
+                ["metadata-serve"],
+                stdin=io.StringIO(),
+                stdout=io.StringIO(),
+                stderr=stderr,
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stderr.getvalue(), "操作失败（错误代码：metadata_serve_failed）\n")

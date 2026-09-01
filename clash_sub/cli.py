@@ -11,11 +11,13 @@ from getpass import getpass
 from pathlib import Path
 
 from clash_sub import manage
+from clash_sub import metadata_server
 from clash_sub import template_sync
 from clash_sub.config import load_config
 from clash_sub.installer import Installer, InstallerError
+from clash_sub.metadata import TrafficMetadataStore
 from clash_sub.nginx import recover_runtime
-from clash_sub.runtime import build_service, repo_root as default_repo_root
+from clash_sub.runtime import build_service, config_path, repo_root as default_repo_root
 from clash_sub.service import ServiceError, _OperationLock
 
 
@@ -568,6 +570,8 @@ def _parser():
     reinitialize = commands.add_parser("reinitialize-owner", add_help=False)
     reinitialize.add_argument("user")
     commands.add_parser("recover", add_help=False)
+    # Internal systemd entry (clash-sub-metadata.service); never in menus.
+    commands.add_parser("metadata-serve", add_help=False)
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
     template = commands.add_parser("template-sync", add_help=False)
@@ -584,6 +588,8 @@ def _parser():
 
 def _run_command(parsed, stdout, stderr, factory):
     command = parsed.command
+    if command == "metadata-serve":
+        return _metadata_serve(stderr)
     if command in {"history", "rollback", "rotate-link", "reinitialize-owner"}:
         user = _user_id(parsed.user) if parsed.user is not None else None
         if user is None and not (command == "rollback" and parsed.install):
@@ -895,6 +901,27 @@ def _recover(stdout, stderr):
         return _error(stderr, "runtime_recovery_failed", 1)
     stdout.write("运行时恢复已完成。\n")
     return 0
+
+
+def _metadata_serve(stderr, *, listener_factory=None, build_store=None, run_server=None):
+    # Internal systemd entry: the listener is the descriptor systemd passed,
+    # and the store is the traffic metadata cache alone — never the full
+    # ClashSubService (no nginx, mihomo, or YAML dependencies).
+    listener_factory = listener_factory or metadata_server.listener_from_environment
+    build_store = build_store or _default_metadata_store
+    run_server = run_server or metadata_server.serve
+    try:
+        listener = listener_factory()
+        store = build_store()
+        run_server(store, listener)
+    except Exception:
+        return _error(stderr, "metadata_serve_failed", 1)
+    return 0
+
+
+def _default_metadata_store():
+    root = default_repo_root()
+    return TrafficMetadataStore(load_config(config_path(root), root))
 
 
 def _managed(stdout, stderr, action, success_output=None):

@@ -1,7 +1,12 @@
 """On-demand subscription traffic metadata cache."""
 
+import contextlib
+import http.client
+import io
+import itertools
 import json
 import os
+import socket
 import stat
 import threading
 import time
@@ -12,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from clash_sub import metadata
+from clash_sub import metadata_server
 from clash_sub.airport_source import (
     AIRPORT_SOURCE_FILENAME,
     AirportSource,
@@ -531,6 +537,358 @@ class AirportTrafficTests(StoreTestCase):
         path.write_bytes(b"{not json")
         os.chmod(path, 0o600)
         self.assertIsNone(self.make_store(RecordingReader()).airport_traffic())
+
+
+class FakeMetadataStore:
+    """Store stub returning fixed traffic and recording every query."""
+
+    def __init__(self, profile_traffic=None, airport_traffic=None):
+        self.profile_traffic = profile_traffic
+        self.airport_traffic_value = airport_traffic
+        self.calls = []
+
+    def traffic_for(self, client_id):
+        self.calls.append(("profile", client_id))
+        return self.profile_traffic
+
+    def airport_traffic(self):
+        self.calls.append(("airport",))
+        return self.airport_traffic_value
+
+
+class RaisingMetadataStore:
+    def traffic_for(self, client_id):
+        raise RuntimeError("metadata store failure")
+
+    def airport_traffic(self):
+        raise RuntimeError("metadata store failure")
+
+
+class _BytesSocket:
+    """Minimal socket stand-in feeding canned bytes to HTTPResponse."""
+
+    def __init__(self, data):
+        self._file = io.BytesIO(data)
+
+    def makefile(self, *args, **kwargs):
+        return self._file
+
+
+def parse_response(raw, read_body=True):
+    response = http.client.HTTPResponse(_BytesSocket(raw))
+    response.begin()
+    return response, (response.read() if read_body else b"")
+
+
+class MetadataServerTestCase(unittest.TestCase):
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self._socket_count = itertools.count()
+
+    def start_server(self, store):
+        self.socket_path = self.root / ("metadata-%d.sock" % next(self._socket_count))
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.socket_path))
+        listener.listen(16)
+        server = metadata_server.MetadataSocketServer(store, listener)
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.05}
+        )
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def exchange(self, payload):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect(str(self.socket_path))
+            client.sendall(payload)
+            chunks = []
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks)
+
+    def send(self, method, target, headers=()):
+        lines = ["%s %s HTTP/1.1" % (method, target)]
+        lines.extend(headers)
+        return self.exchange(("\r\n".join(lines) + "\r\n\r\n").encode("utf-8"))
+
+
+class ProfileMetadataTests(MetadataServerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.traffic = Traffic(upload=112233, download=99887766, total=123456789, expiry_ms=55)
+        self.store = FakeMetadataStore(profile_traffic=self.traffic)
+        self.start_server(self.store)
+
+    def test_both_profile_files_map_to_their_fixed_internal_locations(self):
+        cases = (
+            ("/profile/7/Clash-Compat.yaml", "/protected/Clash-Compat.yaml"),
+            ("/profile/7/Clash-Balance.yaml", "/protected/Clash-Balance.yaml"),
+        )
+        for target, internal in cases:
+            with self.subTest(target=target):
+                response, body = parse_response(
+                    self.send("GET", target, ("Host: nginx",))
+                )
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("X-Accel-Redirect"), internal)
+                self.assertEqual(
+                    response.getheader("Subscription-Userinfo"),
+                    "upload=112233; download=99887766; total=123456789; expire=55",
+                )
+                self.assertEqual(body, b"")
+        self.assertEqual(self.store.calls, [("profile", 7), ("profile", 7)])
+
+    def test_the_client_id_reaches_the_store_as_a_canonical_integer(self):
+        parse_response(self.send("GET", "/profile/42/Clash-Compat.yaml", ("Host: nginx",)))
+
+        self.assertEqual(self.store.calls, [("profile", 42)])
+
+
+class AirportMetadataTests(MetadataServerTestCase):
+    def test_the_airport_file_maps_to_the_provider_location(self):
+        traffic = Traffic(upload=1, download=2, total=3, expiry_ms=4)
+        store = FakeMetadataStore(airport_traffic=traffic)
+        self.start_server(store)
+
+        response, body = parse_response(
+            self.send("GET", "/airport/AmyTelecom.yaml", ("Host: nginx",))
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.getheader("X-Accel-Redirect"), "/protected/provider/AmyTelecom.yaml"
+        )
+        self.assertEqual(
+            response.getheader("Subscription-Userinfo"),
+            "upload=1; download=2; total=3; expire=4",
+        )
+        self.assertEqual(body, b"")
+        self.assertEqual(store.calls, [("airport",)])
+
+
+class MetadataWithoutTrafficTests(MetadataServerTestCase):
+    CASES = (
+        ("/profile/3/Clash-Compat.yaml", "/protected/Clash-Compat.yaml"),
+        ("/airport/AmyTelecom.yaml", "/protected/provider/AmyTelecom.yaml"),
+    )
+
+    def test_missing_traffic_still_redirects_without_the_userinfo_header(self):
+        store = FakeMetadataStore()
+        self.start_server(store)
+
+        for target, internal in self.CASES:
+            with self.subTest(target=target):
+                response, body = parse_response(
+                    self.send("GET", target, ("Host: nginx",))
+                )
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("X-Accel-Redirect"), internal)
+                self.assertIsNone(response.getheader("Subscription-Userinfo"))
+                self.assertEqual(body, b"")
+        self.assertEqual(
+            store.calls, [("profile", 3), ("airport",)]
+        )
+
+    def test_store_failure_degrades_to_a_redirect_without_failing_the_file(self):
+        self.start_server(RaisingMetadataStore())
+
+        for target, internal in self.CASES:
+            with self.subTest(target=target):
+                response, body = parse_response(
+                    self.send("GET", target, ("Host: nginx",))
+                )
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("X-Accel-Redirect"), internal)
+                self.assertIsNone(response.getheader("Subscription-Userinfo"))
+                self.assertEqual(body, b"")
+
+
+class MetadataRejectionTests(MetadataServerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.store = FakeMetadataStore(
+            profile_traffic=Traffic(upload=1, download=2, total=3, expiry_ms=4),
+            airport_traffic=Traffic(upload=1, download=2, total=3, expiry_ms=4),
+        )
+        self.start_server(self.store)
+
+    def test_every_unrecognized_request_gets_the_same_fixed_404(self):
+        cases = (
+            # (method, target, headers, fragments that must never leak back)
+            ("GET", "/profile/3/Clash-Compat.yaml?token=SECRET", ("Host: nginx",), ("SECRET", "token=")),
+            ("GET", "/profile/../../etc/passwd", ("Host: nginx",), ("etc/passwd", "../")),
+            ("GET", "/profile/%2e%2e/Clash-Compat.yaml", (), ("%2e",)),
+            ("GET", "/profile/3/Clash-Comp%0aat.yaml", (), ("%0a", "Comp%0a")),
+            ("POST", "/profile/3/Clash-Compat.yaml", ("Host: nginx", "Content-Length: 0"), ("POST",)),
+            ("HEAD", "/airport/AmyTelecom.yaml", ("Host: nginx",), ("HEAD",)),
+            ("PUT", "/profile/3/Clash-Compat.yaml", ("Host: nginx", "Content-Length: 0"), ("PUT",)),
+            ("GET", "/profile/3/Clash-Meta.yaml", (), ("Clash-Meta",)),
+            ("GET", "/profile/three/Clash-Compat.yaml", (), ("three",)),
+            ("GET", "/profile/03/Clash-Compat.yaml", (), ("03/Clash",)),
+            ("GET", "/profile/0/Clash-Compat.yaml", (), ("0/Clash",)),
+            ("GET", "/profile/%s/Clash-Compat.yaml" % ("9" * 20), (), ("9" * 20,)),
+            ("GET", "/profile/-3/Clash-Compat.yaml", (), ("-3",)),
+            ("GET", "/profile/3/Clash-Compat.yaml/extra", (), ("extra", "/Clash-Compat.yaml/")),
+            ("GET", "http://127.0.0.1:9/profile/3/Clash-Compat.yaml", ("Host: nginx",), ("http", "127.0.0.1")),
+            ("GET", "/Profile/3/Clash-Compat.yaml", (), ("Profile",)),
+            ("GET", "/airport/Other.yaml", (), ("Other",)),
+            ("GET", "/airport/AmyTelecom.yaml/extra", (), ("extra",)),
+            ("GET", "/airport/amytelecom.yaml", (), ("amytelecom",)),
+            ("GET", "/profile/3/clash-compat.yaml", (), ("clash-compat",)),
+            ("GET", "/", (), ("/profile",)),
+        )
+        for method, target, headers, fragments in cases:
+            with self.subTest(target=target, method=method):
+                raw = self.send(method, target, headers)
+                # HEAD responses carry the length a GET would send, but
+                # never the body itself.
+                response, body = parse_response(raw, read_body=method != "HEAD")
+
+                self.assertEqual(response.status, 404)
+                if method == "HEAD":
+                    self.assertNotIn(b"not found\n", raw)
+                else:
+                    self.assertEqual(body, b"not found\n")
+                self.assertIsNone(response.getheader("X-Accel-Redirect"))
+                self.assertIsNone(response.getheader("Subscription-Userinfo"))
+                for fragment in fragments:
+                    self.assertNotIn(fragment.encode("utf-8"), raw)
+        self.assertEqual(self.store.calls, [])
+
+    def test_an_oversized_request_line_is_rejected_with_the_fixed_404(self):
+        raw = self.exchange(b"GET /" + b"A" * 9000 + b" HTTP/1.1\r\nHost: nginx\r\n\r\n")
+        response, body = parse_response(raw)
+
+        self.assertEqual(response.status, 404)
+        self.assertEqual(body, b"not found\n")
+        self.assertNotIn(b"AAAAAA", raw)
+        self.assertEqual(self.store.calls, [])
+
+    def test_a_request_line_beyond_the_stdlib_limit_is_rejected_with_the_fixed_404(self):
+        # Over 65536 bytes the stdlib rejects the request line itself —
+        # the only path where the rejection runs before the request is
+        # parsed — and the server stops reading before the client finishes
+        # sending, so the send may hit a closed socket.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect(str(self.socket_path))
+            with contextlib.suppress(OSError):
+                client.sendall(b"GET /" + b"A" * 70000 + b" HTTP/1.1\r\nHost: nginx\r\n\r\n")
+            chunks = []
+            while True:
+                try:
+                    chunk = client.recv(4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        raw = b"".join(chunks)
+
+        response, body = parse_response(raw)
+        self.assertEqual(response.status, 404)
+        self.assertEqual(body, b"not found\n")
+        self.assertNotIn(b"AAAAAA", raw)
+        self.assertEqual(self.store.calls, [])
+
+    def test_a_truncated_request_line_is_rejected_without_echoing_it(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5)
+            client.connect(str(self.socket_path))
+            client.sendall(b"GET /profile/3/Clash-Compat.yaml")
+            client.shutdown(socket.SHUT_WR)
+            chunks = []
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        raw = b"".join(chunks)
+
+        self.assertEqual(parse_response(raw)[0].status, 404)
+        self.assertNotIn(b"Clash-Compat", raw)
+        self.assertEqual(self.store.calls, [])
+
+
+class MetadataLoggingTests(MetadataServerTestCase):
+    def test_requests_and_connection_failures_write_nothing_to_stderr(self):
+        server = self.start_server(
+            FakeMetadataStore(profile_traffic=Traffic(upload=1, download=2, total=3, expiry_ms=4))
+        )
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            response, _ = parse_response(
+                self.send("GET", "/profile/7/Clash-Compat.yaml", ("Host: nginx",))
+            )
+            self.assertEqual(response.status, 200)
+            response, _ = parse_response(self.send("GET", "/profile/../../etc/passwd"))
+            self.assertEqual(response.status, 404)
+            # A half-sent request line and an abruptly dropped connection
+            # must both stay quiet too.
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(str(self.socket_path))
+                client.sendall(b"GET /profile/7/Clash")
+                client.shutdown(socket.SHUT_WR)
+                while client.recv(4096):
+                    pass
+            dropped = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            dropped.connect(str(self.socket_path))
+            dropped.sendall(b"GET /profile/7/Cla")
+            dropped.close()
+            server.shutdown()
+            server.server_close()
+
+        self.assertEqual(captured.getvalue(), "")
+
+
+class MetadataServerContractTests(unittest.TestCase):
+    def test_handler_enforces_a_short_connection_timeout(self):
+        timeout = metadata_server.MetadataRequestHandler.timeout
+        self.assertGreaterEqual(timeout, 1)
+        self.assertLessEqual(timeout, 10)
+
+    def test_listener_helper_requires_the_exact_sd_listen_fds_contract(self):
+        received = object()
+        seen = {}
+
+        def fake_fromfd(descriptor, family, kind):
+            seen["call"] = (descriptor, family, kind)
+            return received
+
+        valid = {"LISTEN_FDS": "1", "LISTEN_PID": str(os.getpid())}
+        listener = metadata_server.listener_from_environment(valid, fromfd=fake_fromfd)
+
+        self.assertIs(listener, received)
+        self.assertEqual(seen["call"], (3, socket.AF_UNIX, socket.SOCK_STREAM))
+        for bad in (
+            {},
+            {"LISTEN_FDS": "1"},
+            {"LISTEN_PID": str(os.getpid())},
+            {"LISTEN_FDS": "2", "LISTEN_PID": str(os.getpid())},
+            {"LISTEN_FDS": "01", "LISTEN_PID": str(os.getpid())},
+            {"LISTEN_FDS": "1", "LISTEN_PID": str(os.getpid() + 1)},
+            {"LISTEN_FDS": "1 ", "LISTEN_PID": str(os.getpid())},
+        ):
+            with self.subTest(environ=bad):
+                self.assertRaises(
+                    metadata_server.MetadataServerError,
+                    metadata_server.listener_from_environment,
+                    bad,
+                    fromfd=fake_fromfd,
+                )
 
 
 if __name__ == "__main__":
