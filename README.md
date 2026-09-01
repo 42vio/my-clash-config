@@ -20,6 +20,10 @@ owner 与普通用户不通过文件名区分，由订阅令牌和服务端授�
 
 `templates/base/Clash-Compat.yaml` 是完整基础模板；生成 Balance 时以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）替换基础模板的 DNS。发布时注入各用户的 3x-ui 节点，owner 额外注入 `AmyTelecom` 机场 provider；普通用户只输出 Compat。服务器不保存任何 Home 配置，Home 只存在于本机 Clash Verge 的全局扩展脚本。
 
+## 订阅流量元数据
+
+订阅响应里的 `Subscription-Userinfo` 流量头不预写进任何配置文件：客户端请求订阅时，Nginx 把请求转发到 socket 激活的 `clash-sub-metadata.service`，服务按需读取 3x-ui 流量（五分钟缓存）与最近一次机场下载保存的流量，生成响应头；文件正文仍由 Nginx 直接发送。元数据服务不可用或超时的时候，同一份文件照常以 200 返回，只是缺少流量头，订阅本身不受影响。完整链路、缓存与降级行为见部署与运维手册。
+
 ## 本地文件
 
 - `templates/base/Clash-Compat.yaml`：Compat 完整基础模板（已去除动态节点与机场痕迹）。

@@ -39,6 +39,8 @@ proxy-providers:
 
 provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL，Clash Verge 可单独手动刷新，自动刷新间隔 7 天。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`，只通过 owner 令牌路由访问；普通用户令牌没有任何机场路由。
 
+订阅响应头（`Subscription-Userinfo` 流量头、`Profile-Update-Interval: 24`）由部署侧在请求时按需附加：模板、provider 文件与发布物从不携带流量数据，流量数字只保存在服务器私密目录的来源记录与缓存里。
+
 模板同步会在净化时移除机场在本机的痕迹：机场 provider 本体、以机场缓存文件为 `path`/`url` 的本地别名 provider、这些 provider 在策略组 `use` 与 YAML merge/锚点中的引用，以及提及该缓存文件名的注释。受影响的策略组记入 `profiles.yaml` 的机场注入列表，owner 发布时重新挂上 `AmyTelecom`。
 
 ## 注释与 YAML 结构
@@ -106,7 +108,7 @@ provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL�
 
 ## 私密数据边界
 
-`private/**`、`.env` 和生成发布物均不受跟踪。3x-ui 的实际连接数据、机场订阅、订阅令牌、域名、节点地址和认证材料只可留在对应的私密文件、受保护的服务器运行时目录或机场更新的交互式输入中；机场地址输入按当前需求可见，但不会写入项目状态或日志。
+`private/**`、`.env` 和生成发布物均不受跟踪。3x-ui 的实际连接数据、机场订阅、订阅令牌、域名、节点地址和认证材料只可留在对应的私密文件、受保护的服务器运行时目录或机场更新的交互式输入中；机场地址输入按当前需求可见，但不会写入项目状态或日志。服务器上的机场来源记录（`airport-source.json`，含订阅链接与流量数字）与流量缓存（`traffic-cache.json`）同属私密运行时数据，固定 0600，永不进入仓库。
 
 不要在模板注释、示例、提交信息、终端重定向输出或故障报告中记录这些值。提交前运行：
 

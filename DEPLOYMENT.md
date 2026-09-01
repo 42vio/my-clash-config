@@ -38,7 +38,7 @@ cd /opt/my-clash-config
 bash install.sh
 ```
 
-按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录（含机场 provider 目录）、Nginx 配置和 `clash-sub-metadata.socket`。
+按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录（含机场 provider 目录）、Nginx 配置、`/etc/tmpfiles.d/clash-sub-metadata.conf`（开机建立 `/run/clash-sub` 目录）并启用 `clash-sub-metadata.socket`。订阅流量头由该 socket 按请求按需提供，安装不包含任何定时流量刷新任务。
 
 安装过程按 12 个步骤显示当前操作和已完成进度；百分比表示完成的步骤比例，不是剩余时间估算。若 Python 安装阶段失败，修正错误后重新执行 `bash install.sh`，安装器会读取安装记录并沿用已经完成的阶段。
 
@@ -48,16 +48,18 @@ bash install.sh
 
 ```text
 /var/lib/clash-sub/
-├── private/          0700，root 所有：state.json、releases、current、staging、journals
+├── private/          0700，root 所有：state.json、airport-source.json、traffic-cache.json、operation.lock、releases、current、staging
 └── public/           02750，root:www-data：releases/
     └── provider/     02750，root:www-data：AmyTelecom.yaml (0640)
 ```
 
-机场 provider 文件是 public 下唯一的非发布目录内容；它由机场更新流程原子写入，不随主配置发布。
+机场 provider 文件是 public 下唯一的非发布目录内容；它由机场更新流程原子写入，不随主配置发布。`airport-source.json`（机场来源记录：订阅链接与最近保存的流量）与 `traffic-cache.json`（3x-ui 流量缓存）都是 0600、root:root 的私密文件，与 provider 文件经日志式事务同时切换。
+
+流量元数据 Socket 在运行时目录之外：`/run/clash-sub/metadata.sock`（0660 root:www-data），父目录 `/run/clash-sub`（0750 root:www-data）由 tmpfiles 规则在启动时建立，socket 由 `clash-sub-metadata.socket` 监听并按需激活 `clash-sub-metadata.service`。
 
 ## 首次初始化
 
-1. 执行 `clash-sub`，在主菜单选择 `1`，按可见提示粘贴机场订阅地址；输入会自动清理首尾空白，成功后生成 `AmyTelecom.yaml`。
+1. 执行 `clash-sub`，主菜单选择 `1` 进入机场订阅子菜单，再选择 `1`（更换机场订阅链接），按可见提示粘贴机场订阅地址；输入会自动清理首尾空白，下载成功后才保存链接与流量，并生成 `AmyTelecom.yaml`。
 2. 依次执行首次生成与检查：
 
    ```bash
@@ -79,7 +81,7 @@ clash-sub status
 clash-sub links
 ```
 
-确认 `nginx -t` 通过、`clash-sub-metadata.socket` 已启用且运行、`status` 的最近错误为空、`links` 显示 owner 两条（`Clash-Compat.yaml`、`Clash-Balance.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
+确认 `nginx -t` 通过、`clash-sub-metadata.socket` 已启用且监听、`status` 的最近错误为空、`links` 显示 owner 两条（`Clash-Compat.yaml`、`Clash-Balance.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。用其中一条链接请求一次订阅后，`clash-sub-metadata.service` 应被 socket 激活（`systemctl status clash-sub-metadata.service` 显示运行中），响应携带 `Subscription-Userinfo` 流量头。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
 
 ## 升级与卸载
 
@@ -101,23 +103,24 @@ clash-sub rollback --install
 
 ## 备份与恢复
 
-`clash-sub backup` 归档且仅归档四个重建必需文件：
+`clash-sub backup` 归档且仅归档五个重建必需文件：
 
 ```text
 /etc/x-ui/x-ui.db
 /etc/nginx/stream-conf.d/clash-sub.conf
 /etc/nginx/conf.d/clash-sub.conf
 /var/lib/clash-sub/private/state.json
+/var/lib/clash-sub/private/airport-source.json
 ```
 
-任何必需文件缺失时备份以稳定错误码失败，而不是产出不完整的归档。证书、机场 provider、发布历史、运行状态与 systemd 文件不进入备份。
+任何必需文件缺失时备份以稳定错误码失败，而不是产出不完整的归档。证书、机场 provider 文件（`AmyTelecom.yaml`）、流量缓存、发布历史、运行状态与 systemd 文件不进入备份；机场 provider 可在恢复后用备份里的来源记录一键重建。
 
 重建恢复顺序：
 
 1. 恢复 3x-ui 数据库（`/etc/x-ui/x-ui.db`）。
-2. 恢复 `state.json`。
+2. 恢复 `state.json` 与 `airport-source.json` 到私密运行时目录。
 3. 重新安装项目并重新签发证书。
-4. 重新导入机场订阅，生成 `AmyTelecom.yaml`。
+4. 执行 `clash-sub`，主菜单 `1` 进入机场订阅后选择 `2`（刷新机场订阅）：使用恢复的已保存链接重新下载并重建 `AmyTelecom.yaml`，无需重新输入地址；来源记录缺失时改用 `1` 重新导入。
 5. 执行 `clash-sub sync`。
 6. 核对并恢复两份 Nginx 配置。
 
@@ -133,10 +136,11 @@ clash-sub rollback --install
 | 私密运行时目录 | `/var/lib/clash-sub/private` |
 | 公开发布目录 | `/var/lib/clash-sub/public` |
 | 机场 provider | `/var/lib/clash-sub/public/provider/AmyTelecom.yaml` |
-| 服务配置 | `/var/lib/clash-sub/private/config/service.yaml` |
+| 机场来源记录 / 流量缓存 | `/var/lib/clash-sub/private/airport-source.json`、`/var/lib/clash-sub/private/traffic-cache.json` |
+| 服务配置 | `/opt/my-clash-config/private/config/service.yaml` |
 | Nginx 路由 | `/etc/nginx/clash-sub/routes.conf` |
 | Nginx stream / HTTP 配置 | `/etc/nginx/stream-conf.d/clash-sub.conf` / `/etc/nginx/conf.d/clash-sub.conf` |
 | 证书 | `/etc/ssl/domain/fullchain.pem`、`/etc/ssl/domain/privkey.pem` |
-| 流量元数据 | `clash-sub-metadata.socket`、`clash-sub-metadata.service` |
+| 流量元数据 | `/run/clash-sub/metadata.sock`、`clash-sub-metadata.socket`、`clash-sub-metadata.service` |
 | 启动恢复 | `clash-sub-recover.service`、`nginx.service.d/clash-sub-recover.conf` |
 | 安装记录 | `/opt/my-clash-config/private/install-state.json` |
