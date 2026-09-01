@@ -100,7 +100,11 @@ ACTIVE_RUNTIME_PATHS = (
 FORBIDDEN_RUNTIME_REFERENCES = (
     "publisher",
     "subconverter",
-    "refresh",
+    # The removed Docker stack's per-user "refresh [user-id]" command; the
+    # sanctioned airport refresh flow (refresh_airport) shares no surface
+    # with it, and the legacy refresh/refresh-all argv stay rejected by the
+    # CLI command-surface tests.
+    "_command_refresh",
     "Certbot",
     "Docker",
 )

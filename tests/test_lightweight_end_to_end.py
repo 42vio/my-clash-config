@@ -8,7 +8,6 @@ import shutil
 import sqlite3
 import stat
 import subprocess
-import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -16,7 +15,6 @@ from unittest.mock import patch
 
 import yaml
 
-from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStore
 from clash_sub.checks import MihomoValidator, validate_clash
 from clash_sub.cli import main as cli_main
@@ -87,28 +85,6 @@ class FakeRunner:
         ]
 
 
-class LegacyAirportStoreAdapter:
-    """Task 2 interim: the service still calls replace(document); supply the
-    matching source record until Task 3 passes it through the service."""
-
-    def __init__(self, harness, store):
-        self._harness = harness
-        self._store = store
-
-    @property
-    def path(self):
-        return self._store.path
-
-    def read(self):
-        return self._store.read()
-
-    def replace(self, document):
-        return self._store.replace(
-            document,
-            AirportSource(self._harness.airport_url, None, int(time.time())),
-        )
-
-
 class AcceptanceHarness:
     """A real temporary runtime with only HTTP and process boundaries faked."""
 
@@ -127,7 +103,6 @@ class AcceptanceHarness:
         self.render_calls = 0
         self.fail_render = False
         self.fail_xui_source = False
-        self.airport_url = "https://airport.example.test/import/live"
         self.airport_body = (
             b"# AmyTelecom upstream snapshot\n"
             b"proxies:\n"
@@ -234,7 +209,7 @@ class AcceptanceHarness:
             rotate_user_token=rotate_user_token,
             fetch_xui_proxies=self._fetch_xui,
             download_airport_document=self._download_airport,
-            airport_store=LegacyAirportStoreAdapter(self, self.airport_store),
+            airport_store=self.airport_store,
             render_user_bundle=self._render,
             validate_clash=validate_clash,
             mihomo_validator=MihomoValidator(self.config.mihomo_binary, runner=self.runner),
@@ -270,11 +245,7 @@ class AcceptanceHarness:
         return fetch_xui_proxies(url, maximum, opener=self._xui_opener)
 
     def _download_airport(self, url, maximum):
-        # The service consumes the provider bytes; traffic metadata is a
-        # later service-layer concern, so the adapter unwraps it here.
-        result = download_airport_document(url, maximum, opener=self._airport_opener)
-        self.airport_url = url
-        return result.document
+        return download_airport_document(url, maximum, opener=self._airport_opener)
 
     def _render(self, owner, xui, airport, template_root):
         self.render_calls += 1
@@ -288,8 +259,8 @@ class AcceptanceHarness:
         )
 
     def import_airport(self, url="https://airport.example.test/import/live"):
-        """Update the airport provider only; no release is generated."""
-        return self.service.update_airport(url)
+        """Replace the saved airport link and provider; no release is generated."""
+        return self.service.replace_airport_source(url)
 
     @property
     def provider_path(self):
@@ -475,7 +446,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertIsNone(harness.state().users[harness.member_id].current_release)
         self.assertFalse((harness.public_root / "releases").exists())
 
-    def test_update_airport_only_replaces_the_provider_file(self):
+    def test_replace_airport_source_only_replaces_the_provider_file(self):
         harness = self.make_harness()
         harness.import_airport()
         harness.service.sync_all()
@@ -490,7 +461,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         harness.airport_body = harness.airport_body.replace(b"airport-old", b"airport-new")
         result = harness.import_airport("https://airport.example.test/import/second")
 
-        self.assertEqual(result, {"updated": True})
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
         self.assertEqual(harness.provider_path.read_bytes(), harness.airport_body)
         self.assertEqual(
             (harness.private_root / "state.json").read_bytes(), before_state_bytes
@@ -690,7 +661,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         with patch("clash_sub.cli.getpass", return_value=airport_url):
             code = cli_main(
                 [],
-                stdin=io.StringIO("1\n" + airport_url + "\n"),
+                stdin=io.StringIO("1\n1\n" + airport_url + "\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: harness.service,
@@ -724,7 +695,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         with patch("clash_sub.cli.getpass", return_value=airport_url):
             failed = cli_main(
                 [],
-                stdin=io.StringIO("1\n" + airport_url + "\n"),
+                stdin=io.StringIO("1\n1\n" + airport_url + "\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: harness.service,

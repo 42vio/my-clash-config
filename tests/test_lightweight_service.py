@@ -11,12 +11,15 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
+from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import MAX_PROVIDER_BYTES, AirportStore, AirportStoreError
 from clash_sub.domain import (
     PROFILE_FILENAMES,
+    AirportDownload,
     PreparedRelease,
     RuntimeState,
     ServiceConfig,
+    Traffic,
     UserState,
     XuiClient,
     XuiSnapshot,
@@ -156,7 +159,9 @@ class ServiceTests(unittest.TestCase):
         self.airport_file.write_bytes(PROVIDER_DOCUMENT)
         os.chmod(self.airport_file, 0o640)
         self.replaced_documents = []
+        self.replaced_sources = []
         self.download_document = PROVIDER_DOCUMENT
+        self.download_traffic = None
         self.airport_store = MagicMock(spec=AirportStore)
         self.airport_store.path = self.airport_file
         self.airport_store.read.return_value = PROVIDER_DOCUMENT
@@ -194,13 +199,17 @@ class ServiceTests(unittest.TestCase):
         """One successful sync with the stable provider already in place."""
         return self.service.sync_all()
 
-    def _replace_provider(self, document):
-        # Mirrors the real store: the input invariant (non-empty bounded
-        # bytes) rejects before anything is published.
+    def _replace_provider(self, document, source):
+        # Mirrors the real store: the input invariants (non-empty bounded
+        # bytes and a well-formed source record) reject before anything is
+        # published.
         if not isinstance(document, bytes) or not document or len(document) > MAX_PROVIDER_BYTES:
             raise AirportStoreError("airport_provider_invalid")
+        if not isinstance(source, AirportSource):
+            raise AirportStoreError("airport_source_invalid")
         self.airport_file.write_bytes(document)
         self.replaced_documents.append(document)
+        self.replaced_sources.append(source)
         return self.airport_file
 
     def current_owner_release(self):
@@ -231,7 +240,7 @@ class ServiceTests(unittest.TestCase):
 
     def _download(self, url, max_bytes):
         self.download_calls.append(url)
-        return self.download_document
+        return AirportDownload(self.download_document, self.download_traffic)
 
     def _validate(self, text, forbidden, allowed_provider_url=None):
         self.validation_calls.append((forbidden, allowed_provider_url))
@@ -375,13 +384,13 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.current_owner_release(), first_release)
         self.assertEqual(self.state.users[8].current_release, self.store.history(8)[0].release_id)
 
-    def test_update_airport_does_not_read_xui_prepare_release_or_activate(self):
+    def test_replace_airport_source_does_not_read_xui_prepare_release_or_activate(self):
         self.service._read_snapshot = MagicMock()
         self.service._recover_runtime = MagicMock()
 
-        result = self.service.update_airport("https://airport.example/sub")
+        result = self.service.replace_airport_source("https://airport.example/sub")
 
-        self.assertEqual(result, {"updated": True})
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
         self.airport_store.replace.assert_called_once()
         self.service._read_snapshot.assert_not_called()
         self.service._recover_runtime.assert_not_called()
@@ -389,72 +398,327 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.activator.calls, [])
         self.assertEqual(self.fetch_calls, [])
         self.assertEqual(self.mihomo_calls, [])
+        self.assertEqual(self.generator_calls, [])
+        self.assertIsNone(self.state)
 
-    def test_update_airport_only_replaces_the_provider_file(self):
+    def test_replace_airport_source_saves_the_new_link_traffic_and_timestamp_together(self):
+        self.download_document = PROVIDER_DOCUMENT.replace(b"amy.example.test", b"amy-2.example.test")
+        self.download_traffic = Traffic(upload=1, download=2, total=10, expiry_ms=4000)
+        secret = "https://airport.example/new?token=example-secret"
+
+        result = self.service.replace_airport_source(secret)
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": True})
+        self.assertEqual(self.download_calls, [secret])
+        self.assertEqual(self.replaced_documents, [self.download_document])
+        self.assertEqual(
+            self.replaced_sources,
+            [AirportSource(secret, self.download_traffic, int(self.clock_value))],
+        )
+        self.assertEqual(self.service.status()["last_success"], self.clock_value)
+        self.assertEqual(self.service.status()["last_errors"], ())
+
+    def test_replace_airport_source_marks_missing_traffic_explicitly(self):
+        self.download_traffic = None
+
+        result = self.service.replace_airport_source("https://airport.example/no-header")
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.assertIsNone(self.replaced_sources[0].traffic)
+        self.assertEqual(self.airport_file.read_bytes(), self.download_document)
+
+    def test_replace_airport_source_only_replaces_the_provider_file(self):
         self.bootstrap()
         before_state = self.state
         before_activations = len(self.activator.calls)
         new_document = PROVIDER_DOCUMENT.replace(b"amy.example.test", b"amy-2.example.test")
         self.download_document = new_document
 
-        result = self.service.update_airport("https://airport.example/new")
+        result = self.service.replace_airport_source("https://airport.example/new")
 
-        self.assertEqual(result, {"updated": True})
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
         self.assertEqual(self.replaced_documents, [new_document])
         self.assertEqual(self.state, before_state)
         self.assertEqual(len(self.activator.calls), before_activations)
         self.assertEqual(len(self.store.prepared), 2)
 
-    def test_update_airport_publishes_non_yaml_bytes_verbatim(self):
+    def test_replace_airport_source_publishes_non_yaml_bytes_verbatim(self):
         raw = b"\x00raw airport bytes \xff- not yaml\n"
         self.download_document = raw
 
-        result = self.service.update_airport("https://airport.example/binary")
+        result = self.service.replace_airport_source("https://airport.example/binary")
 
-        self.assertEqual(result, {"updated": True})
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
         self.assertEqual(self.airport_file.read_bytes(), raw)
         self.assertEqual(self.replaced_documents, [raw])
         self.assertEqual(self.mihomo_calls, [])
 
-    def test_update_airport_failure_keeps_the_previous_provider_and_emits_one_code(self):
-        self.bootstrap()
+    def test_replace_airport_source_saves_the_new_link_only_after_a_successful_download(self):
+        old_source = AirportSource("https://airport.example/old", Traffic(1, 2, 10, 0), 111)
+        self.airport_store.read_source.return_value = old_source
+        self.service._download = MagicMock(side_effect=SourceError("airport_download_failed"))
         secret = "https://airport.example/temporary-secret"
-        self.airport_store.replace.side_effect = lambda document: (_ for _ in ()).throw(AirportStoreError("airport_provider_write_failed"))
 
         with self.assertRaises(ServiceError) as caught:
-            self.service.update_airport(secret)
-
-        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
-        self.assertNotIn(secret, str(caught.exception))
-        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
-        self.assertEqual(self.service.status()["last_errors"], ("airport_provider_write_failed",))
-
-    def test_update_airport_preserves_a_sanitized_source_failure_code(self):
-        secret = "https://airport.example/temporary-secret"
-        self.service._download = MagicMock(
-            side_effect=SourceError("airport_download_failed")
-        )
-
-        with self.assertRaises(ServiceError) as caught:
-            self.service.update_airport(secret)
+            self.service.replace_airport_source(secret)
 
         self.assertEqual(caught.exception.code, "airport_download_failed")
         self.assertNotIn(secret, str(caught.exception))
-        self.assertEqual(
-            self.service.status()["last_errors"], ("airport_download_failed",)
+        self.airport_store.replace.assert_not_called()
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.service.status()["last_errors"], ("airport_download_failed",))
+
+    def test_replace_airport_source_failure_keeps_the_previous_trio(self):
+        self.airport_store.replace.side_effect = lambda *_: (_ for _ in ()).throw(AirportStoreError("airport_provider_write_failed"))
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.replace_airport_source("https://airport.example/new")
+
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertNotIn("airport.example", str(caught.exception))
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.replaced_documents, [])
+        self.assertEqual(self.service.status()["last_errors"], ("airport_provider_write_failed",))
+
+    def test_replace_airport_source_preserves_a_sanitized_source_failure_code(self):
+        secret = "https://airport.example/temporary-secret"
+        self.service._download = MagicMock(
+            side_effect=SourceError("airport_url_invalid")
         )
 
-    def test_update_airport_rejects_an_empty_download_without_replacing(self):
+        with self.assertRaises(ServiceError) as caught:
+            self.service.replace_airport_source(secret)
+
+        self.assertEqual(caught.exception.code, "airport_url_invalid")
+        self.assertNotIn(secret, str(caught.exception))
+        self.assertEqual(
+            self.service.status()["last_errors"], ("airport_url_invalid",)
+        )
+
+    def test_replace_airport_source_maps_unexpected_failures_to_a_stable_code(self):
+        self.service._download = MagicMock(side_effect=RuntimeError("private detail"))
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.replace_airport_source("https://airport.example/one")
+
+        self.assertEqual(caught.exception.code, "airport_update_failed")
+        self.assertNotIn("private detail", str(caught.exception))
+        self.airport_store.replace.assert_not_called()
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.service.status()["last_errors"], ("airport_update_failed",))
+
+    def test_replace_airport_source_maps_unknown_store_codes_to_the_update_code(self):
+        self.airport_store.replace.side_effect = AirportStoreError("unmapped_code")
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.replace_airport_source("https://airport.example/two")
+
+        self.assertEqual(caught.exception.code, "airport_update_failed")
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.service.status()["last_errors"], ("airport_update_failed",))
+
+    def test_replace_airport_source_rejects_an_empty_download_without_replacing(self):
         self.download_document = b""
 
         with self.assertRaises(ServiceError) as caught:
-            self.service.update_airport("https://airport.example/empty")
+            self.service.replace_airport_source("https://airport.example/empty")
 
         # Empty bytes never reach the stable file; the store's non-empty
         # guarantee is a file-safety invariant, not content validation.
         self.assertEqual(caught.exception.code, "airport_provider_invalid")
         self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
         self.assertEqual(self.replaced_documents, [])
+
+    def test_refresh_airport_reuses_the_saved_link_without_any_input(self):
+        saved = AirportSource("https://airport.example/saved?token=example-secret", Traffic(1, 2, 10, 0), 111)
+        self.airport_store.read_source.return_value = saved
+        self.download_document = PROVIDER_DOCUMENT.replace(b"amy.example.test", b"amy-2.example.test")
+        self.download_traffic = Traffic(upload=5, download=6, total=60, expiry_ms=4000)
+
+        result = self.service.refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": True})
+        self.assertEqual(self.download_calls, [saved.source_url])
+        self.assertEqual(self.fetch_calls, [])
+        self.assertEqual(self.replaced_documents, [self.download_document])
+        self.assertEqual(
+            self.replaced_sources,
+            [AirportSource(saved.source_url, self.download_traffic, int(self.clock_value))],
+        )
+        self.assertEqual(self.service.status()["last_success"], self.clock_value)
+
+    def test_refresh_airport_marks_missing_traffic_explicitly(self):
+        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 111)
+
+        result = self.service.refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.assertIsNone(self.replaced_sources[0].traffic)
+
+    def test_refresh_airport_without_a_saved_source_returns_the_dedicated_code(self):
+        self.airport_store.read_source.side_effect = AirportStoreError("airport_source_missing")
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.refresh_airport()
+
+        self.assertEqual(caught.exception.code, "airport_source_missing")
+        self.assertEqual(self.download_calls, [])
+        self.airport_store.replace.assert_not_called()
+        self.assertEqual(self.replaced_documents, [])
+        self.assertEqual(self.service.status()["last_errors"], ("airport_source_missing",))
+
+    def test_refresh_airport_download_failure_keeps_the_saved_trio(self):
+        saved = AirportSource("https://airport.example/saved", Traffic(1, 2, 10, 0), 111)
+        self.airport_store.read_source.return_value = saved
+        self.service._download = MagicMock(side_effect=SourceError("airport_download_failed"))
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.refresh_airport()
+
+        self.assertEqual(caught.exception.code, "airport_download_failed")
+        self.airport_store.replace.assert_not_called()
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.replaced_documents, [])
+        self.assertEqual(self.service.status()["last_errors"], ("airport_download_failed",))
+
+    def test_refresh_airport_store_failure_keeps_the_saved_trio(self):
+        saved = AirportSource("https://airport.example/saved", Traffic(1, 2, 10, 0), 111)
+        self.airport_store.read_source.return_value = saved
+        self.airport_store.replace.side_effect = AirportStoreError("airport_provider_write_failed")
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.refresh_airport()
+
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.replaced_documents, [])
+        self.assertEqual(self.service.status()["last_errors"], ("airport_provider_write_failed",))
+
+    def test_refresh_airport_maps_unexpected_failures_to_the_refresh_code(self):
+        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 1)
+        self.service._download = MagicMock(side_effect=RuntimeError("private detail"))
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.refresh_airport()
+
+        self.assertEqual(caught.exception.code, "airport_refresh_failed")
+        self.assertNotIn("private detail", str(caught.exception))
+        self.airport_store.replace.assert_not_called()
+
+    def test_refresh_airport_does_not_read_xui_render_release_or_activate(self):
+        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 1)
+        self.service._read_snapshot = MagicMock()
+        self.service._recover_runtime = MagicMock()
+
+        result = self.service.refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.service._read_snapshot.assert_not_called()
+        self.service._recover_runtime.assert_not_called()
+        self.assertEqual(self.store.prepared, [])
+        self.assertEqual(self.activator.calls, [])
+        self.assertEqual(self.fetch_calls, [])
+        self.assertEqual(self.mihomo_calls, [])
+        self.assertEqual(self.generator_calls, [])
+        self.assertIsNone(self.state)
+
+    def test_airport_status_reports_only_the_public_summary(self):
+        secret_url = "https://user@airport.example:443/path/segment?token=example-secret"
+        self.airport_store.read_source.return_value = AirportSource(
+            secret_url, Traffic(upload=1, download=2, total=10, expiry_ms=4000), 1750000000
+        )
+
+        status = self.service.airport_status()
+
+        self.assertEqual(
+            status,
+            {
+                "saved": True,
+                "source_host": "airport.example",
+                "traffic_total": 10,
+                "traffic_used": 2,
+                "traffic_remaining": 8,
+                "traffic_expiry_ms": 4000,
+                "last_success": 1750000000,
+                "provider_present": True,
+            },
+        )
+        self.assertNotIn("secret", repr(status))
+        self.assertNotIn("token", repr(status))
+        self.assertNotIn("/path", repr(status))
+
+    def test_airport_status_without_a_saved_source_reports_unsaved_fields(self):
+        self.airport_store.read_source.side_effect = AirportStoreError("airport_source_missing")
+
+        status = self.service.airport_status()
+
+        self.assertEqual(
+            status,
+            {
+                "saved": False,
+                "source_host": None,
+                "traffic_total": None,
+                "traffic_used": None,
+                "traffic_remaining": None,
+                "traffic_expiry_ms": None,
+                "last_success": None,
+                "provider_present": True,
+            },
+        )
+
+    def test_airport_status_reports_a_missing_provider_file(self):
+        self.airport_store.read_source.side_effect = AirportStoreError("airport_source_missing")
+        self.airport_file.unlink()
+
+        status = self.service.airport_status()
+
+        self.assertFalse(status["provider_present"])
+
+    def test_airport_status_surfaces_a_corrupt_source_record_as_a_stable_code(self):
+        self.airport_store.read_source.side_effect = AirportStoreError("airport_source_invalid")
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.airport_status()
+
+        self.assertEqual(caught.exception.code, "airport_source_invalid")
+
+    def test_airport_status_maps_unexpected_failures_to_a_stable_code(self):
+        self.airport_store.read_source.side_effect = OSError("private path detail")
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.airport_status()
+
+        self.assertEqual(caught.exception.code, "airport_status_failed")
+        self.assertNotIn("private path detail", str(caught.exception))
+
+    def test_airport_status_reflects_a_transaction_completed_by_the_source_read(self):
+        # read_source() runs the store's own recovery, which may roll a
+        # pending airport transaction forward and materialize AmyTelecom.yaml;
+        # the existence probe must therefore run after the source read.
+        self.airport_file.unlink()
+
+        def roll_forward():
+            self.airport_file.write_bytes(PROVIDER_DOCUMENT)
+            return AirportSource("https://airport.example/saved", None, 1)
+
+        self.airport_store.read_source.side_effect = roll_forward
+
+        status = self.service.airport_status()
+
+        self.assertTrue(status["saved"])
+        self.assertTrue(status["provider_present"])
+
+    def test_airport_status_never_reads_xui_or_mutates_state(self):
+        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 1)
+        self.service._read_snapshot = MagicMock()
+        self.service._recover_runtime = MagicMock()
+
+        self.service.airport_status()
+
+        self.service._read_snapshot.assert_not_called()
+        self.service._recover_runtime.assert_not_called()
+        self.assertEqual(self.activator.calls, [])
+        self.assertIsNone(self.state)
 
     def test_rotate_owner_rebuilds_the_release_with_the_new_token_url(self):
         self.bootstrap()

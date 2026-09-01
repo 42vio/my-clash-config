@@ -15,6 +15,7 @@ from clash_sub.domain import ServiceConfig
 from clash_sub.installer import InstallerError
 from clash_sub.service import ServiceError, _OperationLock
 from clash_sub.cli import (
+    AIRPORT_MENU,
     BACKUP_MENU,
     CERT_MENU,
     MAINTENANCE_MENU,
@@ -61,6 +62,17 @@ class FakeService:
         self.calls = []
         self.failure = None
         self.sync_result = {"updated": (), "errors": ()}
+        self.airport_traffic_captured = True
+        self.airport_status_value = {
+            "saved": True,
+            "source_host": "airport.example",
+            "traffic_total": 107374182400,
+            "traffic_used": 21474836480,
+            "traffic_remaining": 85899345920,
+            "traffic_expiry_ms": 1893456000000,
+            "last_success": 1750000000,
+            "provider_present": True,
+        }
         self.status_value = {
             "owner_client_id": 7,
             "last_success": 1750000000.0,
@@ -94,9 +106,17 @@ class FakeService:
         if self.failure is not None:
             raise self.failure
 
-    def update_airport(self, url):
-        self._call("update_airport", url)
-        return {"updated": True}
+    def replace_airport_source(self, url):
+        self._call("replace_airport_source", url)
+        return {"updated": True, "traffic_captured": self.airport_traffic_captured}
+
+    def refresh_airport(self):
+        self._call("refresh_airport")
+        return {"updated": True, "traffic_captured": self.airport_traffic_captured}
+
+    def airport_status(self):
+        self._call("airport_status")
+        return self.airport_status_value
 
     def sync_all(self):
         self._call("sync_all")
@@ -196,7 +216,7 @@ class LightweightCliTests(unittest.TestCase):
             "╔──────────────────────────────────────────────╗",
             "│  clash-sub 管理脚本",
             "│  0. 退出",
-            "│  1. 更新机场订阅",
+            "│  1. 机场订阅",
             "│  2. 重新生成所有配置",
             "│  3. 查看订阅链接",
             "│  4. 查看运行状态",
@@ -221,7 +241,35 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(main(None, stdin=InterruptingInput(), stdout=io.StringIO(), stderr=io.StringIO(), service_factory=factory), 0)
         self.assertEqual(constructed, [])
 
-    def test_menu_airport_input_is_visible_and_strips_pasted_whitespace(self):
+    def test_airport_menu_opens_the_fixed_submenu(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout.count(AIRPORT_MENU), 1)
+        self.assertEqual(stdout.count(MENU), 2)
+
+    def test_airport_submenu_text_is_fixed(self):
+        self.assertEqual(
+            AIRPORT_MENU,
+            "机场订阅\n\n"
+            "1. 更换机场订阅链接\n"
+            "2. 刷新机场订阅\n"
+            "3. 查看机场状态\n"
+            "0. 返回\n"
+            "\n"
+            "请输入选项 [0-3]：",
+        )
+
+    def test_airport_submenu_invalid_selection_stays_in_the_submenu(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n9\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 1)
+        self.assertEqual(stdout.count(AIRPORT_MENU), 2)
+        self.assertEqual(stdout.count(MENU), 2)
+
+    def test_airport_replace_input_is_visible_and_strips_pasted_whitespace(self):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with patch(
@@ -230,22 +278,23 @@ class LightweightCliTests(unittest.TestCase):
         ):
             code = main(
                 None,
-                stdin=io.StringIO("1\n  " + AIRPORT_URL + "  \n0\n"),
+                stdin=io.StringIO("1\n1\n  " + AIRPORT_URL + "  \n\n0\n0\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: self.service,
             )
 
         self.assertEqual(code, 0)
-        self.assertEqual(self.service.calls, [("update_airport", (AIRPORT_URL,))])
+        self.assertEqual(self.service.calls, [("replace_airport_source", (AIRPORT_URL,))])
         self.assertIn("请输入机场订阅地址：", stdout.getvalue())
+        self.assertIn("机场订阅已更新。", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_menu_rejects_empty_airport_input_before_constructing_service(self):
+    def test_airport_menu_rejects_empty_input_before_constructing_service(self):
         constructed = []
         code = main(
             None,
-            stdin=io.StringIO("1\n   \n0\n"),
+            stdin=io.StringIO("1\n1\n   \n0\n0\n"),
             stdout=io.StringIO(),
             stderr=io.StringIO(),
             service_factory=lambda: constructed.append(object()),
@@ -253,6 +302,93 @@ class LightweightCliTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertEqual(constructed, [])
+
+    def test_airport_refresh_uses_the_saved_link_without_prompting(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n2\n\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.service.calls, [("refresh_airport", ())])
+        self.assertNotIn("请输入机场订阅地址", stdout)
+        self.assertIn("机场订阅已更新。", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_airport_update_reports_missing_traffic_information(self):
+        self.service.airport_traffic_captured = False
+
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n2\n\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.service.calls, [("refresh_airport", ())])
+        self.assertIn("机场订阅已更新，未获取到流量信息。", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_airport_refresh_without_a_saved_link_reports_it(self):
+        self.service.failure = ServiceError("airport_source_missing")
+
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n2\n")
+
+        self.assertEqual(code, 1)
+        self.assertIn("未保存机场订阅链接", stderr)
+        self.assertIn("airport_source_missing", stderr)
+        self.assertNotIn(AIRPORT_URL, stdout + stderr)
+
+    def test_airport_status_shows_only_the_public_summary(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n3\n\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.service.calls, [("airport_status", ())])
+        for line in (
+            "已保存链接：是",
+            "来源域名：airport.example",
+            "总量：107374182400",
+            "已用：21474836480",
+            "剩余：85899345920",
+            "到期时间：2030-01-01 00:00:00Z",
+            "最近成功时间：2025-06-15 15:06:40Z",
+            "AmyTelecom.yaml：存在",
+        ):
+            self.assertIn(line, stdout)
+        self.assertNotIn("https://", stdout)
+        self.assertNotIn("token", stdout)
+        self.assertEqual(stderr, "")
+
+    def test_airport_status_renders_unsaved_and_missing_fields(self):
+        self.service.airport_status_value = {
+            "saved": False,
+            "source_host": None,
+            "traffic_total": None,
+            "traffic_used": None,
+            "traffic_remaining": None,
+            "traffic_expiry_ms": None,
+            "last_success": None,
+            "provider_present": False,
+        }
+
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n3\n\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        for line in (
+            "已保存链接：否",
+            "来源域名：无",
+            "总量：未获取",
+            "已用：未获取",
+            "剩余：未获取",
+            "到期时间：未获取",
+            "最近成功时间：无",
+            "AmyTelecom.yaml：不存在",
+        ):
+            self.assertIn(line, stdout)
+
+    def test_airport_status_renders_a_zero_expiry_as_never_expiring(self):
+        self.service.airport_status_value = dict(
+            self.service.airport_status_value, traffic_expiry_ms=0
+        )
+
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n3\n\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertIn("到期时间：未设置", stdout)
+        self.assertNotIn("1970", stdout)
 
     def test_menu_options_two_through_four_call_sync_links_and_status(self):
         sync = FakeService()
@@ -639,6 +775,7 @@ class MenuLoopTests(unittest.TestCase):
     def test_each_menu_prompt_lists_its_own_range(self):
         cases = (
             ("0\n", MENU, "请输入选项 [0-8]："),
+            ("1\n0\n0\n", AIRPORT_MENU, "请输入选项 [0-3]："),
             ("5\n0\n0\n", MAINTENANCE_MENU, "请输入选项 [0-3]："),
             ("6\n0\n0\n", CERT_MENU, "请输入选项 [0-2]："),
             ("7\n0\n0\n", BACKUP_MENU, "请输入选项 [0-3]："),
@@ -1474,15 +1611,32 @@ class TemplateSyncCommandTests(unittest.TestCase):
         sync.assert_called_once_with(Path(__file__).resolve().parents[1], Path("/tmp/Clash-Compat.yaml"), None); self.assertEqual(code, 0)
 
 class ServiceCommandMessageTests(unittest.TestCase):
-    def test_airport_command_updates_the_provider_only(self):
-        service = MagicMock()
-        stdout = io.StringIO()
+    def test_airport_replace_and_refresh_distinguish_captured_traffic(self):
+        for operation, method in (
+            ("airport-replace", "replace_airport_source"),
+            ("airport-refresh", "refresh_airport"),
+        ):
+            for captured, message in (
+                (True, "机场订阅已更新。\n"),
+                (False, "机场订阅已更新，未获取到流量信息。\n"),
+            ):
+                with self.subTest(operation=operation, captured=captured):
+                    service = MagicMock()
+                    getattr(service, method).return_value = {
+                        "updated": True,
+                        "traffic_captured": captured,
+                    }
+                    stdout = io.StringIO()
 
-        code = _call("airport", "https://airport.example/sub", stdout, io.StringIO(), factory=lambda: service)
+                    value = "https://airport.example/sub" if operation == "airport-replace" else None
+                    code = _call(operation, value, stdout, io.StringIO(), factory=lambda: service)
 
-        self.assertEqual(code, 0)
-        service.update_airport.assert_called_once_with("https://airport.example/sub")
-        self.assertEqual(stdout.getvalue(), "机场订阅已更新。\n")
+                    self.assertEqual(code, 0)
+                    if operation == "airport-replace":
+                        service.replace_airport_source.assert_called_once_with("https://airport.example/sub")
+                    else:
+                        service.refresh_airport.assert_called_once_with()
+                    self.assertEqual(stdout.getvalue(), message)
 
     def test_reinitialize_message_instructs_sync_without_a_new_import(self):
         service = MagicMock()

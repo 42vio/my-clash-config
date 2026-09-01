@@ -69,7 +69,7 @@ _MAIN_MENU_ROWS = (
     ("title", "clash-sub 管理脚本"),
     ("option", "0", (("退出", None),)),
     ("divider",),
-    ("option", "1", (("更新机场订阅", None),)),
+    ("option", "1", (("机场订阅", None),)),
     ("option", "2", (("重新生成所有配置", None),)),
     ("option", "3", (("查看订阅链接", None),)),
     ("option", "4", (("查看运行状态", None),)),
@@ -78,6 +78,14 @@ _MAIN_MENU_ROWS = (
     ("option", "6", (("证书管理", None),)),
     ("option", "7", (("备份与恢复", None),)),
     ("option", "8", (("用户与版本", None),)),
+)
+
+_AIRPORT_MENU_ROWS = (
+    ("title", "机场订阅"),
+    ("option", "1", (("更换机场订阅链接", None),)),
+    ("option", "2", (("刷新机场订阅", None),)),
+    ("option", "3", (("查看机场状态", None),)),
+    ("option", "0", (("返回", None),)),
 )
 
 _MAINTENANCE_MENU_ROWS = (
@@ -154,6 +162,9 @@ def _render_main_menu(colors):
 def _render_submenu(rows, colors):
     lines = []
     for row in rows:
+        if row[0] == "title":
+            lines.append(colors.green(row[1]) + "\n\n")
+            continue
         _, number, segments = row
         number_painted, label_painted, _width = _render_option_line(number, segments, colors)
         lines.append("%s %s\n" % (number_painted, label_painted))
@@ -162,6 +173,7 @@ def _render_submenu(rows, colors):
 
 
 MENU = _render_main_menu(_Colors(False)) + "请输入选项 [0-8]："
+AIRPORT_MENU = _render_submenu(_AIRPORT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
@@ -221,14 +233,16 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
         code, exit_menu = outcome
         if exit_menu or code != 0:
             raise _MenuExit(code)
-        # 只有主菜单直接操作（1-4）结束后停顿；二级菜单返回时直接重显主菜单。
-        if choice in ("1", "2", "3", "4"):
+        # 只有主菜单直接操作（2-4）结束后停顿；二级菜单返回时直接重显主菜单。
+        if choice in ("2", "3", "4"):
             _pause(stdin, stdout, colors)
 
 
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "1":
-        return _menu_airport(stdin, stdout, stderr, factory)
+        return _run_submenu(
+            _AIRPORT_MENU_ROWS, 3, _airport_dispatch, stdin, stdout, stderr, factory, colors
+        )
     if choice == "2":
         return _call("sync", None, stdout, stderr, factory), False
     if choice == "3":
@@ -268,6 +282,16 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
         if exit_menu or code != 0:
             return code, True
         _pause(stdin, stdout, colors)
+
+
+def _airport_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == "1":
+        return _menu_airport_replace(stdin, stdout, stderr, factory)
+    if choice == "2":
+        return _call("airport-refresh", None, stdout, stderr, factory), False
+    if choice == "3":
+        return _call("airport-status", None, stdout, stderr, factory), False
+    return None
 
 
 def _maintenance_dispatch(choice, stdin, stdout, stderr, factory):
@@ -333,13 +357,16 @@ def _menu_error(stderr, code):
     stderr.write(_colors_for(stderr).red(_ERROR_TEMPLATE % code))
 
 
-def _menu_airport(stdin, stdout, stderr, factory):
+def _menu_airport_replace(stdin, stdout, stderr, factory):
+    # The link is typed visibly (never hidden, never a command-line
+    # argument) and pasted whitespace is stripped; an empty answer is
+    # rejected before any service is constructed.
     airport_url = _prompt(stdin, stdout, "请输入机场订阅地址：")
     if airport_url is None:
         return 0, False
     if not airport_url:
         return _error(stderr, "invalid_airport_url", 2), False
-    return _call("airport", airport_url, stdout, stderr, factory), False
+    return _call("airport-replace", airport_url, stdout, stderr, factory), False
 
 
 def _menu_update(stdout, stderr):
@@ -611,9 +638,19 @@ def _run_command(parsed, stdout, stderr, factory):
 def _call(operation, value, stdout, stderr, factory):
     try:
         service = factory()
-        if operation == "airport":
-            service.update_airport(value)
-            stdout.write("机场订阅已更新。\n")
+        if operation == "airport-replace":
+            _write_airport_update(stdout, service.replace_airport_source(value))
+        elif operation == "airport-refresh":
+            try:
+                result = service.refresh_airport()
+            except ServiceError as error:
+                if error.code != "airport_source_missing":
+                    raise
+                stderr.write("未保存机场订阅链接（错误代码：airport_source_missing）\n")
+                return 1
+            _write_airport_update(stdout, result)
+        elif operation == "airport-status":
+            _write_airport_status(stdout, service.airport_status())
         elif operation == "sync":
             result = service.sync_all()
             errors = tuple(result["errors"])
@@ -697,6 +734,41 @@ def _format_timestamp(value):
     if not isinstance(value, (int, float)):
         return "无"
     return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+
+
+def _write_airport_update(stdout, result):
+    if result["traffic_captured"]:
+        stdout.write("机场订阅已更新。\n")
+    else:
+        stdout.write("机场订阅已更新，未获取到流量信息。\n")
+
+
+def _write_airport_status(stdout, status):
+    # Only the public summary: hostname, aggregate traffic, expiry, last
+    # success, and provider presence — never the URL path, query, or token.
+    stdout.write("机场状态：\n")
+    stdout.write("已保存链接：%s\n" % ("是" if status["saved"] else "否"))
+    stdout.write("来源域名：%s\n" % (status["source_host"] or "无"))
+    stdout.write("总量：%s\n" % _traffic_number(status["traffic_total"]))
+    stdout.write("已用：%s\n" % _traffic_number(status["traffic_used"]))
+    stdout.write("剩余：%s\n" % _traffic_number(status["traffic_remaining"]))
+    stdout.write("到期时间：%s\n" % _format_expiry(status["traffic_expiry_ms"]))
+    stdout.write("最近成功时间：%s\n" % _format_timestamp(status.get("last_success")))
+    stdout.write("AmyTelecom.yaml：%s\n" % ("存在" if status["provider_present"] else "不存在"))
+
+
+def _traffic_number(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "未获取"
+    return str(value)
+
+
+def _format_expiry(value):
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "未获取"
+    if value <= 0:
+        return "未设置"
+    return datetime.fromtimestamp(value / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 
 def _write_history(stdout, user, history):

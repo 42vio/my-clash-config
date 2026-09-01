@@ -7,13 +7,17 @@ import tempfile
 import time
 from dataclasses import replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
+from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
 from clash_sub.sources import SourceError, normalize_xui_endpoints
 from clash_sub.state import StateError
+
+_AIRPORT_STORE_CODES = frozenset({"airport_source_missing", "airport_source_invalid", "airport_provider_invalid", "airport_provider_write_failed"})
 
 class ServiceError(RuntimeError):
     def __init__(self, code): self.code = code; super().__init__(code)
@@ -85,24 +89,66 @@ class ClashSubService:
             try: self._activate(snapshot.clients,next_state,candidates)
             except ServiceError as error: self._journal(errors=(error.code,)); self._discard(candidates); raise
             return self._finish(next_state,candidates,updated,errors)
-    def update_airport(self,url):
-        # The airport update only replaces the stable provider file; it never
-        # reconciles state, fetches x-ui, renders profiles, validates with
-        # Mihomo, or activates Nginx.  The bytes publish verbatim.
+    def replace_airport_source(self,url):
+        # Replacing the saved airport link stores the new URL only after the
+        # document downloads: any failure keeps the previous provider file,
+        # source record, and traffic untouched (the store's dual-file
+        # transaction).  This flow never reconciles state, fetches x-ui,
+        # renders profiles, validates with Mihomo, or activates Nginx.  The
+        # bytes publish verbatim.
         with self._lock():
             try:
-                document=self._download(url,self.config.max_source_bytes)
-                self._airport.replace(document)
+                downloaded=self._download(url,self.config.max_source_bytes)
+                self._airport.replace(downloaded.document,AirportSource(url,downloaded.traffic,int(self._clock())))
             except SourceError as error:
                 code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
                 self._journal(errors=(code,)); raise ServiceError(code) from None
             except AirportStoreError as error:
-                code=error.code if error.code in {"airport_provider_invalid","airport_provider_write_failed"} else "airport_update_failed"
+                code=error.code if error.code in _AIRPORT_STORE_CODES else "airport_update_failed"
                 self._journal(errors=(code,)); raise ServiceError(code) from None
             except Exception:
                 self._journal(errors=("airport_update_failed",)); raise ServiceError("airport_update_failed") from None
             self._journal(self._clock(),())
-            return {"updated": True}
+            return {"updated": True, "traffic_captured": downloaded.traffic is not None}
+    def refresh_airport(self):
+        # Refresh re-uses the previously saved link verbatim: it prompts for
+        # nothing and never reconciles state, fetches x-ui, renders profiles,
+        # validates with Mihomo, or activates Nginx.  A missing source record
+        # is a dedicated stable failure.
+        with self._lock():
+            try:
+                saved=self._airport.read_source()
+                downloaded=self._download(saved.source_url,self.config.max_source_bytes)
+                self._airport.replace(downloaded.document,AirportSource(saved.source_url,downloaded.traffic,int(self._clock())))
+            except SourceError as error:
+                code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
+            except AirportStoreError as error:
+                code=error.code if error.code in _AIRPORT_STORE_CODES else "airport_refresh_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
+            except Exception:
+                self._journal(errors=("airport_refresh_failed",)); raise ServiceError("airport_refresh_failed") from None
+            self._journal(self._clock(),())
+            return {"updated": True, "traffic_captured": downloaded.traffic is not None}
+    def airport_status(self):
+        # Public summary only: hostname, aggregate traffic, expiry, last
+        # success, and provider presence.  Paths, query strings, and tokens
+        # from the saved URL never leave this method.  The flow runs no
+        # runtime recovery, no provider read, and no x-ui access; only the
+        # source record's built-in transaction recovery (under this same
+        # operation lock) may complete a pending airport transaction.
+        with self._lock():
+            try:
+                saved=self._airport.read_source()
+            except AirportStoreError as error:
+                if error.code=="airport_source_missing":
+                    return {"saved": False, "source_host": None, "traffic_total": None, "traffic_used": None, "traffic_remaining": None, "traffic_expiry_ms": None, "last_success": None, "provider_present": self._provider_present()}
+                code=error.code if error.code in _AIRPORT_STORE_CODES else "airport_status_failed"
+                raise ServiceError(code) from None
+            except Exception:
+                raise ServiceError("airport_status_failed") from None
+            traffic=saved.traffic
+            return {"saved": True, "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": traffic.download if traffic else None, "traffic_remaining": (traffic.total-traffic.download) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
     def traffic_update(self):
         with self._lock():
             self._recover()
@@ -198,6 +244,13 @@ class ClashSubService:
             self._airport.read()
         except Exception:
             raise ServiceError("airport_provider_required") from None
+    def _provider_present(self):
+        # A non-recovering existence probe: airport_status must never repair
+        # or mutate anything, so it never runs the store's recovering read().
+        try:
+            return bool(self._airport.path.exists())
+        except Exception:
+            return False
     def _activate(self,clients,state,candidates,extra=()):
         try: self._activate_runtime(self.config,state,self._render_routes(self.config,_routable(state),clients),self._runner,tuple(extra)+tuple(self._releases.current_artifact(i,r.release_id) for i,r in candidates))
         except Exception: raise ServiceError("sync_activation_failed") from None
@@ -274,6 +327,13 @@ def _traffic_matches_state(clients,state):
 def _shape(b,owner):
     if tuple(b)!=(OWNER_VARIANTS if owner else MEMBER_VARIANTS):raise ValueError
 def _digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,default=str).encode()).hexdigest()
+def _source_host(url):
+    # Only the hostname of the saved link is ever public: the path, query
+    # string, credentials, and token stay private.
+    try:
+        return urlsplit(url).hostname or None
+    except ValueError:
+        return None
 def _provider_url(c,t):return "https://%s/s/%s/%s"%(c.subscription_authority,t,AIRPORT_FILENAME)
 def _find(cs,i):return next((c for c in cs if c.client_id==i),None)
 def _client_id(i):
