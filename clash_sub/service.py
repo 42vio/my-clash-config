@@ -149,15 +149,6 @@ class ClashSubService:
                 raise ServiceError("airport_status_failed") from None
             traffic=saved.traffic
             return {"saved": True, "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": traffic.download if traffic else None, "traffic_remaining": (traffic.total-traffic.download) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
-    def traffic_update(self):
-        with self._lock():
-            self._recover()
-            try:
-                snapshot=self._read_snapshot(self.config.xui_database); state=self._load_state(_state_path(self.config))
-                if state is None or not _traffic_matches_state(snapshot.clients,state): raise ValueError
-                self._activate(snapshot.clients,state,[])
-            except Exception: self._journal(errors=("traffic_activation_failed",)); raise ServiceError("traffic_activation_failed") from None
-            return self._finish(state,[],[],[])
     def rollback(self,user,release):
         with self._lock():
             self._recover()
@@ -321,9 +312,6 @@ class ClashSubService:
 def _with_release(s,i,r):
     users=dict(s.users); users[i]=replace(users[i],current_release=r); return RuntimeState(s.schema_version,s.owner_client_id,users)
 def _routable(s):return RuntimeState(s.schema_version,s.owner_client_id,{i:replace(u,active=False) if u.active and not u.current_release else u for i,u in s.users.items()})
-def _traffic_matches_state(clients,state):
-    clients_by_id={client.client_id:client for client in clients}
-    return all(user and user.email==client.email and user.active==client.enabled for client in clients for user in (state.users.get(client.client_id),)) and all(user.client_id in clients_by_id for user in state.users.values() if user.active)
 def _shape(b,owner):
     if tuple(b)!=(OWNER_VARIANTS if owner else MEMBER_VARIANTS):raise ValueError
 def _digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,default=str).encode()).hexdigest()

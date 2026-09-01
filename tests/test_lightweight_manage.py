@@ -62,8 +62,18 @@ class BackupTests(unittest.TestCase):
         self.runtime_root = self.root / "var-lib-private"
         self.runtime_root.mkdir()
         (self.runtime_root / "state.json").write_text("{}", encoding="utf-8")
+        (self.runtime_root / "airport-source.json").write_text("{}", encoding="utf-8")
         (self.runtime_root / "current").mkdir()
         (self.runtime_root / "current" / "7").write_text("release\n", encoding="utf-8")
+        # Rebuild-irrelevant runtime neighbors that must never enter the
+        # backup: the on-demand metadata cache, operation lock and journal,
+        # published releases, and the airport provider document.
+        (self.runtime_root / "traffic-cache.json").write_text("{}", encoding="utf-8")
+        (self.runtime_root / "operation.lock").write_text("", encoding="utf-8")
+        (self.runtime_root / "status.json").write_text("{}", encoding="utf-8")
+        provider = self.root / "var-lib-public" / "provider" / "AmyTelecom.yaml"
+        provider.parent.mkdir(parents=True)
+        provider.write_text("proxies: []\n", encoding="utf-8")
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -85,7 +95,7 @@ class BackupTests(unittest.TestCase):
             return_value=self.runtime_root if runtime is self._MISSING else runtime,
         )
 
-    def test_backup_contains_only_four_rebuild_files(self):
+    def test_backup_contains_exactly_the_five_rebuild_files(self):
         from clash_sub.manage import create_backup
 
         patches = self._patched_sources()
@@ -97,6 +107,9 @@ class BackupTests(unittest.TestCase):
         self.assertTrue(path.parent == (self.root / "backups"))
         self.assertEqual((self.root / "backups").stat().st_mode & 0o777, 0o700)
         with tarfile.open(path, "r:gz") as archive:
+            # Exactly the five rebuild-essential files: the metadata cache,
+            # lock, journal, releases, and the airport provider document are
+            # all excluded.
             self.assertEqual(
                 set(archive.getnames()),
                 {
@@ -104,17 +117,22 @@ class BackupTests(unittest.TestCase):
                     "etc/nginx/stream-conf.d/clash-sub.conf",
                     "etc/nginx/conf.d/clash-sub.conf",
                     "var/lib/clash-sub/private/state.json",
+                    "var/lib/clash-sub/private/airport-source.json",
                 },
             )
 
     def test_backup_fails_incomplete_when_a_rebuild_file_is_missing(self):
         from clash_sub.manage import create_backup
 
+        runtime_without_source = self.root / "runtime-without-source"
+        runtime_without_source.mkdir()
+        (runtime_without_source / "state.json").write_text("{}", encoding="utf-8")
         cases = (
             ("database", self._patched_sources(database=None)),
             ("stream conf", self._patched_sources(nginx=(self.root / "absent-stream.conf", self.http_conf))),
             ("http conf", self._patched_sources(nginx=(self.stream_conf, self.root / "absent-http.conf"))),
             ("state", self._patched_sources(runtime=None)),
+            ("airport source", self._patched_sources(runtime=runtime_without_source)),
         )
         for name, patches in cases:
             with self.subTest(name=name):

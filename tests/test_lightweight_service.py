@@ -825,59 +825,6 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(self.store.history(8)), 1)
         self.assertEqual(len(self.activator.calls), 2)
 
-    def test_traffic_rejects_new_clients_pending_manual_sync_without_mutation(self):
-        self.bootstrap()
-        self.clients.append(client(9, "new@example.test"))
-        before = self.state
-        calls = len(self.activator.calls)
-
-        with self.assertRaises(ServiceError) as caught:
-            self.service.traffic_update()
-
-        self.assertEqual(caught.exception.code, "traffic_activation_failed")
-        self.assertNotIn(9, self.state.users)
-        self.assertEqual(self.state, before)
-        self.assertEqual(len(self.activator.calls), calls)
-
-    def test_traffic_rejects_identity_and_enabled_state_drift_pending_manual_sync(self):
-        self.bootstrap()
-        baseline_clients = tuple(self.clients)
-        baseline_state = self.state
-        inactive_users = dict(baseline_state.users)
-        inactive_users[8] = replace(inactive_users[8], active=False)
-        inactive_state = RuntimeState(1, baseline_state.owner_client_id, inactive_users)
-        cases = (
-            ("renamed", (self.owner, replace(self.member, email="renamed@example.test")), baseline_state),
-            ("disabled", (self.owner, replace(self.member, enabled=False)), baseline_state),
-            ("reenabled", baseline_clients, inactive_state),
-            ("deleted active", (self.owner,), baseline_state),
-        )
-
-        for name, clients, state in cases:
-            with self.subTest(name=name):
-                self.clients = list(clients)
-                self.state = state
-                calls = len(self.activator.calls)
-
-                with self.assertRaises(ServiceError) as caught:
-                    self.service.traffic_update()
-
-                self.assertEqual(caught.exception.code, "traffic_activation_failed")
-                self.assertEqual(self.state, state)
-                self.assertEqual(len(self.activator.calls), calls)
-
-    def test_traffic_allows_a_missing_already_inactive_retained_user(self):
-        self.bootstrap()
-        users = dict(self.state.users)
-        users[8] = replace(users[8], active=False)
-        self.state = RuntimeState(1, 7, users)
-        self.clients = [self.owner]
-
-        result = self.service.traffic_update()
-
-        self.assertEqual(result, {"updated": (), "errors": ()})
-        self.assertFalse(self.state.users[8].active)
-
     def test_links_and_rotation_reject_release_less_or_inactive_users(self):
         self.bootstrap()
         users = dict(self.state.users)

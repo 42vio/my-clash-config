@@ -132,10 +132,20 @@ HOME_UPLOAD_SURFACE_REFERENCES = (
     "upload_home",
 )
 
+# The retired scheduled-traffic mechanism (timer-driven traffic_update plus
+# its traffic-update CLI command) is fully replaced by the socket-activated
+# metadata service.  Its names may survive only in the development-history
+# records under docs/superpowers/, never in active runtime code, deployment
+# assets, the four project-use manuals, or the runtime tests.
+LEGACY_SCHEDULED_TRAFFIC_REFERENCES = (
+    "clash-sub-traffic",
+    "traffic-update",
+    "traffic_update",
+)
+
 DOCUMENTED_CLI_COMMANDS = frozenset(
     (
         "sync",
-        "traffic-update",
         "status",
         "links",
         "history",
@@ -259,6 +269,27 @@ class RepositorySafetyTests(unittest.TestCase):
     def test_no_home_upload_workflow_exists_in_the_command_surface(self):
         paths = [str(ROOT / "bin" / "clash-sub"), str(ROOT / "clash_sub")]
         for reference in HOME_UPLOAD_SURFACE_REFERENCES:
+            result = subprocess.run(
+                ["rg", "--fixed-strings", "--line-number", reference, "--", *paths],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_scheduled_traffic_mechanism_is_absent_from_the_active_product_tree(self):
+        # Active runtime code, deployment assets, the four project-use
+        # manuals, and the runtime tests must carry none of the retired
+        # scheduled-traffic names.  Historical design records under
+        # docs/superpowers/ are deliberately not scanned.
+        paths = [str(ROOT / "clash_sub"), str(ROOT / "deploy")]
+        paths.extend(str(ROOT / relative) for relative in PROJECT_USE_DOCUMENTS)
+        paths.extend(
+            str(path)
+            for path in sorted((ROOT / "tests").glob("test_lightweight_*.py"))
+        )
+        for reference in LEGACY_SCHEDULED_TRAFFIC_REFERENCES:
             result = subprocess.run(
                 ["rg", "--fixed-strings", "--line-number", reference, "--", *paths],
                 cwd=ROOT,

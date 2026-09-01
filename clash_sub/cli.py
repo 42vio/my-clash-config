@@ -556,7 +556,6 @@ def _parser():
     parser = _CommandParser(add_help=False)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("sync", add_help=False)
-    commands.add_parser("traffic-update", add_help=False)
     commands.add_parser("status", add_help=False)
     commands.add_parser("links", add_help=False)
     history = commands.add_parser("history", add_help=False)
@@ -622,8 +621,6 @@ def _run_command(parsed, stdout, stderr, factory):
         return _cert_command(parsed, stdout, stderr)
     if command == "sync":
         return _call("sync", None, stdout, stderr, factory)
-    if command == "traffic-update":
-        return _call("traffic", None, stdout, stderr, factory)
     if command == "status":
         return _call("status", None, stdout, stderr, factory)
     if command == "links":
@@ -666,9 +663,6 @@ def _call(operation, value, stdout, stderr, factory):
                     stderr.write("客户端 ID %s（错误代码：%s）\n" % (error["client_id"], error["code"]))
                 return 1
             stdout.write("同步已完成。\n")
-        elif operation == "traffic":
-            service.traffic_update()
-            stdout.write("流量信息已更新。\n")
         elif operation == "links":
             _write_links(stdout, service.links())
         elif operation == "status":

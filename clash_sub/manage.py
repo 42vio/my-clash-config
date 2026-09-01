@@ -56,11 +56,12 @@ _BACKUP_ARCHIVE_NAMES = (
     "etc/nginx/stream-conf.d/clash-sub.conf",
     "etc/nginx/conf.d/clash-sub.conf",
     "var/lib/clash-sub/private/state.json",
+    "var/lib/clash-sub/private/airport-source.json",
 )
 
 
 def create_backup(repo_root, runner):
-    """Archive exactly the four rebuild-essential files; returns the path (0600)."""
+    """Archive exactly the five rebuild-essential files; returns the path (0600)."""
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     destination = _backups_root(repo_root) / ("clash-sub-backup-%s.tar.gz" % stamp)
     private_root = _runtime_private_root(repo_root)
@@ -71,6 +72,7 @@ def create_backup(repo_root, runner):
     sources.extend(_nginx_config_paths())
     if private_root is not None:
         sources.append(private_root / "state.json")
+        sources.append(private_root / "airport-source.json")
     if len(sources) != len(_BACKUP_ARCHIVE_NAMES) or any(
         not path.is_file() for path in sources
     ):

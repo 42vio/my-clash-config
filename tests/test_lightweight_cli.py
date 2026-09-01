@@ -122,10 +122,6 @@ class FakeService:
         self._call("sync_all")
         return self.sync_result
 
-    def traffic_update(self):
-        self._call("traffic_update")
-        return {"updated": (), "errors": ()}
-
     def links(self):
         self._call("links")
         return self.links_value
@@ -532,7 +528,6 @@ class LightweightCliTests(unittest.TestCase):
     def test_noninteractive_commands_call_only_the_documented_service_operations(self):
         cases = (
             (["sync"], "sync_all", ()),
-            (["traffic-update"], "traffic_update", ()),
             (["status"], "status", ()),
             (["links"], "links", ()),
             (["history", "7"], "history", (7,)),
@@ -556,7 +551,6 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(stdout, "所有者已重新初始化；请执行 sync。\n")
         self.assertIn("重新初始化 owner", USER_MENU)
         self.assertNotIn("template-sync", MENU + MAINTENANCE_MENU + CERT_MENU + BACKUP_MENU + USER_MENU)
-        self.assertNotIn("traffic-update", MENU + MAINTENANCE_MENU + CERT_MENU + BACKUP_MENU + USER_MENU)
         self.assertNotIn("post-update", MENU + MAINTENANCE_MENU + CERT_MENU + BACKUP_MENU + USER_MENU)
 
     def test_reinitialize_owner_requires_a_canonical_decimal_database_id(self):

@@ -100,7 +100,6 @@ class AcceptanceHarness:
         self.public_root = self.root / "public"
         self.routes_path = self.root / "nginx" / "routes.conf"
         self.database = self.root / "x-ui.db"
-        self.render_calls = 0
         self.fail_render = False
         self.fail_xui_source = False
         self.airport_body = (
@@ -248,7 +247,6 @@ class AcceptanceHarness:
         return download_airport_document(url, maximum, opener=self._airport_opener)
 
     def _render(self, owner, xui, airport, template_root):
-        self.render_calls += 1
         if self.fail_render:
             raise RuntimeError("synthetic render failure")
         return render_user_bundle(owner, xui, airport, template_root)
@@ -265,17 +263,6 @@ class AcceptanceHarness:
     @property
     def provider_path(self):
         return self.public_root / "provider" / "AmyTelecom.yaml"
-
-    def set_traffic(self, client_id, upload, download):
-        connection = sqlite3.connect(self.database)
-        try:
-            connection.execute(
-                "UPDATE client_traffics SET up = ?, down = ? WHERE id = ?",
-                (upload, download, client_id),
-            )
-            connection.commit()
-        finally:
-            connection.close()
 
     def corrupt_schema(self):
         connection = sqlite3.connect(self.database)
@@ -727,29 +714,6 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(failed, 1)
         self.assertNotIn(airport_url, stdout.getvalue() + stderr.getvalue())
         self.assertNotIn(airport_credential, stdout.getvalue() + stderr.getvalue())
-
-    def test_traffic_update_reactivates_unchanged_routes_without_rendering_or_mihomo(self):
-        # Traffic now reaches subscribers through the metadata service at
-        # request time, so a traffic change no longer alters the routes at
-        # all.  The scheduled traffic_update mechanism still runs (Task 7
-        # removes it) and must keep re-activating the identical bytes.
-        harness = self.make_harness()
-        harness.import_airport()
-        harness.service.sync_all()
-        before = harness.active_view()
-        previous_routes = harness.route_text()
-        harness.render_calls = 0
-        harness.runner.clear()
-        harness.set_traffic(harness.owner_id, 999, 888)
-
-        harness.service.traffic_update()
-
-        self.assertEqual(harness.render_calls, 0)
-        self.assertEqual(harness.runner.mihomo_calls(), [])
-        self.assertEqual(harness.active_view()["state"], before["state"])
-        self.assertEqual(harness.active_view()["releases"], before["releases"])
-        self.assertEqual(harness.route_text(), previous_routes)
-        self.assertNotIn('Subscription-Userinfo "', harness.route_text())
 
     def test_failed_owner_rotation_keeps_the_old_link_routes_and_release(self):
         harness = self.make_harness()

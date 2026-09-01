@@ -150,10 +150,10 @@ clash-sub sync
 clash-sub status
 ```
 
-每日流量任务由 `clash-sub-traffic.timer` 触发。检查定时器与服务状态：
+订阅流量元数据由 `clash-sub-metadata.socket` 按需激活提供。检查 Socket 状态：
 
 ```bash
-systemctl status clash-sub-traffic.timer clash-sub-traffic.service
+systemctl status clash-sub-metadata.socket
 ```
 
 ## 故障检查顺序
@@ -169,12 +169,12 @@ systemctl status clash-sub-traffic.timer clash-sub-traffic.service
 
    记录公开的错误代码、pending 项与受影响用户 ID，不记录订阅链接或私密值。
 
-2. 检查 Nginx、x-ui 与定时器：
+2. 检查 Nginx、x-ui 与流量元数据 Socket：
 
    ```bash
    nginx -t
-   systemctl status nginx x-ui clash-sub-traffic.timer
-   journalctl -u nginx -u x-ui -u clash-sub-traffic.service -n 100 --no-pager
+   systemctl status nginx x-ui clash-sub-metadata.socket
+   journalctl -u nginx -u x-ui -u clash-sub-metadata.service -n 100 --no-pager
    ```
 
 3. 若发布过程中断、启动恢复未完成，先运行：
@@ -230,7 +230,7 @@ ls -l backups/clash-sub-backup-*.tar.gz
    ```bash
    clash-sub sync
    nginx -t
-   systemctl status nginx x-ui clash-sub-traffic.timer
+   systemctl status nginx x-ui clash-sub-metadata.socket
    clash-sub status
    clash-sub links
    ```
@@ -244,7 +244,7 @@ ls -l backups/clash-sub-backup-*.tar.gz
 
 1. 在旧服务器执行 `clash-sub backup`，并保留旧服务继续运行。
 2. 在新主机完成恢复和验收；新域名的 DNS、证书和 Nginx 由安装流程处理。
-3. 用新域名的 `clash-sub links` 验证每个预期链接，并确认 Nginx、x-ui 与流量定时器正常。
+3. 用新域名的 `clash-sub links` 验证每个预期链接，并确认 Nginx、x-ui 与流量元数据 Socket 正常。
 4. 仅在新发布物和客户端实际连通后切换 DNS/客户端；保留旧主机作为回退点。
 5. 稳定观察后再人工撤销旧主机的公开入口和访问凭据。不要在切换前执行安装回滚或删除旧备份。
 

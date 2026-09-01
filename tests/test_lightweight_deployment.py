@@ -9,8 +9,6 @@ ROOT = Path(__file__).resolve().parents[1]
 NGINX_STREAM_TEMPLATE = ROOT / "templates" / "nginx" / "stream.conf.j2"
 NGINX_SUB_TEMPLATE = ROOT / "templates" / "nginx" / "sub-server.conf.j2"
 INSTALL_SH = ROOT / "install.sh"
-TRAFFIC_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-traffic.service"
-TRAFFIC_TIMER = ROOT / "deploy" / "systemd" / "clash-sub-traffic.timer"
 RECOVERY_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-recover.service"
 RECOVERY_DROP_IN = ROOT / "deploy" / "systemd" / "nginx.service.d" / "clash-sub-recover.conf"
 METADATA_SOCKET = ROOT / "deploy" / "systemd" / "clash-sub-metadata.socket"
@@ -168,42 +166,25 @@ class LightweightDeploymentTests(unittest.TestCase):
         deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
         self.assertIn("apt-get install -y git", deployment)
 
-    def test_traffic_unit_is_root_only_hardened_traffic_update_without_generation(self):
-        service = TRAFFIC_SERVICE.read_text(encoding="utf-8")
-        self.assertIn("[Service]", service)
-        required = {
-            "Type": "oneshot",
-            "ExecStart": "/usr/local/bin/clash-sub traffic-update",
-            "User": "root",
-            "NoNewPrivileges": "true",
-            "PrivateTmp": "true",
-            "ProtectSystem": "strict",
-            "ProtectHome": "true",
-            "PrivateDevices": "true",
-            "ProtectKernelTunables": "true",
-            "ProtectKernelModules": "true",
-            "ProtectControlGroups": "true",
-            "RestrictSUIDSGID": "true",
-            "LockPersonality": "true",
-            "ReadWritePaths": (
-                "/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub "
-                "/var/log/nginx /var/lib/nginx"
-            ),
-        }
-        for key, value in required.items():
-            with self.subTest(key=key):
-                self.assertEqual(_unit_value(service, key), [value])
-        self.assertNotIn("ExecStartPre", service)
-        self.assertNotRegex(service, r"\b(?:sync|airport|generate|render)\b")
-
-    def test_traffic_timer_runs_once_daily_and_recovers_missed_runs(self):
-        timer = TRAFFIC_TIMER.read_text(encoding="utf-8")
-        self.assertIn("[Timer]", timer)
-        self.assertEqual(_unit_value(timer, "OnCalendar"), ["daily"])
-        self.assertEqual(_unit_value(timer, "RandomizedDelaySec"), ["5m"])
-        self.assertEqual(_unit_value(timer, "Persistent"), ["true"])
-        self.assertIn("WantedBy=timers.target", timer)
-        self.assertNotRegex(timer, r"\b(?:sync|airport|generate|render)\b")
+    def test_scheduled_traffic_units_are_gone_and_metadata_units_are_the_installed_set(self):
+        # The retired scheduled-traffic units must not ship at all; the
+        # top-level unit set is exactly the socket-activated metadata pair
+        # plus the boot recovery oneshot (drop-ins live in nginx.service.d,
+        # the socket's directory rule in tmpfiles.d/).
+        top_level_units = sorted(
+            path.name
+            for path in (ROOT / "deploy" / "systemd").iterdir()
+            if path.is_file()
+        )
+        self.assertEqual(
+            top_level_units,
+            [
+                "clash-sub-metadata.service",
+                "clash-sub-metadata.socket",
+                "clash-sub-recover.service",
+            ],
+        )
+        self.assertTrue(METADATA_TMPFILES.is_file())
 
     def test_metadata_socket_unit_fixes_one_group_readable_unix_socket(self):
         text = METADATA_SOCKET.read_text(encoding="utf-8")

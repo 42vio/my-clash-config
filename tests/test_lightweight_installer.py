@@ -90,7 +90,7 @@ class InstallStateTests(unittest.TestCase):
             "phases_done": ["preflight"],
             "files_written": [],
             "backups": {},
-            "replaced_files": {"/etc/systemd/system/clash-sub-traffic.service": legacy_replacement},
+            "replaced_files": {"/etc/systemd/system/clash-sub-metadata.socket": legacy_replacement},
         }
         path.write_text(json.dumps(legacy), encoding="utf-8")
         os.chmod(path, 0o600)
@@ -102,7 +102,7 @@ class InstallStateTests(unittest.TestCase):
         self.assertFalse(loaded.default_site_removed)
         self.assertEqual(
             loaded.replaced_files,
-            {"/etc/systemd/system/clash-sub-traffic.service": legacy_replacement},
+            {"/etc/systemd/system/clash-sub-metadata.socket": legacy_replacement},
         )
         # Additive provenance fields default safely on legacy journals.
         self.assertFalse(loaded.artifact_mutation_started)
@@ -960,6 +960,7 @@ class NginxActivationPhaseTests(unittest.TestCase):
             routes_conf=self.root / "clash-sub" / "routes.conf",
             ssl_dir=self.root / "ssl",
             systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
             nginx_conf=self.root / "nginx.conf",
             cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
@@ -1044,25 +1045,63 @@ class NginxActivationPhaseTests(unittest.TestCase):
             restart.read_text(encoding="utf-8"),
             "[Service]\nRestart=on-failure\nRestartSec=2s\n",
         )
-        traffic = self.paths.systemd_dir / "clash-sub-traffic.service"
-        self.assertTrue(traffic.exists())
-        timer = self.paths.systemd_dir / "clash-sub-traffic.timer"
-        self.assertTrue(timer.exists())
+        socket = self.paths.systemd_dir / "clash-sub-metadata.socket"
+        self.assertTrue(socket.exists())
+        service = self.paths.systemd_dir / "clash-sub-metadata.service"
+        self.assertTrue(service.exists())
         recover = self.paths.systemd_dir / "clash-sub-recover.service"
         self.assertTrue(recover.exists())
         recover_drop_in = (
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf"
         )
         self.assertTrue(recover_drop_in.exists())
+        tmpfiles = self.paths.metadata_tmpfiles()
+        self.assertTrue(tmpfiles.is_file())
+        self.assertEqual(tmpfiles.stat().st_mode & 0o777, 0o644)
         joined = [" ".join(c) for c in self.runner_calls]
         self.assertTrue(any("daemon-reload" in item for item in joined))
-        self.assertTrue(any("enable" in item and "clash-sub-traffic.timer" in item for item in joined))
+        self.assertTrue(any("enable" in item and "clash-sub-metadata.socket" in item for item in joined))
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("systemd_harden", state.phases_done)
+
+    def test_harden_installs_and_enables_only_the_metadata_socket(self):
+        # The service stays un-enabled and un-started: socket activation
+        # starts it on demand, and the tmpfiles directory rule must be
+        # applied before the socket is enabled so the listen path exists.
+        self._installer().harden_systemd()
+
+        enable_calls = [
+            call for call in self.runner_calls if "enable" in call or "start" in call
+        ]
+        self.assertEqual(
+            enable_calls,
+            [["systemctl", "enable", "--now", "clash-sub-metadata.socket"]],
+        )
+        self.assertFalse(
+            any(
+                "clash-sub-metadata.service" in " ".join(call)
+                for call in self.runner_calls
+            ),
+            "the metadata service must never be enabled or started directly",
+        )
+        tmpfiles_calls = [
+            index
+            for index, call in enumerate(self.runner_calls)
+            if call[:1] == ["systemd-tmpfiles"]
+        ]
+        self.assertEqual(len(tmpfiles_calls), 1)
+        tmpfiles_call = self.runner_calls[tmpfiles_calls[0]]
+        self.assertEqual(tmpfiles_call[:2], ["systemd-tmpfiles", "--create"])
+        self.assertIn(str(self.paths.metadata_tmpfiles()), tmpfiles_call)
+        self.assertLess(
+            tmpfiles_calls[0],
+            self.runner_calls.index(["systemctl", "enable", "--now", "clash-sub-metadata.socket"]),
+        )
 
     def test_hardened_units_use_custom_runtime_paths(self):
         custom = InstallPaths(
             systemd_dir=self.root / "systemd-custom",
+            tmpfiles_dir=self.root / "tmpfiles-custom",
             private_root=self.root / "runtime" / "private",
             public_root=self.root / "runtime" / "public",
             routes_conf=self.root / "nginx-custom" / "routes.conf",
@@ -1073,9 +1112,9 @@ class NginxActivationPhaseTests(unittest.TestCase):
 
         installer.harden_systemd()
 
-        traffic = (custom.systemd_dir / "clash-sub-traffic.service").read_text(encoding="utf-8")
+        metadata = (custom.systemd_dir / "clash-sub-metadata.service").read_text(encoding="utf-8")
         recover = (custom.systemd_dir / "clash-sub-recover.service").read_text(encoding="utf-8")
-        self.assertIn("ReadWritePaths=%s %s %s" % (custom.private_root, custom.public_root, custom.routes_conf.parent), traffic)
+        self.assertIn("ReadWritePaths=%s" % custom.private_root, metadata)
         self.assertIn("ReadWritePaths=%s %s %s" % (custom.private_root, custom.public_root, custom.routes_conf.parent), recover)
 
     def test_systemd_renderer_rejects_asset_without_path_sentinel(self):
@@ -1119,6 +1158,7 @@ class CliSymlinkTests(unittest.TestCase):
         self.symlink_dir.mkdir()
         self.paths = InstallPaths(
             systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
             cli_symlink=self.symlink_dir / "clash-sub",
         )
 
@@ -1626,6 +1666,7 @@ class RollbackInstallTests(unittest.TestCase):
             stream_conf_dir=self.root / "stream-conf.d",
             http_conf_dir=self.root / "conf.d",
             systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
             cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
         self.paths.nginx_conf.write_text(
@@ -1652,8 +1693,8 @@ class RollbackInstallTests(unittest.TestCase):
     def test_rolls_back_install_artifacts(self):
         installer = self._installer()
         systemd_units = (
-            self.paths.systemd_dir / "clash-sub-traffic.service",
-            self.paths.systemd_dir / "clash-sub-traffic.timer",
+            self.paths.systemd_dir / "clash-sub-metadata.socket",
+            self.paths.systemd_dir / "clash-sub-metadata.service",
             self.paths.systemd_dir / "clash-sub-recover.service",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
@@ -1661,6 +1702,9 @@ class RollbackInstallTests(unittest.TestCase):
         for unit in systemd_units:
             unit.parent.mkdir(parents=True, exist_ok=True)
             unit.write_text("# unit\n", encoding="utf-8")
+        tmpfiles = self.paths.metadata_tmpfiles()
+        tmpfiles.parent.mkdir(parents=True, exist_ok=True)
+        tmpfiles.write_text("# tmpfiles\n", encoding="utf-8")
         self.paths.cli_symlink.parent.mkdir(parents=True, exist_ok=True)
         self.paths.cli_symlink.symlink_to(self.root / "bin" / "clash-sub")
         save_install_state(
@@ -1677,6 +1721,7 @@ class RollbackInstallTests(unittest.TestCase):
                     str(self.paths.stream_conf()),
                     str(self.paths.http_conf()),
                     str(self.paths.cli_symlink),
+                    str(tmpfiles),
                 ]
                 + [str(unit) for unit in systemd_units],
                 backups={},
@@ -1698,11 +1743,12 @@ class RollbackInstallTests(unittest.TestCase):
         self.assertIn("http {", text)
         for unit in systemd_units:
             self.assertFalse(unit.exists())
+        self.assertFalse(tmpfiles.exists())
         self.assertFalse((self.root / "private" / "install-state.json").exists())
         joined = [" ".join(c) for c in self.runner_calls]
         self.assertTrue(any("stop" in item and "nginx" in item for item in joined))
         self.assertTrue(any("disable" in item and "nginx" in item for item in joined))
-        self.assertTrue(any("clash-sub-traffic.timer" in item for item in joined))
+        self.assertTrue(any("clash-sub-metadata.socket" in item for item in joined))
         self.assertTrue(any("daemon-reload" in item for item in joined))
 
     def test_rollback_without_journal_leaves_files(self):
@@ -1718,7 +1764,7 @@ class RollbackInstallTests(unittest.TestCase):
     def test_rollback_with_empty_journal_touches_nothing(self):
         decoy_conf = "user www-data;\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n"
         self.paths.nginx_conf.write_text(decoy_conf, encoding="utf-8")
-        decoy_unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        decoy_unit = self.paths.systemd_dir / "clash-sub-metadata.socket"
         decoy_unit.parent.mkdir(parents=True, exist_ok=True)
         decoy_unit.write_text("# operator managed unit\n", encoding="utf-8")
         installer = self._installer()
@@ -1741,7 +1787,7 @@ class RollbackInstallTests(unittest.TestCase):
     def test_rollback_with_preflight_only_journal_touches_nothing(self):
         decoy_conf = "user www-data;\nhttp {\n    include /etc/nginx/conf.d/*.conf;\n}\n"
         self.paths.nginx_conf.write_text(decoy_conf, encoding="utf-8")
-        decoy_unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        decoy_unit = self.paths.systemd_dir / "clash-sub-metadata.socket"
         decoy_unit.parent.mkdir(parents=True, exist_ok=True)
         decoy_unit.write_text("# operator managed unit\n", encoding="utf-8")
         installer = self._installer()
@@ -1769,7 +1815,7 @@ class RollbackInstallTests(unittest.TestCase):
         (self.root / "bin").mkdir()
         (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
         self.paths.cli_symlink.parent.mkdir(parents=True, exist_ok=True)
-        unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        unit = self.paths.systemd_dir / "clash-sub-metadata.socket"
         unit.parent.mkdir(parents=True, exist_ok=True)
         unit.write_text("# original unit\n", encoding="utf-8")
         os.chmod(unit, 0o600)
@@ -2013,6 +2059,7 @@ class HardenSystemdRollbackTests(unittest.TestCase):
         self.paths = InstallPaths(
             nginx_conf=self.root / "nginx.conf",
             systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
             cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
         self.paths.nginx_conf.write_text(
@@ -2057,14 +2104,15 @@ class HardenSystemdRollbackTests(unittest.TestCase):
         installer.rollback_install()
 
         systemd_units = (
-            self.paths.systemd_dir / "clash-sub-traffic.service",
-            self.paths.systemd_dir / "clash-sub-traffic.timer",
+            self.paths.systemd_dir / "clash-sub-metadata.socket",
+            self.paths.systemd_dir / "clash-sub-metadata.service",
             self.paths.systemd_dir / "clash-sub-recover.service",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
         )
         for unit in systemd_units:
             self.assertFalse(unit.exists() or unit.is_symlink(), str(unit))
+        self.assertFalse(self.paths.metadata_tmpfiles().exists())
         self.assertFalse(
             self.paths.cli_symlink.exists() or self.paths.cli_symlink.is_symlink()
         )
@@ -2074,7 +2122,7 @@ class HardenSystemdRollbackTests(unittest.TestCase):
         self.assertTrue(any("disable" in item and "nginx" in item for item in joined))
         self.assertTrue(
             any(
-                "disable" in item and "clash-sub-traffic.timer" in item
+                "disable" in item and "clash-sub-metadata.socket" in item
                 for item in joined
             )
         )
@@ -2094,6 +2142,7 @@ class ForeignUnitReplacementTests(unittest.TestCase):
         self.paths = InstallPaths(
             nginx_conf=self.root / "nginx.conf",
             systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
             cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
         self.paths.nginx_conf.write_text(
@@ -2112,7 +2161,7 @@ class ForeignUnitReplacementTests(unittest.TestCase):
         return Installer(self.root, paths=self.paths, runner=self._runner)
 
     def test_foreign_regular_unit_is_restored_byte_identical(self):
-        unit = self.paths.systemd_dir / "clash-sub-traffic.service"
+        unit = self.paths.systemd_dir / "clash-sub-metadata.socket"
         original = "# operator unit\n"
         unit.parent.mkdir(parents=True, exist_ok=True)
         unit.write_text(original, encoding="utf-8")
@@ -2195,7 +2244,7 @@ class HardenCrashWindowTests(unittest.TestCase):
     """
 
     def test_crash_window_still_restores_replaced_unit(self):
-        for mode in ("daemon-reload", "timer-enable", "unit-write"):
+        for mode in ("daemon-reload", "socket-enable", "unit-write"):
             with self.subTest(mode=mode):
                 self._assert_crash_window_restores_foreign_unit(mode)
 
@@ -2209,6 +2258,7 @@ class HardenCrashWindowTests(unittest.TestCase):
             paths = InstallPaths(
                 nginx_conf=root / "nginx.conf",
                 systemd_dir=root / "systemd",
+                tmpfiles_dir=root / "tmpfiles.d",
                 cli_symlink=root / "usr-local-bin" / "clash-sub",
             )
             paths.nginx_conf.write_text(
@@ -2227,16 +2277,16 @@ class HardenCrashWindowTests(unittest.TestCase):
                     armed["fail"] = False
                     return subprocess.CompletedProcess(arguments, 1)
                 if (
-                    mode == "timer-enable"
+                    mode == "socket-enable"
                     and "enable" in arguments
-                    and "clash-sub-traffic.timer" in arguments
+                    and "clash-sub-metadata.socket" in arguments
                     and armed["fail"]
                 ):
                     armed["fail"] = False
                     return subprocess.CompletedProcess(arguments, 1)
                 return subprocess.CompletedProcess(arguments, 0)
 
-            unit = paths.systemd_dir / "clash-sub-traffic.service"
+            unit = paths.systemd_dir / "clash-sub-metadata.socket"
             original = "# operator unit\n"
             unit.parent.mkdir(parents=True, exist_ok=True)
             unit.write_text(original, encoding="utf-8")
@@ -2294,9 +2344,9 @@ class HardenCrashWindowTests(unittest.TestCase):
                 self.assertEqual(rollback_calls, [])
             else:
                 # The reload/enable attempt was journaled before it ran, so
-                # rollback disables the timer and reloads systemd again.
+                # rollback disables the socket and reloads systemd again.
                 self.assertTrue(
-                    any("clash-sub-traffic.timer" in item for item in rollback_calls)
+                    any("clash-sub-metadata.socket" in item for item in rollback_calls)
                 )
                 self.assertTrue(
                     any("daemon-reload" in item for item in rollback_calls)
@@ -2391,7 +2441,7 @@ class HardenWriteAheadTests(unittest.TestCase):
 
     A crash inside ``harden_systemd`` (before the phase save) must still let
     rollback remove the new units, drop-ins, and CLI symlink, and undo the
-    timer enable.
+    socket enable.
     """
 
     def setUp(self):
@@ -2406,6 +2456,7 @@ class HardenWriteAheadTests(unittest.TestCase):
             stream_conf_dir=self.root / "stream-conf.d",
             http_conf_dir=self.root / "conf.d",
             systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
             cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
         self.paths.nginx_conf.write_text(
@@ -2424,11 +2475,12 @@ class HardenWriteAheadTests(unittest.TestCase):
     def _touched_paths(self):
         return (
             self.paths.cli_symlink,
-            self.paths.systemd_dir / "clash-sub-traffic.service",
-            self.paths.systemd_dir / "clash-sub-traffic.timer",
+            self.paths.systemd_dir / "clash-sub-metadata.socket",
+            self.paths.systemd_dir / "clash-sub-metadata.service",
             self.paths.systemd_dir / "clash-sub-recover.service",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
+            self.paths.metadata_tmpfiles(),
         )
 
     def _assert_rollback_removed_everything(self, rollback_calls):
@@ -2476,8 +2528,8 @@ class HardenWriteAheadTests(unittest.TestCase):
     def test_daemon_reload_failure_rollback_restores_state(self):
         self._assert_systemctl_failure_rolls_back("daemon-reload")
 
-    def test_timer_enable_failure_rollback_restores_state(self):
-        self._assert_systemctl_failure_rolls_back("timer-enable")
+    def test_socket_enable_failure_rollback_restores_state(self):
+        self._assert_systemctl_failure_rolls_back("socket-enable")
 
     def _assert_systemctl_failure_rolls_back(self, mode):
         save_install_state(self.journal, InstallState(domain="example.com"))
@@ -2493,9 +2545,9 @@ class HardenWriteAheadTests(unittest.TestCase):
                 armed["fail"] = False
                 return subprocess.CompletedProcess(arguments, 1)
             if (
-                mode == "timer-enable"
+                mode == "socket-enable"
                 and "enable" in arguments
-                and "clash-sub-traffic.timer" in arguments
+                and "clash-sub-metadata.socket" in arguments
                 and armed["fail"]
             ):
                 armed["fail"] = False
@@ -2517,12 +2569,12 @@ class HardenWriteAheadTests(unittest.TestCase):
         rollback_calls = [" ".join(c) for c in self.runner_calls[before:]]
         self._assert_rollback_removed_everything(rollback_calls)
         self.assertTrue(
-            any("clash-sub-traffic.timer" in item for item in rollback_calls)
+            any("clash-sub-metadata.socket" in item for item in rollback_calls)
         )
         self.assertTrue(any("daemon-reload" in item for item in rollback_calls))
         self.assertFalse(self.journal.exists())
 
-    def test_timer_enabled_then_state_save_crash(self):
+    def test_socket_enabled_then_state_save_crash(self):
         save_install_state(self.journal, InstallState(domain="example.com"))
         installer = Installer(self.root, paths=self.paths, runner=self._runner)
 
@@ -2542,7 +2594,7 @@ class HardenWriteAheadTests(unittest.TestCase):
         rollback_calls = [" ".join(c) for c in self.runner_calls[before:]]
         self._assert_rollback_removed_everything(rollback_calls)
         self.assertTrue(
-            any("clash-sub-traffic.timer" in item for item in rollback_calls)
+            any("clash-sub-metadata.socket" in item for item in rollback_calls)
         )
         self.assertTrue(any("daemon-reload" in item for item in rollback_calls))
         self.assertFalse(self.journal.exists())
@@ -2983,6 +3035,7 @@ class RollbackWriteAheadRegressionTests(unittest.TestCase):
             http_conf_dir=self.root / "conf.d",
             routes_conf=self.root / "routes.conf",
             systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
             cli_symlink=self.root / "usr-local-bin" / "clash-sub",
         )
         self.paths.nginx_conf.write_text("http {\n}\n", encoding="utf-8")
@@ -3080,10 +3133,10 @@ class RollbackWriteAheadRegressionTests(unittest.TestCase):
             self.paths.nginx_conf.read_text(encoding="utf-8"),
         )
 
-    def test_foreign_timer_state_is_restored_after_rollback(self):
-        timer = self.paths.systemd_dir / "clash-sub-traffic.timer"
-        timer.parent.mkdir(parents=True)
-        timer.write_text("# operator timer\n", encoding="utf-8")
+    def test_foreign_socket_state_is_restored_after_rollback(self):
+        socket = self.paths.systemd_dir / "clash-sub-metadata.socket"
+        socket.parent.mkdir(parents=True)
+        socket.write_text("# operator socket\n", encoding="utf-8")
         service = {"active": True, "enabled": True}
 
         def runner(arguments, **_):
@@ -3103,10 +3156,10 @@ class RollbackWriteAheadRegressionTests(unittest.TestCase):
         installer.harden_systemd()
         installer.rollback_install()
 
-        self.assertEqual(timer.read_text(encoding="utf-8"), "# operator timer\n")
+        self.assertEqual(socket.read_text(encoding="utf-8"), "# operator socket\n")
         self.assertEqual(service, {"active": True, "enabled": True})
 
-    def test_fresh_timer_not_found_allows_systemd_hardening(self):
+    def test_fresh_socket_not_found_allows_systemd_hardening(self):
         calls = []
 
         def runner(arguments, **_):
@@ -3120,11 +3173,11 @@ class RollbackWriteAheadRegressionTests(unittest.TestCase):
         installer = Installer(self.root, paths=self.paths, runner=runner)
         installer.harden_systemd()
         state = load_install_state(self.journal)
-        self.assertFalse(state.timer_active)
-        self.assertFalse(state.timer_enabled)
+        self.assertFalse(state.socket_active)
+        self.assertFalse(state.socket_enabled)
         self.assertTrue(any(call[:2] == ["systemctl", "daemon-reload"] for call in calls))
 
-    def test_unrecognized_timer_state_fails_before_systemd_writes(self):
+    def test_unrecognized_socket_state_fails_before_systemd_writes(self):
         for active_rc, enabled_rc in ((1, 1), (3, 2)):
             with self.subTest(active_rc=active_rc, enabled_rc=enabled_rc):
                 calls = []
@@ -3136,11 +3189,11 @@ class RollbackWriteAheadRegressionTests(unittest.TestCase):
                         return subprocess.CompletedProcess(arguments, enabled_rc)
                     return subprocess.CompletedProcess(arguments, 0)
                 installer = Installer(self.root, paths=self.paths, runner=runner)
-                with self.assertRaisesRegex(InstallerError, "timer_service_state_unknown"):
+                with self.assertRaisesRegex(InstallerError, "socket_service_state_unknown"):
                     installer.harden_systemd()
                 self.assertFalse(any(call[:2] == ["systemctl", "daemon-reload"] for call in calls))
 
-    def test_failed_timer_cleanup_keeps_journal_for_retry(self):
+    def test_failed_socket_cleanup_keeps_journal_for_retry(self):
         save_install_state(self.journal, InstallState(systemd_actions_started=True))
 
         def runner(arguments, **_):

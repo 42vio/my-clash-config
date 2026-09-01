@@ -38,7 +38,7 @@ cd /opt/my-clash-config
 bash install.sh
 ```
 
-按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录（含机场 provider 目录）、Nginx 配置和 `clash-sub-traffic.timer`。
+按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录（含机场 provider 目录）、Nginx 配置和 `clash-sub-metadata.socket`。
 
 安装过程按 12 个步骤显示当前操作和已完成进度；百分比表示完成的步骤比例，不是剩余时间估算。若 Python 安装阶段失败，修正错误后重新执行 `bash install.sh`，安装器会读取安装记录并沿用已经完成的阶段。
 
@@ -74,12 +74,12 @@ bash install.sh
 
 ```bash
 nginx -t
-systemctl status nginx clash-sub-traffic.timer
+systemctl status nginx clash-sub-metadata.socket
 clash-sub status
 clash-sub links
 ```
 
-确认 `nginx -t` 通过、`clash-sub-traffic.timer` 已启用且运行、`status` 的最近错误为空、`links` 显示 owner 两条（`Clash-Compat.yaml`、`Clash-Balance.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
+确认 `nginx -t` 通过、`clash-sub-metadata.socket` 已启用且运行、`status` 的最近错误为空、`links` 显示 owner 两条（`Clash-Compat.yaml`、`Clash-Balance.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
 
 ## 升级与卸载
 
@@ -137,6 +137,6 @@ clash-sub rollback --install
 | Nginx 路由 | `/etc/nginx/clash-sub/routes.conf` |
 | Nginx stream / HTTP 配置 | `/etc/nginx/stream-conf.d/clash-sub.conf` / `/etc/nginx/conf.d/clash-sub.conf` |
 | 证书 | `/etc/ssl/domain/fullchain.pem`、`/etc/ssl/domain/privkey.pem` |
-| 定时更新 | `clash-sub-traffic.service`、`clash-sub-traffic.timer` |
+| 流量元数据 | `clash-sub-metadata.socket`、`clash-sub-metadata.service` |
 | 启动恢复 | `clash-sub-recover.service`、`nginx.service.d/clash-sub-recover.conf` |
 | 安装记录 | `/opt/my-clash-config/private/install-state.json` |
