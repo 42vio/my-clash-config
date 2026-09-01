@@ -29,7 +29,7 @@
 - `clash_sub/domain.py`: canonical variants, filenames, titles, and shared immutable domain values.
 - `clash_sub/generator.py`: compose Compat/Balance round-trip documents and inject x-ui/provider references.
 - `clash_sub/template_sync.py`: read one or both iCloud sources, sanitize Compat, extract Balance DNS/comments, report ignored differences, and atomically update tracked templates.
-- `clash_sub/airport_store.py`: validate ownership/mode, stage, validate, atomically replace, and read the single stable airport provider.
+- `clash_sub/airport_store.py`: enforce ownership/mode/link and path safety, stage, atomically replace, and read the single stable airport provider without inspecting its content.
 - `clash_sub/release_store.py`: immutable main-profile releases only; no airport bytes.
 - `clash_sub/nginx.py`: exact owner/member subscription routes and stable owner-only provider route.
 - `clash_sub/service.py`: orchestrate sync, provider update, rotation, rollback, and authorization without server Home state.
@@ -266,24 +266,23 @@ git commit -m "feat: sync compat and balance templates"
 - Produces: `AirportStore(public_root: Path, *, expected_uid: int | None = None, expected_public_gid: int | None = None)`.
 - Produces: `AirportStoreError(code: str)` with sanitized stable error codes.
 - Produces: `AirportStore.path -> Path`, always `public_root / "provider" / "AmyTelecom.yaml"`.
-- Produces: `AirportStore.read() -> bytes` and `AirportStore.replace(document: bytes, validator: Callable[[Path], None]) -> Path`.
+- Produces: `AirportStore.read() -> bytes` and `AirportStore.replace(document: bytes) -> Path`.
 - Consumes later: service update/sync and Nginx route generation use the secure stable path.
 
 - [ ] **Step 1: Write failing store tests**
 
 ```python
-def test_replace_validates_temporary_file_then_atomically_publishes(self):
-    seen = []
-    path = self.store.replace(PROVIDER_BYTES, lambda candidate: seen.append(candidate.read_bytes()))
-    self.assertEqual(seen, [PROVIDER_BYTES])
+def test_replace_publishes_the_exact_bytes_after_file_safety_checks(self):
+    path = self.store.replace(PROVIDER_BYTES)
     self.assertEqual(path.name, "AmyTelecom.yaml")
     self.assertEqual(path.read_bytes(), PROVIDER_BYTES)
     self.assertEqual(path.stat().st_mode & 0o777, 0o640)
 
-def test_validator_failure_keeps_previous_provider(self):
-    self.store.replace(OLD_BYTES, lambda _: None)
-    with self.assertRaises(AirportStoreError):
-        self.store.replace(NEW_BYTES, lambda _: (_ for _ in ()).throw(ValueError()))
+def test_file_safety_failure_keeps_previous_provider(self):
+    self.store.replace(OLD_BYTES)
+    with patch("clash_sub.airport_store._os_replace", side_effect=OSError):
+        with self.assertRaises(AirportStoreError):
+            self.store.replace(NEW_BYTES)
     self.assertEqual(self.store.read(), OLD_BYTES)
 ```
 
@@ -306,12 +305,11 @@ descriptor, temporary_name = tempfile.mkstemp(
 os.fchmod(descriptor, 0o640)
 os.fchown(descriptor, expected_uid, expected_public_gid)
 write_all_and_fsync(descriptor, document)
-validator(Path(temporary_name))
 os.replace(temporary_name, self.path)
 fsync_directory(provider_directory)
 ```
 
-Wrap all failures in the stable `AirportStoreError("airport_provider_invalid")` or `AirportStoreError("airport_provider_write_failed")` without including paths or document values. Preserve the existing HTTPS/redirect/size checks in `download_airport_document`.
+Wrap all failures in the stable `AirportStoreError("airport_provider_invalid")` or `AirportStoreError("airport_provider_write_failed")` without including paths or document values. Preserve the existing HTTPS/redirect/timeout/size/non-empty checks in `download_airport_document`. The store must not parse, convert, or validate airport content, and must not call Mihomo or another content validator; a failure leaves the previous provider in place.
 
 - [ ] **Step 4: Run store and source tests**
 
@@ -452,7 +450,7 @@ git commit -m "feat: publish exact profile and provider routes"
 
 **Interfaces:**
 - Changes constructor: replace `load_home_overlay` with `airport_store`.
-- Produces: `ClashSubService.update_airport(url: str) -> dict` that only downloads, validates, and replaces the provider.
+- Produces: `ClashSubService.update_airport(url: str) -> dict` that only performs transport checks, then replaces the provider bytes.
 - Preserves: `sync_all()`, `rollback()`, `rotate_link()`, `links()`, and state activation semantics.
 - Consumes: Tasks 1, 3, 4, and 5 interfaces.
 
@@ -513,7 +511,7 @@ def _provider_url(config, token):
 
 `sync_all()` securely reads the stable provider (existence, safe ownership, non-empty) before preparing any user; its content is never parsed. Owner render receives `AirportProvider(_provider_url(...))`; member render receives `None`. Release input hashes contain `xui` only, so provider-byte changes cannot create a new main release.
 
-Delete `_home_path`, `_optional_home`, `_home_digest`, `_owner_sources`, Home exceptions, Home constructor arguments, and Home-specific Mihomo error mapping. Owner and member main profiles alike are validated by Mihomo exactly as published; the local airport provider file is never handed to Mihomo.
+Delete `_home_path`, `_optional_home`, `_home_digest`, `_owner_sources`, Home exceptions, Home constructor arguments, and Home-specific Mihomo error mapping. Member main profiles are validated by Mihomo exactly as published; owner profiles are validated through temporary offline copies whose airport provider is replaced with a fixed local synthetic file. The local airport provider file is never handed to Mihomo.
 
 - [ ] **Step 5: Wire `AirportStore` in `runtime.py` and update CLI messages**
 

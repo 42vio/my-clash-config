@@ -69,7 +69,7 @@ class MihomoUpdateTests(unittest.TestCase):
         self.assertTrue(all("-fsSL" in call for call in self.calls if call[0] == "curl"))
 
     def test_every_provider_yaml_is_skipped_but_other_published_yaml_is_validated(self):
-        old_name = self.provider_directory / "previous-airport.yaml"
+        old_name = self.provider_directory / "cached-provider.yaml"
         arbitrary_provider = self.provider_directory / "third-party.yaml"
         old_name.write_text("proxies: []\n", encoding="utf-8")
         arbitrary_provider.write_text("proxies: []\n", encoding="utf-8")
