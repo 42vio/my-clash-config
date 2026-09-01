@@ -136,7 +136,7 @@ class RenderSubscriptionUserinfoTests(unittest.TestCase):
 class CacheSemanticsTests(StoreTestCase):
     def test_first_query_refreshes_and_returns_traffic(self):
         reader = RecordingReader(
-            make_snapshot(make_client(7, upload=10, download=20, total=30, expiry_ms=40))
+            make_snapshot(make_client(7, upload=10, download=20, total=30, expiry_ms=40000))
         )
         store = self.make_store(reader)
         self.assertEqual(
@@ -144,8 +144,28 @@ class CacheSemanticsTests(StoreTestCase):
         )
         self.assertEqual(reader.calls, [self.database])
 
+    def test_xui_expiry_is_converted_from_milliseconds_to_seconds(self):
+        reader = RecordingReader(
+            make_snapshot(
+                make_client(6, upload=7, download=8, total=9, expiry_ms=1893456000000)
+            )
+        )
+        store = self.make_store(reader)
+        traffic = store.traffic_for(6)
+        self.assertEqual(
+            traffic, Traffic(upload=7, download=8, total=9, expiry_ms=1893456000)
+        )
+        self.assertEqual(
+            render_subscription_userinfo(traffic),
+            "upload=7; download=8; total=9; expire=1893456000",
+        )
+        self.assertEqual(
+            json.loads(self.cache_path.read_bytes())["clients"]["6"]["expire"],
+            1893456000,
+        )
+
     def test_query_within_ttl_hits_the_cache(self):
-        reader = RecordingReader(make_snapshot(make_client(7, upload=1, download=2, total=3, expiry_ms=4)))
+        reader = RecordingReader(make_snapshot(make_client(7, upload=1, download=2, total=3, expiry_ms=4000)))
         store = self.make_store(reader)
         store.traffic_for(7)
         self.clock.advance(CACHE_TTL_SECONDS - 1)
@@ -156,8 +176,8 @@ class CacheSemanticsTests(StoreTestCase):
 
     def test_query_after_ttl_refreshes(self):
         reader = RecordingReader(
-            make_snapshot(make_client(7, upload=1, download=2, total=3, expiry_ms=4)),
-            make_snapshot(make_client(7, upload=5, download=6, total=7, expiry_ms=8)),
+            make_snapshot(make_client(7, upload=1, download=2, total=3, expiry_ms=4000)),
+            make_snapshot(make_client(7, upload=5, download=6, total=7, expiry_ms=8000)),
         )
         store = self.make_store(reader)
         store.traffic_for(7)
@@ -170,9 +190,9 @@ class CacheSemanticsTests(StoreTestCase):
     def test_one_refresh_populates_all_clients(self):
         reader = RecordingReader(
             make_snapshot(
-                make_client(1, upload=11, download=12, total=13, expiry_ms=14),
-                make_client(2, upload=21, download=22, total=23, expiry_ms=24),
-                make_client(3, upload=31, download=32, total=33, expiry_ms=34),
+                make_client(1, upload=11, download=12, total=13, expiry_ms=14000),
+                make_client(2, upload=21, download=22, total=23, expiry_ms=24000),
+                make_client(3, upload=31, download=32, total=33, expiry_ms=34000),
             )
         )
         store = self.make_store(reader)
@@ -215,7 +235,7 @@ class CacheSemanticsTests(StoreTestCase):
         entered = threading.Event()
         release = threading.Event()
         snapshot = make_snapshot(
-            make_client(5, upload=10, download=20, total=30, expiry_ms=40)
+            make_client(5, upload=10, download=20, total=30, expiry_ms=40000)
         )
         calls = []
 
@@ -251,7 +271,7 @@ class CacheSemanticsTests(StoreTestCase):
 
     def test_reader_failure_serves_the_stale_cache_without_overwriting(self):
         reader = RecordingReader(
-            make_snapshot(make_client(4, upload=1, download=2, total=3, expiry_ms=4)),
+            make_snapshot(make_client(4, upload=1, download=2, total=3, expiry_ms=4000)),
             XuiCompatibilityError("3x-ui database compatibility check failed"),
         )
         store = self.make_store(reader)
@@ -274,7 +294,7 @@ class CacheSemanticsTests(StoreTestCase):
 
     def test_new_instance_serves_stale_file_when_reader_fails(self):
         reader = RecordingReader(
-            make_snapshot(make_client(4, upload=9, download=8, total=7, expiry_ms=6))
+            make_snapshot(make_client(4, upload=9, download=8, total=7, expiry_ms=6000))
         )
         self.make_store(reader).traffic_for(4)
         self.clock.advance(CACHE_TTL_SECONDS + 1)
@@ -290,8 +310,8 @@ class CacheSemanticsTests(StoreTestCase):
     def test_disabled_client_is_not_cached(self):
         reader = RecordingReader(
             make_snapshot(
-                make_client(1, upload=1, download=1, total=1, expiry_ms=1),
-                make_client(2, enabled=False, upload=2, download=2, total=2, expiry_ms=2),
+                make_client(1, upload=1, download=1, total=1, expiry_ms=1000),
+                make_client(2, enabled=False, upload=2, download=2, total=2, expiry_ms=2000),
             )
         )
         store = self.make_store(reader)
@@ -330,8 +350,8 @@ class CacheFileSafetyTests(StoreTestCase):
     def test_file_contains_only_version_timestamp_and_traffic_numbers(self):
         reader = RecordingReader(
             make_snapshot(
-                make_client(1, upload=100, download=200, total=300, expiry_ms=400),
-                make_client(2, upload=101, download=201, total=301, expiry_ms=401),
+                make_client(1, upload=100, download=200, total=300, expiry_ms=400000),
+                make_client(2, upload=101, download=201, total=301, expiry_ms=401000),
             )
         )
         self.make_store(reader).traffic_for(1)
@@ -358,7 +378,7 @@ class CacheFileSafetyTests(StoreTestCase):
     def test_corrupt_cache_file_is_ignored_and_rebuilt(self):
         self.cache_path.write_bytes(b"{not json")
         os.chmod(self.cache_path, 0o600)
-        reader = RecordingReader(make_snapshot(make_client(3, upload=1, download=1, total=1, expiry_ms=1)))
+        reader = RecordingReader(make_snapshot(make_client(3, upload=1, download=1, total=1, expiry_ms=1000)))
         store = self.make_store(reader)
         self.assertEqual(
             store.traffic_for(3), Traffic(upload=1, download=1, total=1, expiry_ms=1)
@@ -414,7 +434,7 @@ class CacheFileSafetyTests(StoreTestCase):
                 )
                 os.chmod(self.cache_path, 0o600)
                 reader = RecordingReader(
-                    make_snapshot(make_client(3, upload=1, download=1, total=1, expiry_ms=1))
+                    make_snapshot(make_client(3, upload=1, download=1, total=1, expiry_ms=1000))
                 )
                 store = self.make_store(reader)
                 self.assertEqual(
@@ -429,7 +449,7 @@ class CacheFileSafetyTests(StoreTestCase):
     def test_wrong_mode_cache_is_ignored_and_rebuilt(self):
         self.cache_path.write_bytes(b'{"schema_version":1}')
         os.chmod(self.cache_path, 0o644)
-        reader = RecordingReader(make_snapshot(make_client(2, upload=1, download=1, total=1, expiry_ms=1)))
+        reader = RecordingReader(make_snapshot(make_client(2, upload=1, download=1, total=1, expiry_ms=1000)))
         store = self.make_store(reader)
         self.assertEqual(
             store.traffic_for(2), Traffic(upload=1, download=1, total=1, expiry_ms=1)
@@ -441,7 +461,7 @@ class CacheFileSafetyTests(StoreTestCase):
         self.cache_path.write_bytes(b'{"schema_version":1}')
         os.chmod(self.cache_path, 0o600)
         os.link(self.cache_path, self.root / "hardlink.json")
-        reader = RecordingReader(make_snapshot(make_client(2, upload=1, download=1, total=1, expiry_ms=1)))
+        reader = RecordingReader(make_snapshot(make_client(2, upload=1, download=1, total=1, expiry_ms=1000)))
         store = self.make_store(reader)
         self.assertEqual(
             store.traffic_for(2), Traffic(upload=1, download=1, total=1, expiry_ms=1)
@@ -454,7 +474,7 @@ class CacheFileSafetyTests(StoreTestCase):
         outside.write_bytes(b'{"schema_version":1}')
         self.addCleanup(outside.unlink, missing_ok=True)
         self.cache_path.symlink_to(outside)
-        reader = RecordingReader(make_snapshot(make_client(2, upload=1, download=1, total=1, expiry_ms=1)))
+        reader = RecordingReader(make_snapshot(make_client(2, upload=1, download=1, total=1, expiry_ms=1000)))
         store = self.make_store(reader)
         self.assertEqual(
             store.traffic_for(2), Traffic(upload=1, download=1, total=1, expiry_ms=1)
@@ -488,8 +508,8 @@ class CacheFileSafetyTests(StoreTestCase):
 
     def test_persistence_failure_does_not_block_the_query(self):
         reader = RecordingReader(
-            make_snapshot(make_client(1, upload=5, download=6, total=7, expiry_ms=8)),
-            make_snapshot(make_client(1, upload=5, download=6, total=7, expiry_ms=8)),
+            make_snapshot(make_client(1, upload=5, download=6, total=7, expiry_ms=8000)),
+            make_snapshot(make_client(1, upload=5, download=6, total=7, expiry_ms=8000)),
         )
         store = self.make_store(reader)
         with patch.object(metadata, "_os_replace", side_effect=OSError("injected")):

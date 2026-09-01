@@ -189,11 +189,15 @@ def _entries_from_snapshot(snapshot):
             continue
         if client.client_id in entries:
             return None
+        # Cached Traffic.expiry_ms carries the Subscription-Userinfo expire
+        # value in SECONDS for both sources: 3x-ui stores milliseconds and
+        # converts here, while the airport header is already seconds and is
+        # stored verbatim by airport_source.
         entries[client.client_id] = Traffic(
             upload=client.upload,
             download=client.download,
             total=client.total,
-            expiry_ms=client.expiry_ms,
+            expiry_ms=client.expiry_ms // 1000,
         )
     return entries
 
