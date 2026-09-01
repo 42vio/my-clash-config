@@ -1,17 +1,22 @@
 import base64
 import grp
+import http.client
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from clash_sub.domain import RuntimeState, ServiceConfig, UserState, XuiClient
+from clash_sub import metadata_server
+from clash_sub.domain import RuntimeState, ServiceConfig, Traffic, UserState, XuiClient
 from clash_sub.state import load_state, save_state
 import clash_sub.nginx as nginx_module
 
@@ -47,6 +52,36 @@ class FakeRunner:
     def __call__(self, arguments, **kwargs):
         self.calls.append((tuple(arguments), kwargs))
         return subprocess.CompletedProcess(arguments, next(self.return_codes, 0))
+
+
+_DYNAMIC_USERINFO_LINE = (
+    "add_header Subscription-Userinfo $upstream_http_subscription_userinfo;"
+)
+
+
+def _location_blocks(text):
+    """Map every ``location = ...`` header line to its full block text.
+
+    The rendered blocks contain no nested braces (every ``if`` is a single
+    line), so a block is simply the lines from its header to the first
+    closing brace.
+    """
+    blocks = {}
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("location = ") and line.endswith(" {"):
+            block = [line]
+            index += 1
+            while index < len(lines) and lines[index] != "}":
+                block.append(lines[index])
+                index += 1
+            if index < len(lines):
+                block.append("}")
+            blocks[line[: -len(" {")]] = "\n".join(block)
+        index += 1
+    return blocks
 
 
 class LightweightNginxTests(unittest.TestCase):
@@ -139,16 +174,10 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertNotIn(self.member.email, text)
         self.assertNotIn(self.disabled.email, text)
         self.assertIn("alias %s;" % (self.public_root / "releases" / "8" / self.state.users[8].current_release / "Clash-Compat.yaml"), text)
-        self.assertIn('if ($request_method !~ ^(GET|HEAD)$) { return 404; }', text)
-        self.assertIn('add_header Profile-Title "Clash-Compat";', text)
-        self.assertIn("add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml';", text)
-        self.assertIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8";', text)
-        self.assertIn('add_header Profile-Update-Interval "24";', text)
-        self.assertNotIn('add_header Profile-Title "Clash-Compat" always;', text)
-        self.assertNotIn("add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml' always;", text)
-        self.assertNotIn('add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8" always;', text)
-        self.assertIn('if ($args != "") { return 404; }', text)
+        self.assertIn('if ($request_method !~ ^(GET|HEAD)$) { return 405; }', text)
+        self.assertIn('if ($args != "") { return 400; }', text)
         self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", text)
+        self.assertIn("limit_req_status 429;", text)
         self.assertIn("client_max_body_size 1k;", text)
         self.assertNotIn("limit_except GET HEAD", text)
         self.assertIn("access_log off;", text)
@@ -157,19 +186,147 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertIn("add_header X-Content-Type-Options nosniff always;", text)
         self.assertIn("add_header Cache-Control no-store always;", text)
 
-    def test_routes_floor_non_second_expiry_milliseconds_in_the_userinfo_header(self):
-        client_with_fractional_expiry = replace(self.member, expiry_ms=8123)
-
-        text = render_routes(
-            self.config,
-            self.state,
-            (self.owner, client_with_fractional_expiry, self.disabled),
+    def test_routes_ignore_client_traffic_entirely(self):
+        baseline = render_routes(
+            self.config, self.state, (self.owner, self.member, self.disabled)
+        )
+        busier = (
+            self.owner,
+            replace(
+                self.member,
+                upload=987654321,
+                download=876543210,
+                total=999999999,
+                expiry_ms=123456789,
+            ),
+            self.disabled,
         )
 
-        self.assertIn(
-            'add_header Subscription-Userinfo "upload=5; download=6; total=7; expire=8";',
-            text,
+        self.assertEqual(render_routes(self.config, self.state, busier), baseline)
+        # Only the dynamic per-request traffic header line exists; no
+        # client traffic value is ever baked into the routes.
+        self.assertNotIn('Subscription-Userinfo "', baseline)
+        self.assertNotIn("upload=", baseline)
+        self.assertNotIn("expire=", baseline)
+        self.assertEqual(
+            baseline.count(_DYNAMIC_USERINFO_LINE),
+            4,  # owner compat + owner balance + provider + member compat
         )
+
+    def test_the_metadata_socket_is_a_patchable_module_constant(self):
+        self.assertEqual(nginx_module._METADATA_SOCKET, "/run/clash-sub/metadata.sock")
+
+    def test_public_blocks_use_the_standard_proxy_chain_with_internal_fallback(self):
+        text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
+        blocks = _location_blocks(text)
+        expected_public = {
+            "location = /s/%s/Clash-Compat.yaml" % self.owner_token: (
+                "/profile/7/Clash-Compat.yaml",
+                "/accel/7/Clash-Compat.yaml",
+            ),
+            "location = /s/%s/Clash-Balance.yaml" % self.owner_token: (
+                "/profile/7/Clash-Balance.yaml",
+                "/accel/7/Clash-Balance.yaml",
+            ),
+            "location = /s/%s/AmyTelecom.yaml" % self.owner_token: (
+                "/airport/AmyTelecom.yaml",
+                "/accel/provider/AmyTelecom.yaml",
+            ),
+            "location = /s/%s/Clash-Compat.yaml" % self.member_token: (
+                "/profile/8/Clash-Compat.yaml",
+                "/accel/8/Clash-Compat.yaml",
+            ),
+        }
+        self.assertEqual(
+            sorted(blocks),
+            sorted(
+                list(expected_public)
+                + [
+                    "location = /accel/7/Clash-Compat.yaml",
+                    "location = /accel/7/Clash-Balance.yaml",
+                    "location = /accel/provider/AmyTelecom.yaml",
+                    "location = /accel/8/Clash-Compat.yaml",
+                ]
+            ),
+        )
+        for header, (upstream, fallback) in expected_public.items():
+            with self.subTest(location=header):
+                block = blocks[header]
+                self.assertIn(
+                    "proxy_pass http://unix:%s:%s;" % (nginx_module._METADATA_SOCKET, upstream),
+                    block,
+                )
+                self.assertIn("proxy_pass_request_headers off;", block)
+                self.assertIn("proxy_connect_timeout 1s;", block)
+                self.assertIn("proxy_read_timeout 1s;", block)
+                self.assertIn("proxy_intercept_errors on;", block)
+                self.assertIn(
+                    "error_page 404 500 502 503 504 =200 %s;" % fallback, block
+                )
+                self.assertNotIn("auth_request", block)
+                self.assertNotIn("proxy_set_header", block)
+                self.assertNotIn("Subscription-Userinfo", block)
+                self.assertNotIn("alias ", block)
+                # The guards keep their rejection codes disjoint from the
+                # error_page set, so locally rejected requests can never
+                # degrade into the file.
+                self.assertIn('if ($request_method !~ ^(GET|HEAD)$) { return 405; }', block)
+                self.assertIn('if ($args != "") { return 400; }', block)
+                self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", block)
+                self.assertIn("limit_req_status 429;", block)
+                self.assertIn("client_max_body_size 1k;", block)
+                self.assertIn("access_log off;", block)
+                self.assertIn("log_not_found off;", block)
+
+    def test_accel_locations_are_internal_and_carry_the_full_display_headers(self):
+        text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
+        blocks = _location_blocks(text)
+        release = self.state.users[7].current_release
+        cases = {
+            "location = /accel/7/Clash-Compat.yaml": (
+                self.public_root / "releases" / "7" / release / "Clash-Compat.yaml",
+                'add_header Profile-Title "Clash-Compat";',
+                "add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml';",
+                'add_header Profile-Update-Interval "24";',
+            ),
+            "location = /accel/7/Clash-Balance.yaml": (
+                self.public_root / "releases" / "7" / release / "Clash-Balance.yaml",
+                'add_header Profile-Title "Clash-Balance";',
+                "add_header Content-Disposition 'attachment; filename=Clash-Balance.yaml';",
+                'add_header Profile-Update-Interval "24";',
+            ),
+            "location = /accel/8/Clash-Compat.yaml": (
+                self.public_root / "releases" / "8" / release / "Clash-Compat.yaml",
+                'add_header Profile-Title "Clash-Compat";',
+                "add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml';",
+                'add_header Profile-Update-Interval "24";',
+            ),
+        }
+        for header, (alias, *header_lines) in cases.items():
+            with self.subTest(location=header):
+                block = blocks[header]
+                self.assertIn("    internal;", block)
+                self.assertIn("alias %s;" % alias, block)
+                self.assertIn('default_type "text/yaml; charset=utf-8";', block)
+                for line in header_lines:
+                    self.assertIn(line, block)
+                self.assertNotIn('add_header Profile-Title "Clash-Compat" always;', block)
+                self.assertNotIn(
+                    "add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml' always;",
+                    block,
+                )
+                self.assertIn("add_header X-Content-Type-Options nosniff always;", block)
+                self.assertIn("add_header Cache-Control no-store always;", block)
+                self.assertNotIn("proxy_pass", block)
+                # Nginx drops custom upstream headers across an
+                # X-Accel-Redirect, so the traffic header is re-emitted
+                # from the upstream variable: present on the healthy path,
+                # omitted (empty value) whenever the service is degraded.
+                self.assertIn(_DYNAMIC_USERINFO_LINE, block)
+        for block in blocks.values():
+            # No static traffic value exists anywhere.
+            self.assertNotIn('Subscription-Userinfo "', block)
+            self.assertNotIn("upload=", block)
 
     def _provider_alias(self):
         return self.public_root / "provider" / "AmyTelecom.yaml"
@@ -184,24 +341,20 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertEqual(text.count("location = /s/%s/" % self.owner_token), 3)
         self.assertEqual(text.count("location = /s/%s/" % self.member_token), 1)
         self.assertIn("alias %s;" % alias, text)
-        self.assertIn('add_header Profile-Title "AmyTelecom";', text)
+        blocks = _location_blocks(text)
+        self.assertEqual(text.count("location = /accel/provider/AmyTelecom.yaml"), 1)
+        provider_block = blocks["location = /accel/provider/AmyTelecom.yaml"]
+        self.assertIn("    internal;", provider_block)
+        self.assertIn("alias %s;" % alias, provider_block)
+        self.assertIn('default_type "text/yaml; charset=utf-8";', provider_block)
+        self.assertIn('add_header Profile-Title "AmyTelecom";', provider_block)
         self.assertIn(
             "add_header Content-Disposition 'attachment; filename=AmyTelecom.yaml';",
-            text,
+            provider_block,
         )
-        provider_lines = text[text.index(block) :].splitlines()
-        provider_block = "\n".join(
-            provider_lines[: next(i for i, line in enumerate(provider_lines) if line == "}") + 1]
-        )
-        self.assertNotIn("Subscription-Userinfo", provider_block)
+        self.assertNotIn("Subscription-Userinfo \"", provider_block)
+        self.assertIn(_DYNAMIC_USERINFO_LINE, provider_block)
         self.assertNotIn("Profile-Update-Interval", provider_block)
-        self.assertIn("if ($request_method !~ ^(GET|HEAD)$) { return 404; }", provider_block)
-        self.assertIn('if ($args != "") { return 404; }', provider_block)
-        self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", provider_block)
-        self.assertIn("client_max_body_size 1k;", provider_block)
-        self.assertIn("access_log off;", provider_block)
-        self.assertIn("log_not_found off;", provider_block)
-        self.assertIn('default_type "text/yaml; charset=utf-8";', provider_block)
         self.assertIn("add_header X-Content-Type-Options nosniff always;", provider_block)
         self.assertIn("add_header Cache-Control no-store always;", provider_block)
         self.assertNotIn(self.owner.email, provider_block)
@@ -219,8 +372,17 @@ class LightweightNginxTests(unittest.TestCase):
             member_lines,
             ["location = /s/%s/Clash-Compat.yaml {" % self.member_token],
         )
+        self.assertEqual(
+            [
+                line
+                for line in text.splitlines()
+                if "location = /accel/8/" in line
+            ],
+            ["location = /accel/8/Clash-Compat.yaml {"],
+        )
         self.assertNotIn("/s/%s/Clash-Balance.yaml" % self.member_token, text)
         self.assertNotIn("/s/%s/AmyTelecom.yaml" % self.member_token, text)
+        self.assertNotIn("/accel/8/Clash-Balance.yaml", text)
 
     def test_owner_routes_require_the_stable_provider(self):
         self._provider_alias().unlink()
@@ -1176,6 +1338,549 @@ class ActivateNginxFilesTests(unittest.TestCase):
             with self.assertRaisesRegex(NginxError, "activation journal failed"):
                 nginx_module._write_nginx_file_journal(journal, [(self.target.resolve(), (False, b"", 0))])
         self.assertFalse(any("nginx-rerender-journal" in path.name for path in self.root.iterdir()))
+
+
+def _nginx_candidate():
+    """Return the raw CLASH_TEST_NGINX value, or None when unset.
+
+    Presence alone gates the real-nginx tests (machines without nginx
+    skip).  When the variable IS set the binary is verified in setUp and
+    a broken path fails the test loudly instead of silently skipping.
+    """
+    return os.environ.get("CLASH_TEST_NGINX")
+
+
+class _StaticStore:
+    """Metadata store stub with fixed traffic answers (real server, no DB)."""
+
+    def __init__(self, profile_traffic, airport_traffic):
+        self.profile_traffic = profile_traffic
+        self.airport_traffic = airport_traffic
+
+    def traffic_for(self, client_id):
+        return self.profile_traffic
+
+    def airport_traffic(self):
+        return self.airport_traffic
+
+
+class _RawUnixResponder(threading.Thread):
+    """Bind a unix socket and answer every connection with fixed bytes.
+
+    Any previous socket file at ``path`` is unlinked first so a fresh
+    responder can take over the path after an earlier listener closed.
+    ``response=None`` keeps each accepted connection open without replying
+    (used to drive the proxy read timeout).
+    """
+
+    def __init__(self, path, response):
+        super().__init__(daemon=True)
+        Path(path).unlink(missing_ok=True)
+        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.listener.bind(str(path))
+        self.listener.listen(8)
+        self.response = response
+
+    def run(self):
+        while True:
+            try:
+                connection, _ = self.listener.accept()
+            except OSError:
+                return
+            try:
+                if self.response is None:
+                    time.sleep(30)
+                else:
+                    connection.sendall(self.response)
+            except OSError:
+                pass
+            finally:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+
+    def close(self):
+        try:
+            self.listener.close()
+        except OSError:
+            pass
+
+
+class DegradationScenarioLifecycleTests(unittest.TestCase):
+    """Ungated checks for the outage states the real-nginx tests simulate.
+
+    These run everywhere: they pin the bind/close/unlink lifecycle the
+    gated degradation scenarios depend on, so a regression in the harness
+    itself cannot hide behind the CLASH_TEST_NGINX gate.
+    """
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.socket_path = Path(temporary.name).resolve() / "degraded.sock"
+
+    def _connect(self):
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(5)
+        client.connect(str(self.socket_path))
+        return client
+
+    def test_a_stopped_listener_leaves_a_refusing_socket_file(self):
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.socket_path))
+        listener.listen(1)
+        listener.close()
+
+        # The file remains with nobody accepting: connects are refused.
+        self.assertTrue(self.socket_path.exists())
+        with self.assertRaises(ConnectionRefusedError):
+            self._connect()
+
+    def test_an_unlinked_socket_path_is_absent(self):
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.socket_path))
+        listener.listen(1)
+        listener.close()
+        self.socket_path.unlink()
+
+        with self.assertRaises(FileNotFoundError):
+            self._connect()
+
+    def test_responders_rebind_the_same_path_and_hold_silent_connections(self):
+        canned = b"HTTP/1.0 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n"
+        first = _RawUnixResponder(self.socket_path, canned)
+        first.start()
+        try:
+            client = self._connect()
+            self.assertEqual(client.recv(4096), canned)
+            client.close()
+        finally:
+            first.close()
+
+        # A dead socket file (above) must not block the next responder:
+        # __init__ unlinks before binding, so the same path is reusable.
+        second = _RawUnixResponder(self.socket_path, None)
+        second.start()
+        try:
+            client = self._connect()
+            client.settimeout(0.3)
+            # A silent responder accepts but never sends a byte.
+            with self.assertRaises(socket.timeout):
+                client.recv(4096)
+            client.close()
+        finally:
+            second.close()
+
+
+@unittest.skipUnless(_nginx_candidate(), "CLASH_TEST_NGINX is not set (point it at a real nginx binary to run the real-nginx tests)")
+class RealNginxSubscriptionTests(unittest.TestCase):
+    """Drive the rendered proxy/X-Accel chain through a real nginx.
+
+    Set ``CLASH_TEST_NGINX=/usr/sbin/nginx`` (any working binary) to run
+    these.  When the variable is set but the binary is broken, the tests
+    FAIL loudly rather than skip — a typo on a deployment box must not
+    turn the whole suite silently green.  Each test renders routes with
+    ``render_routes`` (only the metadata socket path is patched to a
+    tempdir path — /run does not exist on macOS), starts the real
+    metadata server from Task 5 on that unix socket, launches nginx with
+    a minimal standalone configuration, and asserts over real HTTP.
+    """
+
+    release_id = "2026-08-23T12-00-00Z-1234abcd"
+
+    def setUp(self):
+        candidate = _nginx_candidate()
+        if not candidate:
+            self.skipTest("CLASH_TEST_NGINX is not set")
+        self.nginx = self._verify_nginx(candidate)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self._make_runtime()
+        self._render_routes()
+        self._write_nginx_config()
+        self._start_metadata_server()
+        self._start_nginx()
+
+    @staticmethod
+    def _verify_nginx(candidate):
+        try:
+            completed = subprocess.run(
+                [candidate, "-v"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise AssertionError(
+                "CLASH_TEST_NGINX=%r is not a working nginx binary: %r"
+                % (candidate, error)
+            )
+        if completed.returncode != 0:
+            raise AssertionError(
+                "CLASH_TEST_NGINX=%r is not a working nginx binary: "
+                "'nginx -v' exited with %d" % (candidate, completed.returncode)
+            )
+        return candidate
+
+    # -- fixture -------------------------------------------------------
+
+    def _make_runtime(self):
+        self.private_root = self.root / "private"
+        self.private_root.mkdir(mode=0o700)
+        os.chmod(self.private_root, 0o700)
+        self.public_root = self.root / "public"
+        self.public_root.mkdir()
+        self.routes_path = self.root / "nginx" / "routes.conf"
+        self.routes_path.parent.mkdir()
+        self.owner_token = token(b"r", "RWXYZA")
+        self.member_token = token(b"n", "ABCDEF")
+        self.compat_bytes = b"# owner clash-compat profile\nproxies: []\n"
+        self.balance_bytes = b"# owner clash-balance profile\nproxies: []\n"
+        self.member_bytes = b"# member clash-compat profile\nproxies: []\n"
+        self.provider_bytes = b"# AmyTelecom provider snapshot\nproxies: []\n"
+        fixtures = {
+            self.public_root / "releases" / "7" / self.release_id / "Clash-Compat.yaml": self.compat_bytes,
+            self.public_root / "releases" / "7" / self.release_id / "Clash-Balance.yaml": self.balance_bytes,
+            self.public_root / "releases" / "8" / self.release_id / "Clash-Compat.yaml": self.member_bytes,
+            self.public_root / "provider" / "AmyTelecom.yaml": self.provider_bytes,
+        }
+        for path, body in fixtures.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+            os.chmod(path, 0o640)
+        public_gid = grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid()
+        for directory in (self.public_root, *self.public_root.rglob("*")):
+            if directory.is_dir():
+                os.chown(directory, -1, public_gid)
+                os.chmod(directory, 0o2750)
+        for path in fixtures:
+            os.chown(path, -1, public_gid)
+        self.config = ServiceConfig(
+            owner_email="owner@example.invalid",
+            subscription_authority="sub.example.invalid:8443",
+            xui_public_endpoint="example.com:443",
+            xui_database=self.root / "x-ui.db",
+            private_root=self.private_root,
+            public_root=self.public_root,
+            nginx_routes=self.routes_path,
+            mihomo_binary=Path("/opt/mihomo/mihomo"),
+            nginx_binary=Path("/usr/sbin/nginx"),
+            systemctl_binary=Path("/usr/bin/systemctl"),
+            template_root=self.root / "templates",
+        )
+        self.state = RuntimeState(
+            1,
+            7,
+            {
+                7: UserState(7, "owner@example.invalid", self.owner_token, "RWXYZA", True, self.release_id),
+                8: UserState(8, "member@example.invalid", self.member_token, "ABCDEF", True, self.release_id),
+            },
+        )
+        self.owner_client = XuiClient(7, "owner@example.invalid", "owner-sub", True, 1, 2, 3, 4000)
+        self.member_client = XuiClient(8, "member@example.invalid", "member-sub", True, 5, 6, 7, 8000)
+
+    def _render_routes(self):
+        self.metadata_socket = self.root / "metadata.sock"
+        with patch.object(nginx_module, "_METADATA_SOCKET", str(self.metadata_socket)):
+            self.routes_text = render_routes(
+                self.config, self.state, (self.owner_client, self.member_client)
+            )
+
+    def _write_nginx_config(self):
+        self.prefix = self.root / "nginx-run"
+        self.prefix.mkdir()
+        self.port = self._free_port()
+        self.conf_path = self.prefix / "nginx.conf"
+        self.conf_path.write_text(
+            "\n".join(
+                (
+                    "worker_processes 1;",
+                    "pid %s;" % (self.prefix / "nginx.pid"),
+                    "error_log %s warn;" % (self.prefix / "error.log"),
+                    "events { worker_connections 64; }",
+                    "http {",
+                    "    default_type text/yaml;",
+                    "    access_log off;",
+                    "    limit_req_zone $binary_remote_addr zone=clash_subscription:10m rate=100r/s;",
+                    "    server {",
+                    "        listen 127.0.0.1:%d;" % self.port,
+                    "        server_name subscription.invalid;",
+                    self.routes_text,
+                    "        location / { return 404; }",
+                    "    }",
+                    "}",
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _free_port():
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            return probe.getsockname()[1]
+
+    def _start_metadata_server(self):
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(self.metadata_socket))
+        listener.listen(16)
+        self.store = _StaticStore(
+            Traffic(upload=112233, download=99887766, total=123456789, expiry_ms=55),
+            Traffic(upload=1, download=2, total=3, expiry_ms=4),
+        )
+        self.metadata = metadata_server.MetadataSocketServer(self.store, listener)
+        thread = threading.Thread(
+            target=self.metadata.serve_forever, kwargs={"poll_interval": 0.05}
+        )
+        thread.start()
+        self.addCleanup(thread.join)
+        self.addCleanup(self.metadata.server_close)
+        self.addCleanup(self.metadata.shutdown)
+
+    def _start_nginx(self):
+        completed = subprocess.run(
+            [self.nginx, "-c", str(self.conf_path), "-p", str(self.prefix)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        self.addCleanup(self._stop_nginx)
+        self.assertEqual(
+            completed.returncode,
+            0,
+            "nginx failed to start: %s" % completed.stderr.decode("utf-8", "replace"),
+        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=1):
+                    return
+            except OSError:
+                time.sleep(0.1)
+        self.fail("nginx did not start listening on 127.0.0.1:%d" % self.port)
+
+    def _stop_nginx(self):
+        for signal in ("quit", "stop"):
+            subprocess.run(
+                [self.nginx, "-c", str(self.conf_path), "-p", str(self.prefix), "-s", signal],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=False,
+            )
+            pid_path = self.prefix / "nginx.pid"
+            deadline = time.time() + 10
+            while time.time() < deadline and pid_path.exists():
+                time.sleep(0.1)
+            if not pid_path.exists():
+                return
+
+    # -- helpers -------------------------------------------------------
+
+    def _request(self, method, path, headers=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=15)
+        try:
+            connection.request(method, path, headers=dict(headers or {}))
+            response = connection.getresponse()
+            body = response.read()
+            return (
+                response.status,
+                {name.lower(): value for name, value in response.getheaders()},
+                body,
+            )
+        finally:
+            connection.close()
+
+    def _degrade_metadata(self, scenario):
+        """Take the metadata service down in one of four distinct ways.
+
+        Returns a callable restoring a clean socket state (dead socket
+        files removed, responders closed) so scenarios can run in
+        sequence within one test.
+        """
+        self.metadata.shutdown()
+        self.metadata.server_close()
+        if scenario == "socket-refusing":
+            # The stopped server leaves the socket file behind with nobody
+            # listening: connects are refused (ECONNREFUSED -> nginx 502).
+            return lambda: Path(self.metadata_socket).unlink(missing_ok=True)
+        if scenario == "socket-absent":
+            # No socket file at all (ENOENT -> nginx 502).
+            Path(self.metadata_socket).unlink(missing_ok=True)
+            return lambda: None
+        if scenario == "upstream-500":
+            # A live upstream answering 5xx (intercepted -> error_page).
+            responder = _RawUnixResponder(
+                self.metadata_socket,
+                b"HTTP/1.0 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+            )
+        elif scenario == "upstream-timeout":
+            # A live upstream accepting but never answering
+            # (proxy_read_timeout -> 504 -> error_page).
+            responder = _RawUnixResponder(self.metadata_socket, None)
+        else:
+            raise AssertionError("unknown degradation scenario: %s" % scenario)
+        responder.start()
+        return responder.close
+
+    def _assert_profile_response(self, status, headers, body, expected_body):
+        self.assertEqual(status, 200)
+        self.assertEqual(body, expected_body)
+        self.assertEqual(headers["content-type"], "text/yaml; charset=utf-8")
+        self.assertEqual(headers["profile-title"], "Clash-Compat")
+        self.assertEqual(
+            headers["content-disposition"], "attachment; filename=Clash-Compat.yaml"
+        )
+        self.assertEqual(headers["profile-update-interval"], "24")
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+        self.assertEqual(headers["cache-control"], "no-store")
+
+    # -- tests ---------------------------------------------------------
+
+    def test_normal_requests_serve_yaml_with_the_dynamic_traffic_header(self):
+        for token_value, expected_body in (
+            (self.owner_token, self.compat_bytes),
+            (self.member_token, self.member_bytes),
+        ):
+            with self.subTest(token=token_value[:8]):
+                status, headers, body = self._request(
+                    "GET", "/s/%s/Clash-Compat.yaml" % token_value
+                )
+                self._assert_profile_response(status, headers, body, expected_body)
+                self.assertEqual(
+                    headers["subscription-userinfo"],
+                    "upload=112233; download=99887766; total=123456789; expire=55",
+                )
+
+    def test_head_requests_return_the_headers_without_a_body(self):
+        status, headers, body = self._request(
+            "HEAD", "/s/%s/Clash-Compat.yaml" % self.owner_token
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"")
+        self.assertEqual(headers["profile-title"], "Clash-Compat")
+        self.assertEqual(headers["profile-update-interval"], "24")
+        self.assertEqual(headers["cache-control"], "no-store")
+        # The metadata service answers HEAD like GET, so the traffic
+        # header survives the proxied HEAD request too.
+        self.assertEqual(
+            headers["subscription-userinfo"],
+            "upload=112233; download=99887766; total=123456789; expire=55",
+        )
+
+    def test_the_airport_url_serves_the_provider_with_saved_airport_traffic(self):
+        status, headers, body = self._request(
+            "GET", "/s/%s/AmyTelecom.yaml" % self.owner_token
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, self.provider_bytes)
+        self.assertEqual(headers["profile-title"], "AmyTelecom")
+        self.assertEqual(
+            headers["content-disposition"], "attachment; filename=AmyTelecom.yaml"
+        )
+        self.assertNotIn("profile-update-interval", headers)
+        self.assertEqual(headers["x-content-type-options"], "nosniff")
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertEqual(
+            headers["subscription-userinfo"], "upload=1; download=2; total=3; expire=4"
+        )
+
+    def test_metadata_outage_degrades_to_identical_bytes_without_the_traffic_header(self):
+        # socket-refusing first: it relies on the stopped server leaving a
+        # dead socket file behind.  Every scenario cleans up its socket
+        # state before the next one starts.
+        for scenario in (
+            "socket-refusing",
+            "socket-absent",
+            "upstream-500",
+            "upstream-timeout",
+        ):
+            with self.subTest(scenario=scenario):
+                cleanup = self._degrade_metadata(scenario)
+                try:
+                    status, headers, body = self._request(
+                        "GET", "/s/%s/Clash-Compat.yaml" % self.owner_token
+                    )
+                    self._assert_profile_response(
+                        status, headers, body, self.compat_bytes
+                    )
+                    self.assertNotIn("subscription-userinfo", headers)
+                finally:
+                    cleanup()
+
+    def test_airport_outage_degrades_to_identical_bytes_without_the_traffic_header(self):
+        self._degrade_metadata("socket-absent")
+
+        status, headers, body = self._request(
+            "GET", "/s/%s/AmyTelecom.yaml" % self.owner_token
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, self.provider_bytes)
+        self.assertEqual(headers["profile-title"], "AmyTelecom")
+        self.assertNotIn("subscription-userinfo", headers)
+        self.assertNotIn("profile-update-interval", headers)
+
+    def test_local_guards_reject_without_ever_serving_the_file(self):
+        # Query, method, and rate rejections are generated by the public
+        # location itself; their codes must stay disjoint from the
+        # error_page set, which degrades only PROXY failures to the file.
+        status, _, body = self._request(
+            "GET", "/s/%s/Clash-Compat.yaml?x=1" % self.owner_token
+        )
+        self.assertEqual(status, 400)
+        self.assertNotEqual(body, self.compat_bytes)
+
+        status, _, body = self._request(
+            "POST", "/s/%s/Clash-Compat.yaml" % self.owner_token
+        )
+        self.assertEqual(status, 405)
+        self.assertNotEqual(body, self.compat_bytes)
+
+    def test_head_during_degradation_serves_headers_without_body_or_traffic(self):
+        self._degrade_metadata("socket-absent")
+
+        status, headers, body = self._request(
+            "HEAD", "/s/%s/Clash-Compat.yaml" % self.owner_token
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b"")
+        self.assertEqual(headers["profile-title"], "Clash-Compat")
+        self.assertEqual(headers["cache-control"], "no-store")
+        self.assertNotIn("subscription-userinfo", headers)
+
+    def test_internal_locations_are_invisible_and_forged_headers_are_ignored(self):
+        forged = {
+            "X-Accel-Redirect": "/accel/7/Clash-Balance.yaml",
+            "Subscription-Userinfo": "upload=9; download=9; total=9; expire=9",
+        }
+
+        status, _, _ = self._request("GET", "/accel/7/Clash-Compat.yaml")
+        self.assertEqual(status, 404)
+        status, headers, _ = self._request(
+            "GET", "/accel/7/Clash-Compat.yaml", forged
+        )
+        self.assertEqual(status, 404)
+
+        # With the service down, forged client-side traffic or redirect
+        # headers must not inject a Subscription-Userinfo into the response.
+        self._degrade_metadata("socket-absent")
+        status, headers, body = self._request(
+            "GET", "/s/%s/Clash-Compat.yaml" % self.owner_token, forged
+        )
+        self._assert_profile_response(status, headers, body, self.compat_bytes)
+        self.assertNotIn("subscription-userinfo", headers)
 
 
 if __name__ == "__main__":

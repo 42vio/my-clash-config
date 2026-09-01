@@ -648,10 +648,10 @@ class ProfileMetadataTests(MetadataServerTestCase):
         self.store = FakeMetadataStore(profile_traffic=self.traffic)
         self.start_server(self.store)
 
-    def test_both_profile_files_map_to_their_fixed_internal_locations(self):
+    def test_both_profile_files_map_to_their_per_client_internal_locations(self):
         cases = (
-            ("/profile/7/Clash-Compat.yaml", "/protected/Clash-Compat.yaml"),
-            ("/profile/7/Clash-Balance.yaml", "/protected/Clash-Balance.yaml"),
+            ("/profile/7/Clash-Compat.yaml", "/accel/7/Clash-Compat.yaml"),
+            ("/profile/7/Clash-Balance.yaml", "/accel/7/Clash-Balance.yaml"),
         )
         for target, internal in cases:
             with self.subTest(target=target):
@@ -673,6 +673,18 @@ class ProfileMetadataTests(MetadataServerTestCase):
 
         self.assertEqual(self.store.calls, [("profile", 42)])
 
+    def test_head_resolves_like_get_and_returns_the_headers_without_a_body(self):
+        raw = self.send("HEAD", "/profile/7/Clash-Compat.yaml", ("Host: nginx",))
+        response, _ = parse_response(raw, read_body=False)
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("X-Accel-Redirect"), "/accel/7/Clash-Compat.yaml")
+        self.assertEqual(
+            response.getheader("Subscription-Userinfo"),
+            "upload=112233; download=99887766; total=123456789; expire=55",
+        )
+        self.assertEqual(raw.partition(b"\r\n\r\n")[2], b"")
+
 
 class AirportMetadataTests(MetadataServerTestCase):
     def test_the_airport_file_maps_to_the_provider_location(self):
@@ -686,7 +698,7 @@ class AirportMetadataTests(MetadataServerTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(
-            response.getheader("X-Accel-Redirect"), "/protected/provider/AmyTelecom.yaml"
+            response.getheader("X-Accel-Redirect"), "/accel/provider/AmyTelecom.yaml"
         )
         self.assertEqual(
             response.getheader("Subscription-Userinfo"),
@@ -698,8 +710,8 @@ class AirportMetadataTests(MetadataServerTestCase):
 
 class MetadataWithoutTrafficTests(MetadataServerTestCase):
     CASES = (
-        ("/profile/3/Clash-Compat.yaml", "/protected/Clash-Compat.yaml"),
-        ("/airport/AmyTelecom.yaml", "/protected/provider/AmyTelecom.yaml"),
+        ("/profile/3/Clash-Compat.yaml", "/accel/3/Clash-Compat.yaml"),
+        ("/airport/AmyTelecom.yaml", "/accel/provider/AmyTelecom.yaml"),
     )
 
     def test_missing_traffic_still_redirects_without_the_userinfo_header(self):
@@ -752,7 +764,9 @@ class MetadataRejectionTests(MetadataServerTestCase):
             ("GET", "/profile/%2e%2e/Clash-Compat.yaml", (), ("%2e",)),
             ("GET", "/profile/3/Clash-Comp%0aat.yaml", (), ("%0a", "Comp%0a")),
             ("POST", "/profile/3/Clash-Compat.yaml", ("Host: nginx", "Content-Length: 0"), ("POST",)),
-            ("HEAD", "/airport/AmyTelecom.yaml", ("Host: nginx",), ("HEAD",)),
+            # HEAD on a valid target is a legitimate resolution; HEAD on an
+            # invalid one must still collapse into the fixed 404.
+            ("HEAD", "/airport/Other.yaml", ("Host: nginx",), ("HEAD",)),
             ("PUT", "/profile/3/Clash-Compat.yaml", ("Host: nginx", "Content-Length: 0"), ("PUT",)),
             ("GET", "/profile/3/Clash-Meta.yaml", (), ("Clash-Meta",)),
             ("GET", "/profile/three/Clash-Compat.yaml", (), ("three",)),

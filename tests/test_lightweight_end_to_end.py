@@ -570,10 +570,34 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual(routes.count("location = /s/%s/" % member.token), 1)
         self.assertEqual(routes.count("location = /s/%s/" % owner.token), 3)
+        # Traffic is fetched per request from the metadata service; no
+        # client traffic values are baked into the routes at all — only
+        # the dynamic upstream-variable line re-emits the header.
+        self.assertNotIn('Subscription-Userinfo "', routes)
+        self.assertNotIn("upload=", routes)
+        self.assertEqual(
+            routes.count(
+                "add_header Subscription-Userinfo $upstream_http_subscription_userinfo;"
+            ),
+            4,  # owner compat + owner balance + provider + member compat
+        )
+        # The public airport route proxies to the metadata service and
+        # falls back to the internal provider location.
         block = routes[
             routes.index("location = /s/%s/AmyTelecom.yaml" % owner.token):
         ]
-        self.assertNotIn("Subscription-Userinfo", block[: block.index("\n}")])
+        public_airport = block[: block.index("\n}")]
+        self.assertIn(
+            "proxy_pass http://unix:/run/clash-sub/metadata.sock:/airport/AmyTelecom.yaml;",
+            public_airport,
+        )
+        self.assertIn(
+            "error_page 404 500 502 503 504 =200 /accel/provider/AmyTelecom.yaml;",
+            public_airport,
+        )
+        self.assertIn("location = /accel/provider/AmyTelecom.yaml {", routes)
+        self.assertIn("location = /accel/%d/Clash-Compat.yaml {" % harness.member_id, routes)
+        self.assertIn("location = /accel/%d/Clash-Balance.yaml {" % harness.owner_id, routes)
 
     def test_database_failure_preserves_active_bytes_and_metadata(self):
         harness = self.make_harness()
@@ -704,7 +728,11 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotIn(airport_url, stdout.getvalue() + stderr.getvalue())
         self.assertNotIn(airport_credential, stdout.getvalue() + stderr.getvalue())
 
-    def test_traffic_update_changes_only_route_headers_without_rendering_or_mihomo(self):
+    def test_traffic_update_reactivates_unchanged_routes_without_rendering_or_mihomo(self):
+        # Traffic now reaches subscribers through the metadata service at
+        # request time, so a traffic change no longer alters the routes at
+        # all.  The scheduled traffic_update mechanism still runs (Task 7
+        # removes it) and must keep re-activating the identical bytes.
         harness = self.make_harness()
         harness.import_airport()
         harness.service.sync_all()
@@ -720,8 +748,8 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(harness.runner.mihomo_calls(), [])
         self.assertEqual(harness.active_view()["state"], before["state"])
         self.assertEqual(harness.active_view()["releases"], before["releases"])
-        self.assertNotEqual(harness.route_text(), previous_routes)
-        self.assertIn('Subscription-Userinfo "upload=999; download=888; total=10000; expire=0"', harness.route_text())
+        self.assertEqual(harness.route_text(), previous_routes)
+        self.assertNotIn('Subscription-Userinfo "', harness.route_text())
 
     def test_failed_owner_rotation_keeps_the_old_link_routes_and_release(self):
         harness = self.make_harness()

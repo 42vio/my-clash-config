@@ -31,6 +31,9 @@ _ACTIVATION_JOURNAL = ".activation-journal.json"
 _JOURNAL_SCHEMA = 1
 _UNSAFE_PATH_CHARACTERS = frozenset(" ;{}'\\\"#$" + "".join(chr(code) for code in range(0x20)) + chr(0x7F))
 _PROVIDER_TITLE = "AmyTelecom"
+# The systemd-activated metadata socket owned by clash-sub-metadata.socket.
+# Tests patch this constant to point a real Nginx at a tempdir socket.
+_METADATA_SOCKET = "/run/clash-sub/metadata.sock"
 
 
 class NginxError(RuntimeError):
@@ -112,17 +115,16 @@ def render_routes(config, state, clients):
         if client is None or not user.active or not client.enabled:
             continue
         release_id = _release_id(user.current_release)
-        traffic = _userinfo(client)
         if client_id == state.owner_client_id:
             for variant in OWNER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
-                blocks.append(_route_block(user.token, variant, alias, traffic))
+                blocks.append(_route_block(user.token, client_id, variant, alias))
             provider_alias = _provider_path(public_root)
             blocks.append(_provider_route_block(user.token, provider_alias))
         else:
             for variant in MEMBER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
-                blocks.append(_route_block(user.token, variant, alias, traffic))
+                blocks.append(_route_block(user.token, client_id, variant, alias))
     return "\n".join(blocks) + ("\n" if blocks else "")
 
 
@@ -649,15 +651,6 @@ def _release_path(public_root, client_id, release_id, variant):
     return path
 
 
-def _userinfo(client):
-    return "upload=%s; download=%s; total=%s; expire=%s" % (
-        client.upload,
-        client.download,
-        client.total,
-        client.expiry_ms // 1000,
-    )
-
-
 def _provider_path(public_root):
     """Resolve the stable owner-only provider file from the public root."""
     root = Path(public_root)
@@ -684,16 +677,27 @@ def _provider_route_block(token, alias):
     return "\n".join(
         (
             "location = /s/%s/%s {" % (token, AIRPORT_FILENAME),
-            '    if ($request_method !~ ^(GET|HEAD)$) { return 404; }',
-            '    if ($args != "") { return 404; }',
+            '    if ($request_method !~ ^(GET|HEAD)$) { return 405; }',
+            '    if ($args != "") { return 400; }',
             "    limit_req zone=clash_subscription burst=5 nodelay;",
+            "    limit_req_status 429;",
             "    client_max_body_size 1k;",
             "    access_log off;",
             "    log_not_found off;",
-            '    default_type "text/yaml; charset=utf-8";',
+            "    proxy_pass http://unix:%s:/airport/%s;" % (_METADATA_SOCKET, AIRPORT_FILENAME),
+            "    proxy_pass_request_headers off;",
+            "    proxy_connect_timeout 1s;",
+            "    proxy_read_timeout 1s;",
+            "    proxy_intercept_errors on;",
+            "    error_page 404 500 502 503 504 =200 /accel/provider/%s;" % AIRPORT_FILENAME,
+            "}",
+            "location = /accel/provider/%s {" % AIRPORT_FILENAME,
+            "    internal;",
             "    alias %s;" % alias,
+            '    default_type "text/yaml; charset=utf-8";',
             '    add_header Profile-Title "%s";' % _PROVIDER_TITLE,
             "    add_header Content-Disposition 'attachment; filename=%s';" % AIRPORT_FILENAME,
+            "    add_header Subscription-Userinfo $upstream_http_subscription_userinfo;",
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",
             "}",
@@ -701,25 +705,47 @@ def _provider_route_block(token, alias):
     )
 
 
-def _route_block(token, variant, alias, userinfo):
+def _route_block(token, client_id, variant, alias):
     if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
         raise NginxError("invalid subscription token")
+    if isinstance(client_id, bool) or not isinstance(client_id, int) or client_id < 1:
+        raise NginxError("invalid release path")
     title = PROFILE_TITLES[variant]
     filename = PROFILE_FILENAMES[variant]
+    # The public location only guards and proxies; every display header
+    # lives in the internal /accel/ location, because Nginx re-evaluates
+    # add_header in the final location after the X-Accel-Redirect (or the
+    # error_page fallback) internally redirects there.  Nginx drops
+    # custom upstream headers across an X-Accel-Redirect, so the traffic
+    # header is re-emitted from $upstream_http_subscription_userinfo:
+    # set on the healthy path, empty — and therefore omitted by Nginx —
+    # on every degraded one.  Locally generated rejections use codes
+    # disjoint from the error_page set (405/400/429), so only PROXY
+    # failures (upstream 404/5xx/timeouts) can ever degrade to the file.
     return "\n".join(
         (
             "location = /s/%s/%s {" % (token, filename),
-            '    if ($request_method !~ ^(GET|HEAD)$) { return 404; }',
-            '    if ($args != "") { return 404; }',
+            '    if ($request_method !~ ^(GET|HEAD)$) { return 405; }',
+            '    if ($args != "") { return 400; }',
             "    limit_req zone=clash_subscription burst=5 nodelay;",
+            "    limit_req_status 429;",
             "    client_max_body_size 1k;",
             "    access_log off;",
             "    log_not_found off;",
-            '    default_type "text/yaml; charset=utf-8";',
+            "    proxy_pass http://unix:%s:/profile/%d/%s;" % (_METADATA_SOCKET, client_id, filename),
+            "    proxy_pass_request_headers off;",
+            "    proxy_connect_timeout 1s;",
+            "    proxy_read_timeout 1s;",
+            "    proxy_intercept_errors on;",
+            "    error_page 404 500 502 503 504 =200 /accel/%d/%s;" % (client_id, filename),
+            "}",
+            "location = /accel/%d/%s {" % (client_id, filename),
+            "    internal;",
             "    alias %s;" % alias,
+            '    default_type "text/yaml; charset=utf-8";',
             '    add_header Profile-Title "%s";' % title,
             "    add_header Content-Disposition 'attachment; filename=%s';" % filename,
-            '    add_header Subscription-Userinfo "%s";' % userinfo,
+            "    add_header Subscription-Userinfo $upstream_http_subscription_userinfo;",
             '    add_header Profile-Update-Interval "24";',
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",

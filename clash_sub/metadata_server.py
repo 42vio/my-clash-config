@@ -14,7 +14,6 @@ import os
 import re
 import socket
 import socketserver
-from types import MappingProxyType
 
 from clash_sub.domain import AIRPORT_FILENAME, PROFILE_FILENAMES
 from clash_sub.metadata import render_subscription_userinfo
@@ -22,10 +21,8 @@ from clash_sub.metadata import render_subscription_userinfo
 _NOT_FOUND_BODY = b"not found\n"
 _MAX_TARGET_LENGTH = 256
 _CLIENT_ID = re.compile(r"[1-9][0-9]{0,18}")
-_PROFILE_INTERNAL = MappingProxyType(
-    {filename: "/protected/" + filename for filename in PROFILE_FILENAMES.values()}
-)
-_AIRPORT_INTERNAL = "/protected/provider/%s" % AIRPORT_FILENAME
+_PROFILE_FILENAMES = frozenset(PROFILE_FILENAMES.values())
+_AIRPORT_INTERNAL = "/accel/provider/%s" % AIRPORT_FILENAME
 
 
 class MetadataServerError(RuntimeError):
@@ -50,8 +47,10 @@ def resolve_target(path):
 
     The whitelist is derived only from the parsed shape: a canonical
     decimal client id and one of the fixed profile filenames, or the one
-    airport filename.  Query strings, extra segments, encoded control
-    characters, absolute-URI forms and over-long targets never match.
+    airport filename.  The internal X-Accel-Redirect targets mirror the
+    per-client ``/accel/<client_id>/<filename>`` locations rendered by
+    Nginx.  Query strings, extra segments, encoded control characters,
+    absolute-URI forms and over-long targets never match.
     """
     if len(path) > _MAX_TARGET_LENGTH or not path.startswith("/"):
         return None
@@ -62,8 +61,12 @@ def resolve_target(path):
         return None
     if len(segments) == 4 and segments[1] == "profile":
         client_id_text, filename = segments[2], segments[3]
-        if _CLIENT_ID.fullmatch(client_id_text) and filename in _PROFILE_INTERNAL:
-            return (_PROFILE_INTERNAL[filename], "profile", int(client_id_text))
+        if _CLIENT_ID.fullmatch(client_id_text) and filename in _PROFILE_FILENAMES:
+            return (
+                "/accel/%s/%s" % (client_id_text, filename),
+                "profile",
+                int(client_id_text),
+            )
     return None
 
 
@@ -92,6 +95,13 @@ class MetadataRequestHandler(http.server.BaseHTTPRequestHandler):
         if userinfo is not None:
             headers.append(("Subscription-Userinfo", userinfo))
         self._respond(200, headers)
+
+    def do_HEAD(self):
+        # Nginx forwards HEAD verbatim.  Resolution runs exactly like GET:
+        # the 200 path already sends headers only (no body, Content-Length
+        # 0) and _reject suppresses its body for HEAD, so the response is
+        # HEAD-correct by construction.
+        self.do_GET()
 
     def send_error(self, code, message=None, explain=None):
         # Every stdlib failure path (bad syntax, oversized request line,
