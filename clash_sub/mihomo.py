@@ -9,13 +9,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from clash_sub.domain import AIRPORT_FILENAME
-
-
 _LATEST_RELEASE_URL = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
 _TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
 _VERSION_RE = re.compile(r"\bv\d+\.\d+\.\d+\b")
-_AIRPORT_PROVIDER_CONFIG = Path("provider") / AIRPORT_FILENAME
+_PROVIDER_DIRECTORY = Path("provider")
 
 
 class MihomoUpdateError(RuntimeError):
@@ -114,10 +111,9 @@ def install_latest_mihomo(repo_root, runner, *, binary=Path("/usr/local/lib/clas
             if _installed_version(candidate, runner) != tag:
                 raise MihomoUpdateError("mihomo_binary_invalid")
             for config in sorted(public_root.rglob("*.yaml")) if public_root.is_dir() else ():
-                # The stable airport provider is a downloaded subscription
-                # body, not a complete main configuration; it must never be
-                # validated as one during a Mihomo upgrade.
-                if config.relative_to(public_root) == _AIRPORT_PROVIDER_CONFIG:
+                # Provider files are subscriptions, not complete main
+                # configurations.  Never validate any provider body here.
+                if config.relative_to(public_root).parts[:1] == _PROVIDER_DIRECTORY.parts:
                     continue
                 _run(runner, [str(candidate), "-t", "-f", str(config)], timeout=30)
             os.replace(candidate, binary)

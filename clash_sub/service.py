@@ -8,6 +8,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
+import yaml
+
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
 from clash_sub.sources import SourceError, normalize_xui_endpoints
@@ -170,10 +172,24 @@ class ClashSubService:
         release=self._releases.prepare(client.client_id,bundle,{"xui":_digest(xui)})
         if release:
             if candidates is not None: candidates.append((client.client_id,release))
-            # Owner and member releases alike are validated as published;
-            # the local airport file is never handed to Mihomo.
-            for path in release.public_paths.values(): self._mihomo.validate(path)
+            if owner:
+                self._validate_owner_bundle(bundle)
+            else:
+                for path in release.public_paths.values(): self._mihomo.validate(path)
         return release
+    def _validate_owner_bundle(self,bundle):
+        # Published owner profiles intentionally retain their remote airport
+        # URL.  Mihomo validates isolated copies whose provider is a fixed,
+        # local file, so this check neither reads nor reaches the airport.
+        provider_body="proxies:\n  - name: validation-proxy\n    type: ss\n    server: 127.0.0.1\n    port: 1\n    cipher: aes-128-gcm\n    password: validation-password\n"
+        with tempfile.TemporaryDirectory(prefix="mihomo-owner-",dir=str(self.config.private_root)) as directory:
+            directory=Path(directory); provider_path=directory/"provider.yaml"; provider_path.write_text(provider_body,encoding="utf-8")
+            for variant,text in bundle.items():
+                document=yaml.safe_load(text)
+                provider=document["proxy-providers"]["AmyTelecom"]
+                provider.clear(); provider.update({"type":"file","path":str(provider_path)})
+                candidate=directory/(variant+".yaml"); candidate.write_text(yaml.safe_dump(document,sort_keys=False),encoding="utf-8")
+                self._mihomo.validate(candidate)
     def _require_airport(self):
         # The stable provider is a hard precondition for preparing any user:
         # it must exist with safe ownership and be non-empty, but its

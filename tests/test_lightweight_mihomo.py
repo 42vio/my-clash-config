@@ -68,13 +68,19 @@ class MihomoUpdateTests(unittest.TestCase):
         self.assertTrue(any(call[1:] == ["-t", "-f", str(nested_config)] for call in self.calls))
         self.assertTrue(all("-fsSL" in call for call in self.calls if call[0] == "curl"))
 
-    def test_the_stable_airport_provider_is_never_validated_as_a_main_config(self):
+    def test_every_provider_yaml_is_skipped_but_other_published_yaml_is_validated(self):
+        old_name = self.provider_directory / "previous-airport.yaml"
+        arbitrary_provider = self.provider_directory / "third-party.yaml"
+        old_name.write_text("proxies: []\n", encoding="utf-8")
+        arbitrary_provider.write_text("proxies: []\n", encoding="utf-8")
         install_latest_mihomo(
             self.root, self._runner, binary=self.binary, public_root=self.public
         )
 
         validated = {tuple(call[3:]) for call in self.calls if call[1:3] == ["-t", "-f"]}
         self.assertNotIn((str(self.airport),), validated)
+        self.assertNotIn((str(old_name),), validated)
+        self.assertNotIn((str(arbitrary_provider),), validated)
         self.assertIn((str(self.public / "Clash-Compat.yaml"),), validated)
 
     def test_current_latest_version_skips_binary_download(self):

@@ -85,7 +85,7 @@ Compat 完整基础模板
 → 输出 Clash-Balance.yaml
 ```
 
-统一 `sync` 生成 owner 和全部普通用户的有效配置。执行前要求 Compat、Balance DNS 和当前机场 provider 都存在且有效。所有结果通过 YAML、Mihomo 和授权映射检查后才原子切换发布；任一结果失败则保持当前发布不变。
+统一 `sync` 生成 owner 和全部普通用户的有效配置。执行前要求 Compat、Balance DNS 和当前机场 provider 文件存在、权限安全且非空；机场内容本身不解析、不转换、不校验。主配置通过 YAML、Mihomo 和授权映射检查后才原子切换发布；任一结果失败则保持当前发布不变。
 
 主配置发布可回滚，但只回滚主配置和相应路由映射，不回滚机场 provider、身份令牌或本机 Home 脚本。
 
@@ -93,13 +93,13 @@ Compat 完整基础模板
 
 机场更新与 owner 配置生成完全解耦。
 
-原始机场订阅只进入同目录的随机临时文件，不长期保存。下载、转换和验证成功后，使用 `os.replace` 原子替换：
+原始机场订阅只进入同目录的随机临时文件，不长期保存。仅执行 HTTPS、重定向、超时、大小、非空和文件安全检查后，使用 `os.replace` 原子替换：
 
 ```text
 /var/lib/clash-sub/public/provider/AmyTelecom.yaml
 ```
 
-权限为 `root:www-data`、`0640`。只保留当前有效版本，不保留历史或机场回滚版本。
+权限为 `root:www-data`、`0640`。机场内容按原始字节发布，不解析、不转换、不校验；只保留当前有效版本，不保留历史或机场回滚版本。
 
 “更新机场订阅”只更新这个 provider 文件，不触发 `sync`、主配置生成或发布切换。失败时保留当前 provider，并输出隐藏源 URL、令牌、UUID 和节点敏感字段的错误信息。
 
@@ -205,7 +205,7 @@ provider 的 Clash 显示名称保持 `AmyTelecom`。当前 owner 令牌拥有�
 - owner 两份、普通用户一份的导出矩阵；
 - 普通用户不能访问机场 provider；
 - provider 单独更新不触发主配置发布；
-- 机场更新使用验证后原子替换，失败保留旧文件；
+- 机场更新在传输与文件安全检查后原子替换，机场内容不解析、不转换、不校验，失败保留旧文件；
 - Balance 只替换 DNS；
 - Compat 通用注释与 Balance DNS 独有注释均保留；
 - Home 脚本只匹配两个精确标题，并把分组放在“自动选择”后；

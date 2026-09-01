@@ -245,6 +245,7 @@ class ServiceTests(unittest.TestCase):
                 variant: (
                     "proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\n"
                     "    path: ./proxy_providers/AmyTelecom.yaml\n    interval: 604800\n"
+                    "proxy-groups:\n- name: Airport Select\n  type: select\n  use: [AmyTelecom]\n"
                     "proxies:\n- name: Owner %s\n" % (airport.url, variant)
                 )
                 for variant in ("compat", "balance")
@@ -322,20 +323,37 @@ class ServiceTests(unittest.TestCase):
         self.assertIn(token(bytes([8]), "GHJKMN"), seen)
         self.assertIn("sub-7", seen)
 
-    def test_owner_release_files_are_validated_by_mihomo_without_the_local_airport(self):
+    def test_owner_mihomo_validation_uses_an_offline_copy_with_a_fixed_file_provider(self):
+        seen = []
+
+        class Validator:
+            def validate(_, path):
+                candidate = Path(path)
+                if "mihomo-owner-" not in candidate.parent.name:
+                    seen.append((candidate, None, None, None, None, None))
+                    return
+                document = yaml.safe_load(candidate.read_text(encoding="utf-8"))
+                provider = document["proxy-providers"]["AmyTelecom"]
+                provider_file = Path(provider["path"])
+                seen.append((candidate, provider, provider_file, provider_file.read_text(encoding="utf-8"), candidate.read_text(encoding="utf-8"), document["proxy-groups"][0]["use"]))
+
+        self.service._mihomo = Validator()
         self.bootstrap()
 
-        owner_release = self.state.users[7].current_release
-        expected = {
-            "/releases/7/%s/Clash-Compat.yaml" % owner_release,
-            "/releases/7/%s/Clash-Balance.yaml" % owner_release,
-        }
-        self.assertTrue(expected.intersection(str(path) for path in self.mihomo_calls))
-        for path in self.mihomo_calls:
-            # Every Mihomo call sees a published release file only; the
-            # local airport provider file is never handed to Mihomo.
-            self.assertTrue(str(path).startswith("/releases/"), path)
-            self.assertNotIn(str(self.airport_file), str(path))
+        owner = [entry for entry in seen if entry[1] is not None]
+        member = [entry for entry in seen if entry[1] is None]
+        self.assertEqual(len(owner), 2)
+        self.assertEqual(len(member), 1)
+        for candidate, provider, provider_file, body, candidate_body, provider_use in owner:
+            self.assertNotIn("/releases/", str(candidate))
+            self.assertNotEqual(candidate, self.airport_file)
+            self.assertEqual(provider["type"], "file")
+            self.assertNotIn("url", provider)
+            self.assertEqual(provider_use, ["AmyTelecom"])
+            self.assertNotEqual(provider_file, self.airport_file)
+            self.assertEqual(body, "proxies:\n  - name: validation-proxy\n    type: ss\n    server: 127.0.0.1\n    port: 1\n    cipher: aes-128-gcm\n    password: validation-password\n")
+            self.assertNotIn("sub.example.test", candidate_body)
+        self.assertEqual([str(path) for path, *_ in member], [str(self.store.prepared[1][1].public_paths["compat"])])
 
     def test_sync_all_reuses_the_release_artifact_without_touching_the_upstream(self):
         self.bootstrap()

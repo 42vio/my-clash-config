@@ -778,7 +778,7 @@ Expected: no syntax errors, whitespace errors, accidental tracked private files,
 
 Run a scoped `rg` across `clash_sub`, `templates`, `config`, `deploy`, `scripts`, `tests`, and the four project-use docs. Exclude `docs/superpowers/` because the design and plan intentionally record migration history.
 
-Expected: no active office/privacy/Home-server filenames, no `AmyTelecom.yaml`, and no lowercase legacy subscription URLs.
+Expected: no active office/privacy/Home-server filenames, no retired airport provider filename, and no lowercase legacy subscription URLs.
 
 - [ ] **Step 5: Inspect generated fixtures and routing matrix**
 
