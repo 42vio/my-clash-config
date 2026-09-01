@@ -213,22 +213,16 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(main(None, stdin=InterruptingInput(), stdout=io.StringIO(), stderr=io.StringIO(), service_factory=factory), 0)
         self.assertEqual(constructed, [])
 
-    def test_menu_airport_input_uses_the_hidden_prompt(self):
-        # The airport URL carries subscription credentials, so it is read
-        # through getpass like the Cloudflare token; only the menu choice
-        # itself comes from stdin.
-        prompts = []
-
-        def hidden(prompt):
-            prompts.append(prompt)
-            return AIRPORT_URL
-
+    def test_menu_airport_input_is_visible_and_strips_pasted_whitespace(self):
         stdout = io.StringIO()
         stderr = io.StringIO()
-        with patch("clash_sub.cli.getpass", side_effect=hidden):
+        with patch(
+            "clash_sub.cli.getpass",
+            side_effect=AssertionError("airport URL must use visible input"),
+        ):
             code = main(
                 None,
-                stdin=io.StringIO("1\n0\n"),
+                stdin=io.StringIO("1\n  " + AIRPORT_URL + "  \n0\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: self.service,
@@ -236,19 +230,18 @@ class LightweightCliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("update_airport", (AIRPORT_URL,))])
-        self.assertEqual(prompts, ["请输入机场订阅地址："])
-        self.assertNotIn(AIRPORT_URL, stdout.getvalue() + stderr.getvalue())
+        self.assertIn("请输入机场订阅地址：", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_menu_rejects_empty_airport_input_before_constructing_service(self):
         constructed = []
-        with patch("clash_sub.cli.getpass", return_value="   "):
-            code = main(
-                None,
-                stdin=io.StringIO("1\n0\n"),
-                stdout=io.StringIO(),
-                stderr=io.StringIO(),
-                service_factory=lambda: constructed.append(object()),
-            )
+        code = main(
+            None,
+            stdin=io.StringIO("1\n   \n0\n"),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            service_factory=lambda: constructed.append(object()),
+        )
 
         self.assertEqual(code, 2)
         self.assertEqual(constructed, [])

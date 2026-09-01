@@ -54,7 +54,7 @@ git diff --check
 
 机场更新与主配置发布完全解耦：只更新 provider 文件，不生成、不发布、不切换任何主配置。
 
-在服务器执行 `clash-sub`，主菜单选择 `1`，仅在隐藏提示中粘贴临时 HTTPS 订阅地址。不要把地址作为 shell 参数、写入历史、仓库、重定向文件或工单。成功后：
+在服务器执行 `clash-sub`，主菜单选择 `1`，在可见提示中粘贴临时 HTTPS 订阅地址；输入会自动清理首尾空白。地址会显示在当前终端，但不要把它作为 shell 参数、写入历史、仓库、重定向文件或工单。成功后：
 
 ```bash
 clash-sub status
@@ -214,7 +214,7 @@ ls -l backups/clash-sub-backup-*.tar.gz
 1. 从受保护备份恢复 3x-ui 数据库与入站/client 配置；按[部署清单](../DEPLOYMENT.md#3x-ui-关键配置)检查面板、Reality 入站和端口。
 2. 恢复备份中的 `state.json` 到新服务器的私密运行时目录。
 3. 克隆仓库到 `/opt/my-clash-config`，按[部署清单](../DEPLOYMENT.md#全新安装)执行 `bash install.sh`；安装时仅在隐藏提示输入新主机所需的域名、Cloudflare token 与 owner email。证书由安装流程重新签发。
-4. 通过隐藏提示重新导入机场订阅，生成 `AmyTelecom-Provider.yaml`，然后发布并验收：
+4. 通过可见提示重新导入机场订阅，生成 `AmyTelecom-Provider.yaml`，然后发布并验收：
 
    ```bash
    clash-sub sync

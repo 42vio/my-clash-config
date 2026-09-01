@@ -57,7 +57,7 @@ bash install.sh
 
 ## 首次初始化
 
-1. 执行 `clash-sub`，在主菜单选择 `1`，按提示在隐藏输入中粘贴机场订阅地址；成功后 `AmyTelecom-Provider.yaml` 生成。
+1. 执行 `clash-sub`，在主菜单选择 `1`，按可见提示粘贴机场订阅地址；输入会自动清理首尾空白，成功后生成 `AmyTelecom-Provider.yaml`。
 2. 依次执行首次生成与检查：
 
    ```bash
