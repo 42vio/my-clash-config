@@ -155,11 +155,17 @@ class AirportPortalClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             with page._opener.open(request, timeout=_TIMEOUT_SECONDS) as response:
+                final_url = response.geturl()
                 body = response.read(_MAX_JSON_BYTES + 1)
         except AirportPortalError:
             raise
         except Exception:
             raise AirportPortalError("airport_link_generation_failed") from None
+        # The generation entry is fixed and same-origin: a redirect that
+        # landed anywhere else (other host, or downgraded scheme) means the
+        # answer did not come from the portal, whatever the body claims.
+        if not _same_origin(_origin_of(final_url), page._origin):
+            raise AirportPortalError("airport_link_generation_failed")
         if len(body) > _MAX_JSON_BYTES:
             raise AirportPortalError("airport_link_generation_failed")
         try:

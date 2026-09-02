@@ -321,6 +321,42 @@ class GenerationBoundaryTests(unittest.TestCase):
         page = client.activate(ACTIVATION_URL)
         return client, opener, page
 
+    def test_generation_response_must_stay_on_the_same_https_origin(self):
+        # A cross-origin or downgraded final response address is rejected
+        # even when the JSON body itself names a same-origin link.
+        for final_url in (
+            "https://evil.example/Subscription/GetSubscription",
+            "http://portal.example/Subscription/GetSubscription",
+            "https://portal.example.evil.example/Subscription/GetSubscription",
+        ):
+            with self.subTest(final_url=final_url):
+                client, _, page = self.generate(
+                    FakeResponse(generation_payload("url", GENERATED_URL), final_url)
+                )
+                with self.assertRaises(AirportPortalError) as caught:
+                    client.generate_source_url(page)
+                self.assertEqual(caught.exception.code, "airport_link_generation_failed")
+
+    def test_task_resolution_response_must_stay_on_the_same_https_origin(self):
+        # The second POST of the task flow is held to the identical origin
+        # contract as the first one.
+        sleeps = []
+        opener = FakeOpener(
+            page_response(),
+            generation_response("subid", TASK_ID),
+            FakeResponse(
+                generation_payload("url", GENERATED_URL),
+                "https://evil.example/Subscription/GetSubscription",
+            ),
+        )
+        client = AirportPortalClient(opener_factory=lambda: opener, sleeper=sleeps.append)
+        page = client.activate(ACTIVATION_URL)
+
+        with self.assertRaises(AirportPortalError) as caught:
+            client.generate_source_url(page)
+        self.assertEqual(caught.exception.code, "airport_link_generation_failed")
+        self.assertEqual(sleeps, [DELAY])
+
     def test_oversized_json_is_a_generation_failure(self):
         client, _, page = self.generate(
             generation_response("url", "https://portal.example/" + "a" * 5000)
