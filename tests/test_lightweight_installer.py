@@ -887,6 +887,17 @@ class CertificatePhaseTests(unittest.TestCase):
             if (
                 arguments
                 and arguments[0] == str(installer.paths.acme_home / "acme.sh")
+                and "--issue" in arguments
+            ):
+                account_conf = installer.paths.acme_home / "account.conf"
+                account_conf.parent.mkdir(parents=True, exist_ok=True)
+                account_conf.write_text(
+                    "SAVED_CF_Token='fixture-token'\n", encoding="utf-8"
+                )
+                os.chmod(account_conf, 0o600)
+            if (
+                arguments
+                and arguments[0] == str(installer.paths.acme_home / "acme.sh")
                 and "--install-cert" in arguments
             ):
                 installer.paths.ssl_dir.mkdir(parents=True, exist_ok=True)
@@ -947,29 +958,49 @@ class CertificatePhaseTests(unittest.TestCase):
         acme.write_text("#!/bin/sh\n", encoding="utf-8")
         return self._installer()
 
-    def test_accepts_acme_skip_exit_code_when_cert_still_valid(self):
+    def _write_persisted_cf_token(self, value="fixture-token"):
+        account_conf = self.paths.acme_home / "account.conf"
+        account_conf.write_text(
+            "SAVED_CF_Token='%s'\n" % value,
+            encoding="utf-8",
+        )
+        os.chmod(account_conf, 0o600)
+
+    def _issue_calls(self):
+        return [
+            call for call in self.runner_calls
+            if "--issue" in call["argv"]
+        ]
+
+    def test_skip_without_persisted_token_forces_one_issue_and_never_reports_token(self):
         installer = self._installer_with_existing_acme()
         acme = str(self.paths.acme_home / "acme.sh")
+        output = []
+        installer.print_fn = output.append
 
-        def runner(arguments, **_):
-            self.runner_calls.append({"argv": list(arguments), "env": None})
+        def runner(arguments, **kwargs):
+            self.runner_calls.append({"argv": list(arguments), "env": kwargs.get("env")})
             if arguments[:1] == [acme] and "--install-cert" in arguments:
                 self.paths.fullchain().parent.mkdir(parents=True, exist_ok=True)
                 self.paths.fullchain().write_text("CERT", encoding="ascii")
                 self.paths.privkey().write_text("KEY", encoding="ascii")
                 return subprocess.CompletedProcess(list(arguments), 0)
             if arguments[:1] == [acme] and "--issue" in arguments:
-                # acme.sh exits 2 when the cert exists and is not due for renewal.
+                if "--force" in arguments:
+                    self._write_persisted_cf_token("persisted-after-force")
+                    return subprocess.CompletedProcess(list(arguments), 0)
                 return subprocess.CompletedProcess(list(arguments), 2)
             return subprocess.CompletedProcess(list(arguments), 0)
 
         installer.runner = runner
-        installer.issue_certificate("dom.example", "cf-token")
+        installer.issue_certificate("dom.example", "test-token-not-secret")
 
-        self.assertTrue(
-            any("--issue" in call["argv"] for call in self.runner_calls),
-            "--issue must still be invoked",
-        )
+        issue_calls = self._issue_calls()
+        self.assertEqual(len(issue_calls), 2)
+        self.assertNotIn("--force", issue_calls[0]["argv"])
+        self.assertIn("--force", issue_calls[1]["argv"])
+        self.assertEqual(issue_calls[1]["argv"][:-1], issue_calls[0]["argv"])
+        self.assertNotIn("test-token-not-secret", "\n".join(output))
         self.assertTrue(
             any("--install-cert" in call["argv"] for call in self.runner_calls),
             "existing cert must still be installed",
@@ -977,6 +1008,73 @@ class CertificatePhaseTests(unittest.TestCase):
         self.assertEqual(self.paths.fullchain().read_text(encoding="ascii"), "CERT")
         state = load_install_state(self.root / "private" / "install-state.json")
         self.assertIn("certificate", state.phases_done)
+
+    def test_skip_with_persisted_token_does_not_force_issue(self):
+        installer = self._installer_with_existing_acme()
+        acme = str(self.paths.acme_home / "acme.sh")
+        self._write_persisted_cf_token()
+
+        def runner(arguments, **kwargs):
+            self.runner_calls.append({"argv": list(arguments), "env": kwargs.get("env")})
+            if arguments[:1] == [acme] and "--install-cert" in arguments:
+                self.paths.fullchain().parent.mkdir(parents=True, exist_ok=True)
+                self.paths.fullchain().write_text("CERT", encoding="ascii")
+                self.paths.privkey().write_text("KEY", encoding="ascii")
+            if arguments[:1] == [acme] and "--issue" in arguments:
+                return subprocess.CompletedProcess(list(arguments), 2)
+            return subprocess.CompletedProcess(list(arguments), 0)
+
+        installer.runner = runner
+        installer.issue_certificate("dom.example", "test-token-not-secret")
+
+        issue_calls = self._issue_calls()
+        self.assertEqual(len(issue_calls), 1)
+        self.assertNotIn("--force", issue_calls[0]["argv"])
+
+    def test_force_issue_failure_does_not_complete_certificate_phase(self):
+        installer = self._installer_with_existing_acme()
+        acme = str(self.paths.acme_home / "acme.sh")
+
+        def runner(arguments, **kwargs):
+            self.runner_calls.append({"argv": list(arguments), "env": kwargs.get("env")})
+            if arguments[:1] == [acme] and "--issue" in arguments:
+                return subprocess.CompletedProcess(
+                    list(arguments), 1 if "--force" in arguments else 2
+                )
+            if arguments[:1] == [acme] and "--install-cert" in arguments:
+                self.paths.fullchain().parent.mkdir(parents=True, exist_ok=True)
+                self.paths.fullchain().write_text("CERT", encoding="ascii")
+                self.paths.privkey().write_text("KEY", encoding="ascii")
+            return subprocess.CompletedProcess(list(arguments), 0)
+
+        installer.runner = runner
+        with self.assertRaisesRegex(InstallerError, "command_failed") as error:
+            installer.issue_certificate("dom.example", "test-token-not-secret")
+
+        self.assertNotIn("test-token-not-secret", str(error.exception))
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
+
+    def test_force_success_without_persisted_token_fails_before_install(self):
+        installer = self._installer_with_existing_acme()
+        acme = str(self.paths.acme_home / "acme.sh")
+
+        def runner(arguments, **kwargs):
+            self.runner_calls.append({"argv": list(arguments), "env": kwargs.get("env")})
+            if arguments[:1] == [acme] and "--issue" in arguments:
+                return subprocess.CompletedProcess(list(arguments), 0 if "--force" in arguments else 2)
+            if arguments[:1] == [acme] and "--install-cert" in arguments:
+                self.paths.fullchain().parent.mkdir(parents=True, exist_ok=True)
+                self.paths.fullchain().write_text("CERT", encoding="ascii")
+                self.paths.privkey().write_text("KEY", encoding="ascii")
+            return subprocess.CompletedProcess(list(arguments), 0)
+
+        installer.runner = runner
+        with self.assertRaisesRegex(InstallerError, "acme_cf_token_not_persisted") as error:
+            installer.issue_certificate("dom.example", "test-token-not-secret")
+
+        self.assertNotIn("test-token-not-secret", str(error.exception))
+        self.assertFalse(any("--install-cert" in call["argv"] for call in self.runner_calls))
+        self.assertFalse((self.root / "private" / "install-state.json").exists())
 
     def test_issue_command_failure_still_raises(self):
         installer = self._installer_with_existing_acme()

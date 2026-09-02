@@ -51,6 +51,9 @@ _INSTALL_PHASE_LABELS = {
 }
 _PROGRESS_WIDTH = 20
 _SYSTEMD_PATH_RE = re.compile(r"^/[A-Za-z0-9._+@=,:~/-]+$")
+_SAVED_CF_TOKEN_RE = re.compile(
+    br"^SAVED_CF_Token[ \t]*=[ \t]*'([^'\r\n]+)'[ \t]*\r?\n?$"
+)
 
 
 def _progress_line(completed, total):
@@ -594,6 +597,34 @@ class Installer:
         return True
 
     # -- phase 3 ---------------------------------------------------------
+    def _has_persisted_cf_token(self):
+        """Return whether acme.sh has a non-empty, securely stored CF token."""
+        account_conf = self.paths.acme_home / "account.conf"
+        try:
+            descriptor = os.open(
+                account_conf,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+        except OSError:
+            return False
+        try:
+            details = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or stat.S_IMODE(details.st_mode) != 0o600
+                or details.st_nlink != 1
+                or details.st_uid != os.geteuid()
+            ):
+                return False
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = None
+                return any(_SAVED_CF_TOKEN_RE.match(line) for line in handle)
+        except OSError:
+            return False
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
     def issue_certificate(self, domain, cf_token):
         if not isinstance(domain, str) or not domain.strip():
             raise InstallerError("invalid_domain")
@@ -617,26 +648,31 @@ class Installer:
         # acme.sh --issue exits 2 when the cert already exists and is not due
         # for renewal ("Skipping. Next renewal time is ..."); the existing
         # cert is still installed via --install-cert below.
-        self._run(
-            [
-                str(acme),
-                "--issue",
-                "--dns",
-                "dns_cf",
-                "-d",
-                domain,
-                "-d",
-                "*." + domain,
-                "--keylength",
-                "ec-256",
-                "--server",
-                "letsencrypt",
-                "--home",
-                str(self.paths.acme_home),
-            ],
+        issue_arguments = [
+            str(acme),
+            "--issue",
+            "--dns",
+            "dns_cf",
+            "-d",
+            domain,
+            "-d",
+            "*." + domain,
+            "--keylength",
+            "ec-256",
+            "--server",
+            "letsencrypt",
+            "--home",
+            str(self.paths.acme_home),
+        ]
+        issue_result = self._run(
+            issue_arguments,
             env=environment,
             allowed_exit_codes=(0, 2),
         )
+        if issue_result.returncode == 2 and not self._has_persisted_cf_token():
+            self._run(issue_arguments + ["--force"], env=environment)
+        if not self._has_persisted_cf_token():
+            raise InstallerError("acme_cf_token_not_persisted")
         self.paths.ssl_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(self.paths.ssl_dir, 0o700)
         self._run(
