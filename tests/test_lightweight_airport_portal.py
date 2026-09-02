@@ -268,6 +268,15 @@ class PageBoundaryTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "airport_portal_unavailable")
         self.assertNotIn("private transport detail", str(caught.exception))
 
+    def test_unparseable_final_page_address_is_a_stable_unavailable(self):
+        # A final address urlsplit() cannot even parse must map onto the
+        # stable code instead of leaking a raw ValueError.
+        client, _ = make_client(FakeResponse(portal_body(), "https://[unparseable"))
+        with self.assertRaises(AirportPortalError) as caught:
+            client.activate(ACTIVATION_URL)
+        self.assertEqual(caught.exception.code, "airport_portal_unavailable")
+        self.assertEqual(str(caught.exception), "airport_portal_unavailable")
+
 
 class PageStructureTests(unittest.TestCase):
     def assert_unsupported(self, body):
@@ -308,6 +317,7 @@ class PageStructureTests(unittest.TestCase):
             "/Subscription/Clash?t=anytls_clash&t=anytls_clash&sid=s&token=t",
             "https://other.example/Subscription/Clash?t=anytls_clash&sid=s&token=t",
             "/Subscription/Clash?t=anytls_clash&sid=s&token=t#fragment",
+            "https://[unparseable/Subscription/Clash?t=anytls_clash&sid=s&token=t",
         ):
             with self.subTest(url=url[:44]):
                 self.assert_unsupported(
@@ -383,6 +393,15 @@ class GenerationBoundaryTests(unittest.TestCase):
         with self.assertRaises(AirportPortalError) as caught:
             client.generate_source_url(page)
         self.assertEqual(caught.exception.code, "airport_link_generation_failed")
+
+    def test_unparseable_generation_address_is_a_stable_failure(self):
+        client, _, page = self.generate(
+            FakeResponse(generation_payload(True, "url:%s" % GENERATED_URL), "https://[unparseable")
+        )
+        with self.assertRaises(AirportPortalError) as caught:
+            client.generate_source_url(page)
+        self.assertEqual(caught.exception.code, "airport_link_generation_failed")
+        self.assertEqual(str(caught.exception), "airport_link_generation_failed")
 
     def test_malformed_envelopes_are_generation_failures(self):
         payloads = (

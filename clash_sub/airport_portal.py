@@ -251,7 +251,10 @@ def _parse_portal_page(body, origin):
 def _is_clash_entry(button_url, origin):
     if not _nonempty_text(button_url):
         return False
-    target = urlsplit(urljoin(_join_origin(origin, "/"), button_url))
+    try:
+        target = urlsplit(urljoin(_join_origin(origin, "/"), button_url))
+    except ValueError:
+        return False
     types = parse_qs(target.query).get("t", [])
     return (
         target.scheme == "https"
@@ -313,7 +316,16 @@ def _valid_activation_url(url):
 
 
 def _origin_of(url):
-    parts = urlsplit(url)
+    """Return the (scheme, netloc) origin; an unparseable address is None.
+
+    None never compares equal to a real origin, so callers outside any
+    exception-conversion scope map a malformed final address straight onto
+    their stable failure code instead of leaking a raw ValueError.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
     return (parts.scheme.lower(), parts.netloc.lower())
 
 
