@@ -54,17 +54,20 @@ class FakeRunner:
         return subprocess.CompletedProcess(arguments, next(self.return_codes, 0))
 
 
-_DYNAMIC_USERINFO_LINE = (
-    "add_header Subscription-Userinfo $upstream_http_subscription_userinfo;"
+_ARG_CONDITION_LINE = '    if ($arg_u ~ "^[0-9]{1,19}$") {'
+
+_ARG_USERINFO_LINE = (
+    '        add_header Subscription-Userinfo '
+    '"upload=$arg_u; download=$arg_d; total=$arg_t; expire=$arg_e";'
 )
 
 
 def _location_blocks(text):
     """Map every ``location = ...`` header line to its full block text.
 
-    The rendered blocks contain no nested braces (every ``if`` is a single
-    line), so a block is simply the lines from its header to the first
-    closing brace.
+    Only a location's own closing brace is unindented (nested if-blocks
+    close with an indented ``"}"``), so a block is simply the lines from
+    its header to the first unindented closing brace.
     """
     blocks = {}
     lines = text.splitlines()
@@ -203,13 +206,14 @@ class LightweightNginxTests(unittest.TestCase):
         )
 
         self.assertEqual(render_routes(self.config, self.state, busier), baseline)
-        # Only the dynamic per-request traffic header line exists; no
-        # client traffic value is ever baked into the routes.
-        self.assertNotIn('Subscription-Userinfo "', baseline)
-        self.assertNotIn("upload=", baseline)
-        self.assertNotIn("expire=", baseline)
+        # Only the per-request arg-template line exists; no client traffic
+        # value is ever baked into the routes, and the upstream variable
+        # that nginx empties across the redirect appears nowhere.
+        self.assertNotRegex(baseline, r"upload=[0-9]")
+        self.assertNotRegex(baseline, r"expire=[0-9]")
+        self.assertNotIn("$upstream_http", baseline)
         self.assertEqual(
-            baseline.count(_DYNAMIC_USERINFO_LINE),
+            baseline.count(_ARG_USERINFO_LINE),
             4,  # owner compat + owner balance + provider + member compat
         )
 
@@ -318,15 +322,35 @@ class LightweightNginxTests(unittest.TestCase):
                 self.assertIn("add_header X-Content-Type-Options nosniff always;", block)
                 self.assertIn("add_header Cache-Control no-store always;", block)
                 self.assertNotIn("proxy_pass", block)
-                # Nginx drops custom upstream headers across an
-                # X-Accel-Redirect, so the traffic header is re-emitted
-                # from the upstream variable: present on the healthy path,
-                # omitted (empty value) whenever the service is degraded.
-                self.assertIn(_DYNAMIC_USERINFO_LINE, block)
+                # Nginx releases the upstream during the X-Accel-Redirect
+                # internal redirect ($upstream_http_* is empty there), so
+                # the service encodes the four traffic numbers as query
+                # args on the redirect URI and only the if-block re-emits
+                # the header.  When the if matches its add_header set
+                # fully replaces the location-level set, so the whole
+                # header set repeats inside it; with no args (the
+                # error_page degradation jump, the no-traffic response)
+                # only the location-level set applies, without any
+                # traffic header.
+                self.assertIn(_ARG_CONDITION_LINE, block)
+                self.assertEqual(
+                    [line for line in block.splitlines() if "Subscription-Userinfo" in line],
+                    [_ARG_USERINFO_LINE],
+                )
+                self.assertEqual(
+                    block.count('add_header Profile-Update-Interval "24";'), 2
+                )
+                self.assertEqual(
+                    block.count("add_header X-Content-Type-Options nosniff always;"), 2
+                )
+                self.assertEqual(
+                    block.count("add_header Cache-Control no-store always;"), 2
+                )
         for block in blocks.values():
-            # No static traffic value exists anywhere.
-            self.assertNotIn('Subscription-Userinfo "', block)
-            self.assertNotIn("upload=", block)
+            # No static traffic value exists anywhere: the only traffic
+            # line anywhere is the arg template inside the accel if-block.
+            self.assertNotRegex(block, r"upload=[0-9]")
+            self.assertNotRegex(block, r"expire=[0-9]")
 
     def _provider_alias(self):
         return self.public_root / "provider" / "AmyTelecom.yaml"
@@ -352,11 +376,21 @@ class LightweightNginxTests(unittest.TestCase):
             "add_header Content-Disposition 'attachment; filename=AmyTelecom.yaml';",
             provider_block,
         )
-        self.assertNotIn("Subscription-Userinfo \"", provider_block)
-        self.assertIn(_DYNAMIC_USERINFO_LINE, provider_block)
+        self.assertIn(_ARG_CONDITION_LINE, provider_block)
+        self.assertEqual(
+            [line for line in provider_block.splitlines() if "Subscription-Userinfo" in line],
+            [_ARG_USERINFO_LINE],
+        )
+        # The provider header set (no Profile-Update-Interval) repeats
+        # in full inside the if-block.
+        self.assertEqual(provider_block.count('add_header Profile-Title "AmyTelecom";'), 2)
         self.assertNotIn("Profile-Update-Interval", provider_block)
-        self.assertIn("add_header X-Content-Type-Options nosniff always;", provider_block)
-        self.assertIn("add_header Cache-Control no-store always;", provider_block)
+        self.assertEqual(
+            provider_block.count("add_header X-Content-Type-Options nosniff always;"), 2
+        )
+        self.assertEqual(
+            provider_block.count("add_header Cache-Control no-store always;"), 2
+        )
         self.assertNotIn(self.owner.email, provider_block)
         self.assertNotIn("airport.example", text)
 
@@ -1351,17 +1385,38 @@ def _nginx_candidate():
 
 
 class _StaticStore:
-    """Metadata store stub with fixed traffic answers (real server, no DB)."""
+    """Metadata store stub with fixed traffic answers (real server, no DB).
+
+    The answers live in underscore-prefixed attributes: a same-named
+    instance attribute would shadow the methods the server calls, turn
+    every call into a TypeError, and silently degrade the airport answer
+    to ``None``.
+    """
 
     def __init__(self, profile_traffic, airport_traffic):
-        self.profile_traffic = profile_traffic
-        self.airport_traffic = airport_traffic
+        self._profile_traffic = profile_traffic
+        self._airport_traffic = airport_traffic
 
     def traffic_for(self, client_id):
-        return self.profile_traffic
+        return self._profile_traffic
 
     def airport_traffic(self):
-        return self.airport_traffic
+        return self._airport_traffic
+
+
+def _permit_nginx_worker(path):
+    """Make a freshly bound unix socket connectable by the nginx worker.
+
+    A bound socket defaults to 0755 owned by the test user, so the worker
+    (www-data under a root-run master) can never connect and every proxied
+    request silently degrades through the error_page fallback — the exact
+    trap that hid the traffic-header behaviour from this suite until it ran
+    on a real Linux nginx.  Production does not have this problem: systemd
+    creates the socket as 0660 root:www-data.
+    """
+    public_gid = grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid()
+    os.chown(path, -1, public_gid)
+    os.chmod(path, 0o660)
 
 
 class _RawUnixResponder(threading.Thread):
@@ -1379,6 +1434,7 @@ class _RawUnixResponder(threading.Thread):
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(str(path))
         self.listener.listen(8)
+        _permit_nginx_worker(path)
         self.response = response
 
     def run(self):
@@ -1639,6 +1695,7 @@ class RealNginxSubscriptionTests(unittest.TestCase):
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(str(self.metadata_socket))
         listener.listen(16)
+        _permit_nginx_worker(self.metadata_socket)
         self.store = _StaticStore(
             Traffic(upload=112233, download=99887766, total=123456789, expiry_ms=55),
             Traffic(upload=1, download=2, total=3, expiry_ms=4),

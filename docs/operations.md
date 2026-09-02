@@ -88,8 +88,8 @@ owner 客户端在 Clash Verge 的「订阅」页选中 `Clash-Compat` 或 `Clas
 
 1. 客户端请求订阅 URL，命中 Nginx 公网 location；守卫不变：非 GET/HEAD 返回 405、带查询串返回 400、超频返回 429。
 2. Nginx 把请求转发到 `/run/clash-sub/metadata.sock`：不透传任何请求头，连接与读取超时各 1 秒。该 socket（0660 root:www-data）由 `clash-sub-metadata.socket` 监听，父目录 `/run/clash-sub`（0750 root:www-data）由 `/etc/tmpfiles.d/clash-sub-metadata.conf` 开机建立；首个请求到达时激活 `clash-sub-metadata.service`（已按 systemd 加固清单限制文件系统与网络访问，只读 3x-ui 数据库、只写私密运行时目录）。
-3. 元数据服务只认识两类目标——某用户的 profile 文件与机场 `AmyTelecom.yaml`——其余一律返回同一固定 404。命中时返回 `Subscription-Userinfo` 流量头与 `X-Accel-Redirect` 内部跳转，无正文；取不到流量时只返回跳转，不报错。
-4. Nginx 在内部位置（`/accel/…`，公网直访 404）发送文件正文，并统一附加 Profile-Title、Content-Disposition、`Profile-Update-Interval: 24`（仅用户 profile）、nosniff 与 no-store；正常路径与降级路径的正文和这些头完全一致。
+3. 元数据服务只认识两类目标——某用户的 profile 文件与机场 `AmyTelecom.yaml`——其余一律返回同一固定 404。命中时返回 `Subscription-Userinfo` 流量头与 `X-Accel-Redirect` 内部跳转；跳转 URI 上用查询参数 `u/d/t/e` 携带四个纯数字流量值（Nginx 在内部跳转后读取不到上游头变量，数字只能随跳转一起传递），无正文。取不到流量时只返回不带参数的跳转，不报错。
+4. Nginx 在内部位置（`/accel/…`，公网直访 404）发送文件正文，并统一附加 Profile-Title、Content-Disposition、`Profile-Update-Interval: 24`（仅用户 profile）、nosniff 与 no-store；正常路径与降级路径的正文和这些头完全一致。流量头也在这里按需拼出：跳转带 `u` 参数（纯数字校验）时按四个查询参数重组 `Subscription-Userinfo`，降级跳转与无流量跳转不带参数，因此不输出该头。
 
 3x-ui 流量来自五分钟缓存：缓存过期后的第一个请求读取一次数据库快照（一次覆盖全部用户），随后 300 秒内所有用户、Compat 与 Balance 共用；并发请求只有一个执行刷新，其余等待后共享同一结果。数据库读取失败时回退旧缓存，没有旧缓存则该次响应不带流量头。缓存文件 `/var/lib/clash-sub/private/traffic-cache.json`（0600、原子更新、只含数字）持久化最近一次快照，重启后未过期可直接复用。机场流量不走这个缓存：直接读来源记录里最近一次机场下载保存的数字。流量刷新不生成发布、不改主 YAML、不重载 Nginx。
 

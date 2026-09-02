@@ -649,9 +649,20 @@ class ProfileMetadataTests(MetadataServerTestCase):
         self.start_server(self.store)
 
     def test_both_profile_files_map_to_their_per_client_internal_locations(self):
+        # Nginx releases the upstream during the X-Accel-Redirect internal
+        # redirect ($upstream_http_* is empty there), so the traffic
+        # numbers travel as pure-numeric query args on the redirect URI.
         cases = (
-            ("/profile/7/Clash-Compat.yaml", "/accel/7/Clash-Compat.yaml"),
-            ("/profile/7/Clash-Balance.yaml", "/accel/7/Clash-Balance.yaml"),
+            (
+                "/profile/7/Clash-Compat.yaml",
+                "/accel/7/Clash-Compat.yaml"
+                "?u=112233&d=99887766&t=123456789&e=55",
+            ),
+            (
+                "/profile/7/Clash-Balance.yaml",
+                "/accel/7/Clash-Balance.yaml"
+                "?u=112233&d=99887766&t=123456789&e=55",
+            ),
         )
         for target, internal in cases:
             with self.subTest(target=target):
@@ -678,7 +689,10 @@ class ProfileMetadataTests(MetadataServerTestCase):
         response, _ = parse_response(raw, read_body=False)
 
         self.assertEqual(response.status, 200)
-        self.assertEqual(response.getheader("X-Accel-Redirect"), "/accel/7/Clash-Compat.yaml")
+        self.assertEqual(
+            response.getheader("X-Accel-Redirect"),
+            "/accel/7/Clash-Compat.yaml?u=112233&d=99887766&t=123456789&e=55",
+        )
         self.assertEqual(
             response.getheader("Subscription-Userinfo"),
             "upload=112233; download=99887766; total=123456789; expire=55",
@@ -698,7 +712,8 @@ class AirportMetadataTests(MetadataServerTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(
-            response.getheader("X-Accel-Redirect"), "/accel/provider/AmyTelecom.yaml"
+            response.getheader("X-Accel-Redirect"),
+            "/accel/provider/AmyTelecom.yaml?u=1&d=2&t=3&e=4",
         )
         self.assertEqual(
             response.getheader("Subscription-Userinfo"),

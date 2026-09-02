@@ -559,12 +559,16 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(routes.count("location = /s/%s/" % owner.token), 3)
         # Traffic is fetched per request from the metadata service; no
         # client traffic values are baked into the routes at all — only
-        # the dynamic upstream-variable line re-emits the header.
-        self.assertNotIn('Subscription-Userinfo "', routes)
-        self.assertNotIn("upload=", routes)
+        # the arg-template line inside each /accel/ if-block re-emits the
+        # header, and the upstream variable nginx empties across the
+        # redirect appears nowhere.
+        self.assertNotRegex(routes, r"upload=[0-9]")
+        self.assertNotRegex(routes, r"expire=[0-9]")
+        self.assertNotIn("$upstream_http", routes)
         self.assertEqual(
             routes.count(
-                "add_header Subscription-Userinfo $upstream_http_subscription_userinfo;"
+                'add_header Subscription-Userinfo '
+                '"upload=$arg_u; download=$arg_d; total=$arg_t; expire=$arg_e";'
             ),
             4,  # owner compat + owner balance + provider + member compat
         )

@@ -87,11 +87,25 @@ class MetadataRequestHandler(http.server.BaseHTTPRequestHandler):
             self._reject()
             return
         internal, kind, argument = resolved
+        traffic = self._traffic(kind, argument)
+        if traffic is not None:
+            # Nginx releases the upstream structure during the
+            # X-Accel-Redirect internal redirect, so $upstream_http_* is
+            # empty in the target location (proven on nginx 1.26): the
+            # four traffic numbers travel as pure-numeric query args on
+            # the redirect URI and the internal location re-emits the
+            # header from them.
+            internal += "?u=%d&d=%d&t=%d&e=%d" % (
+                traffic.upload,
+                traffic.download,
+                traffic.total,
+                traffic.expiry_ms,
+            )
         headers = [
             ("Content-Length", "0"),
             ("X-Accel-Redirect", internal),
         ]
-        userinfo = self._userinfo(kind, argument)
+        userinfo = self._userinfo(traffic)
         if userinfo is not None:
             headers.append(("Subscription-Userinfo", userinfo))
         self._respond(200, headers)
@@ -118,14 +132,19 @@ class MetadataRequestHandler(http.server.BaseHTTPRequestHandler):
     def log_error(self, format, *args):
         pass
 
-    def _userinfo(self, kind, argument):
-        # Metadata absence must never block the file: any store or render
-        # failure degrades to a redirect without the traffic header.
+    def _traffic(self, kind, argument):
+        # Metadata absence must never block the file: any store failure
+        # degrades to a redirect without the traffic header.
         try:
             if kind == "airport":
-                traffic = self.server.store.airport_traffic()
-            else:
-                traffic = self.server.store.traffic_for(argument)
+                return self.server.store.airport_traffic()
+            return self.server.store.traffic_for(argument)
+        except Exception:
+            return None
+
+    def _userinfo(self, traffic):
+        # Any render failure degrades the same way: no traffic header.
+        try:
             if traffic is None:
                 return None
             return render_subscription_userinfo(traffic)

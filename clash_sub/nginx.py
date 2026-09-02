@@ -697,9 +697,15 @@ def _provider_route_block(token, alias):
             '    default_type "text/yaml; charset=utf-8";',
             '    add_header Profile-Title "%s";' % _PROVIDER_TITLE,
             "    add_header Content-Disposition 'attachment; filename=%s';" % AIRPORT_FILENAME,
-            "    add_header Subscription-Userinfo $upstream_http_subscription_userinfo;",
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",
+            '    if ($arg_u ~ "^[0-9]{1,19}$") {',
+            '        add_header Profile-Title "%s";' % _PROVIDER_TITLE,
+            "        add_header Content-Disposition 'attachment; filename=%s';" % AIRPORT_FILENAME,
+            "        add_header X-Content-Type-Options nosniff always;",
+            "        add_header Cache-Control no-store always;",
+            '        add_header Subscription-Userinfo "upload=$arg_u; download=$arg_d; total=$arg_t; expire=$arg_e";',
+            "    }",
             "}",
         )
     )
@@ -715,13 +721,24 @@ def _route_block(token, client_id, variant, alias):
     # The public location only guards and proxies; every display header
     # lives in the internal /accel/ location, because Nginx re-evaluates
     # add_header in the final location after the X-Accel-Redirect (or the
-    # error_page fallback) internally redirects there.  Nginx drops
-    # custom upstream headers across an X-Accel-Redirect, so the traffic
-    # header is re-emitted from $upstream_http_subscription_userinfo:
-    # set on the healthy path, empty — and therefore omitted by Nginx —
-    # on every degraded one.  Locally generated rejections use codes
-    # disjoint from the error_page set (405/400/429), so only PROXY
-    # failures (upstream 404/5xx/timeouts) can ever degrade to the file.
+    # error_page fallback) internally redirects there.  Nginx releases
+    # the upstream structure during that redirect, so
+    # $upstream_http_subscription_userinfo evaluates empty in the target
+    # location (proven on nginx 1.26): the metadata service instead
+    # encodes the four traffic numbers as pure-numeric query args on the
+    # redirect URI, and the if-block below re-emits the traffic header
+    # from them.  When the if matches, only its add_header set applies
+    # (no inheritance from the location level), so it repeats the full
+    # header set; the error_page degradation jump and the no-traffic
+    # service response carry no args, so the location-level set —
+    # without any traffic header — applies there.  The $arg_u value is
+    # therefore exclusively server-generated: /accel/ is internal
+    # (public hits 404), the public locations reject ?args with 400, the
+    # condition admits only 1-19 digits, and the remaining three args
+    # always co-occur with u by construction.  Locally generated
+    # rejections use codes disjoint from the error_page set (405/400/
+    # 429), so only PROXY failures (upstream 404/5xx/timeouts) can ever
+    # degrade to the file.
     return "\n".join(
         (
             "location = /s/%s/%s {" % (token, filename),
@@ -745,10 +762,17 @@ def _route_block(token, client_id, variant, alias):
             '    default_type "text/yaml; charset=utf-8";',
             '    add_header Profile-Title "%s";' % title,
             "    add_header Content-Disposition 'attachment; filename=%s';" % filename,
-            "    add_header Subscription-Userinfo $upstream_http_subscription_userinfo;",
             '    add_header Profile-Update-Interval "24";',
             "    add_header X-Content-Type-Options nosniff always;",
             "    add_header Cache-Control no-store always;",
+            '    if ($arg_u ~ "^[0-9]{1,19}$") {',
+            '        add_header Profile-Title "%s";' % title,
+            "        add_header Content-Disposition 'attachment; filename=%s';" % filename,
+            '        add_header Profile-Update-Interval "24";',
+            "        add_header X-Content-Type-Options nosniff always;",
+            "        add_header Cache-Control no-store always;",
+            '        add_header Subscription-Userinfo "upload=$arg_u; download=$arg_d; total=$arg_t; expire=$arg_e";',
+            "    }",
             "}",
         )
     )
