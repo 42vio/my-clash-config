@@ -625,7 +625,7 @@ class ServiceTests(unittest.TestCase):
     def test_airport_status_reports_only_the_public_summary(self):
         secret_url = "https://user@airport.example:443/path/segment?token=example-secret"
         self.airport_store.read_source.return_value = AirportSource(
-            secret_url, Traffic(upload=1, download=2, total=10, expiry_ms=4000), 1750000000
+            secret_url, Traffic(upload=3, download=10, total=100, expiry_ms=4000), 1750000000
         )
 
         status = self.service.airport_status()
@@ -635,9 +635,9 @@ class ServiceTests(unittest.TestCase):
             {
                 "saved": True,
                 "source_host": "airport.example",
-                "traffic_total": 10,
-                "traffic_used": 2,
-                "traffic_remaining": 8,
+                "traffic_total": 100,
+                "traffic_used": 13,
+                "traffic_remaining": 87,
                 "traffic_expiry_ms": 4000,
                 "last_success": 1750000000,
                 "provider_present": True,
@@ -646,6 +646,29 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("secret", repr(status))
         self.assertNotIn("token", repr(status))
         self.assertNotIn("/path", repr(status))
+
+    def test_airport_status_counts_upload_in_used_traffic(self):
+        # Clash clients read used as upload+download from the same
+        # Subscription-Userinfo, so a download-only figure would understate
+        # the displayed 剩余流量.
+        self.airport_store.read_source.return_value = AirportSource(
+            "https://airport.example/saved", Traffic(upload=7, download=0, total=10, expiry_ms=0), 1
+        )
+
+        status = self.service.airport_status()
+
+        self.assertEqual(status["traffic_used"], 7)
+        self.assertEqual(status["traffic_remaining"], 3)
+
+    def test_airport_status_clamps_remaining_at_zero_when_over_quota(self):
+        self.airport_store.read_source.return_value = AirportSource(
+            "https://airport.example/saved", Traffic(upload=60, download=60, total=100, expiry_ms=0), 1
+        )
+
+        status = self.service.airport_status()
+
+        self.assertEqual(status["traffic_used"], 120)
+        self.assertEqual(status["traffic_remaining"], 0)
 
     def test_airport_status_without_a_saved_source_reports_unsaved_fields(self):
         self.airport_store.read_source.side_effect = AirportStoreError("airport_source_missing")

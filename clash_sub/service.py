@@ -148,7 +148,7 @@ class ClashSubService:
             except Exception:
                 raise ServiceError("airport_status_failed") from None
             traffic=saved.traffic
-            return {"saved": True, "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": traffic.download if traffic else None, "traffic_remaining": (traffic.total-traffic.download) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
+            return {"saved": True, "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": (traffic.upload+traffic.download) if traffic else None, "traffic_remaining": max(traffic.total-traffic.upload-traffic.download,0) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
     def rollback(self,user,release):
         with self._lock():
             self._recover()
