@@ -148,6 +148,10 @@ class InstallState:
     socket_active: bool | None = None
     socket_enabled: bool | None = None
     socket_state_captured: bool = False
+    timer_enable_attempted: bool = False
+    timer_active: bool | None = None
+    timer_enabled: bool | None = None
+    timer_state_captured: bool = False
     stream_include_removal_intent: bool = False
 
 
@@ -166,7 +170,8 @@ def _state_payload(payload):
         "default_site_removed", "artifact_mutation_started",
         "default_site_removal_intent", "nginx_state_captured",
         "systemd_actions_started", "socket_enable_attempted",
-        "socket_state_captured", "stream_include_removal_intent",
+        "socket_state_captured", "timer_enable_attempted",
+        "timer_state_captured", "stream_include_removal_intent",
     )
     if (
         not isinstance(state.domain, str)
@@ -184,7 +189,7 @@ def _state_payload(payload):
         or not all(isinstance(key, str) and Path(key).is_absolute() and isinstance(value, dict) for key, value in state.replaced_files.items())
         or not isinstance(state.backups, dict)
         or any(not isinstance(getattr(state, flag), bool) for flag in flags)
-        or any(value is not None and not isinstance(value, bool) for value in (state.nginx_active, state.nginx_enabled, state.socket_active, state.socket_enabled))
+        or any(value is not None and not isinstance(value, bool) for value in (state.nginx_active, state.nginx_enabled, state.socket_active, state.socket_enabled, state.timer_active, state.timer_enabled))
     ):
         raise InstallerError("install_state_invalid")
     for record in state.replaced_files.values():
@@ -305,6 +310,8 @@ class Installer:
             self.paths.systemd_dir / "clash-sub-metadata.socket",
             self.paths.systemd_dir / "clash-sub-metadata.service",
             self.paths.systemd_dir / "clash-sub-recover.service",
+            self.paths.systemd_dir / "clash-sub-airport-refresh.service",
+            self.paths.systemd_dir / "clash-sub-airport-refresh.timer",
             self.paths.metadata_tmpfiles(),
         }
 
@@ -775,6 +782,8 @@ class Installer:
                 "clash-sub-metadata.socket",
                 "clash-sub-metadata.service",
                 "clash-sub-recover.service",
+                "clash-sub-airport-refresh.service",
+                "clash-sub-airport-refresh.timer",
             )
         ]
         tmpfiles = self.paths.metadata_tmpfiles()
@@ -799,6 +808,13 @@ class Installer:
             state.socket_active = active
             state.socket_enabled = enabled
             state.socket_state_captured = True
+        if not state.timer_state_captured:
+            active, enabled = self._service_state("clash-sub-airport-refresh.timer")
+            if active is None or enabled is None:
+                raise InstallerError("timer_service_state_unknown")
+            state.timer_active = active
+            state.timer_enabled = enabled
+            state.timer_state_captured = True
         for path in (self.paths.cli_symlink, restart_drop_in, *units, recover_drop_in, tmpfiles):
             self._record_replacement(state, path)
             if str(path) not in state.files_written:
@@ -841,6 +857,10 @@ class Installer:
         # create ListenStream parent directories itself.
         self._run(["systemd-tmpfiles", "--create", str(tmpfiles)])
         self._run(["systemctl", "enable", "--now", "clash-sub-metadata.socket"])
+        state = self.state()
+        state.timer_enable_attempted = True
+        self._save_state(state)
+        self._run(["systemctl", "enable", "--now", "clash-sub-airport-refresh.timer"])
         self._phase_done("systemd_harden")
 
     def _render_systemd_unit(self, contents):
@@ -854,11 +874,17 @@ class Installer:
         ):
             raise InstallerError("systemd_path_invalid")
         sentinel = "/var/lib/clash-sub/private /var/lib/clash-sub/public /etc/nginx/clash-sub /var/log/nginx /var/lib/nginx"
+        airport_sentinel = "/var/lib/clash-sub/private /var/lib/clash-sub/public/provider"
         metadata_sentinel = "/var/lib/clash-sub/private"
         if "ReadWritePaths=" not in contents:
             return contents
         if sentinel in contents:
             return contents.replace(sentinel, " ".join(str(path) for path in paths))
+        if airport_sentinel in contents:
+            return contents.replace(
+                airport_sentinel,
+                "%s %s" % (self.paths.private_root, self.paths.public_root / "provider"),
+            )
         if metadata_sentinel in contents:
             return contents.replace(metadata_sentinel, str(self.paths.private_root))
         raise InstallerError("systemd_path_invalid")
@@ -1069,6 +1095,7 @@ class Installer:
         )
         if systemd_actions:
             rollback_action(["systemctl", "disable", "--now", "clash-sub-metadata.socket"])
+            rollback_action(["systemctl", "disable", "--now", "clash-sub-airport-refresh.timer"])
         # Crash-window coverage: paths are journaled write-ahead, but a
         # replacement recorded by an even earlier crash window still wins
         # over deletion; restoring the recorded bytes is idempotent.
@@ -1088,6 +1115,11 @@ class Installer:
                     rollback_action(["systemctl", "enable", "clash-sub-metadata.socket"])
                 if state.socket_active:
                     rollback_action(["systemctl", "start", "clash-sub-metadata.socket"])
+            if state.timer_state_captured:
+                if state.timer_enabled:
+                    rollback_action(["systemctl", "enable", "clash-sub-airport-refresh.timer"])
+                if state.timer_active:
+                    rollback_action(["systemctl", "start", "clash-sub-airport-refresh.timer"])
         if failures:
             raise InstallerError("rollback_failed")
         try:

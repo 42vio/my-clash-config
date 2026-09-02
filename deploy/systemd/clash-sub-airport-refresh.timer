@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the saved airport subscription every seven days
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+Unit=clash-sub-airport-refresh.service
+
+[Install]
+WantedBy=timers.target
