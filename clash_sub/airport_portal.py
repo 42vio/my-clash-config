@@ -14,6 +14,7 @@ id, URLs) leak into error text.
 """
 
 import json
+import re
 import time
 from html.parser import HTMLParser
 from http.cookiejar import CookieJar
@@ -37,6 +38,12 @@ _MAX_PAGE_BYTES = 1024 * 1024
 _MAX_JSON_BYTES = 4096
 _DELAY_MIN = 0
 _DELAY_MAX = 30
+# The portal answers a first POST with a short machine-generated task id that
+# goes back verbatim as the "subid" form field.  Only printable, ASCII,
+# delimiter-free identifiers of a bounded length may ever reach the wire;
+# anything else (URLs, paths, form syntax, whitespace, control characters)
+# is a malformed answer, not a task.
+_TASK_ID_PATTERN = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
 
 
 class AirportPortalError(RuntimeError):
@@ -179,6 +186,8 @@ class AirportPortalClient:
             or not isinstance(document["msg"], str)
             or not document["msg"]
         ):
+            raise AirportPortalError("airport_link_generation_failed")
+        if document["result"] == "subid" and _TASK_ID_PATTERN.fullmatch(document["msg"]) is None:
             raise AirportPortalError("airport_link_generation_failed")
         return document["result"], document["msg"]
 

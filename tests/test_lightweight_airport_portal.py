@@ -387,6 +387,56 @@ class GenerationBoundaryTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "airport_link_generation_failed")
                 self.assertNotIn("msg", str(caught.exception))
 
+    def test_task_ids_are_validated_before_the_second_post(self):
+        # The task id goes back to the portal as one form field: only short,
+        # printable, delimiter-free identifiers ever reach the wire, and an
+        # invalid one must fail before the wait or the second POST happen.
+        for task in (
+            " ",
+            "a" * 129,
+            "https://portal.example/task",
+            "task/../../escape",
+            "ta sk",
+            "ta\x00sk",
+            "ta\nsk",
+            "id=1&x=2",
+            "任务编号",
+        ):
+            with self.subTest(task=task[:24]):
+                sleeps = []
+                opener = FakeOpener(page_response(), generation_response("subid", task))
+                client = AirportPortalClient(
+                    opener_factory=lambda: opener, sleeper=sleeps.append
+                )
+                page = client.activate(ACTIVATION_URL)
+
+                with self.assertRaises(AirportPortalError) as caught:
+                    client.generate_source_url(page)
+
+                self.assertEqual(
+                    caught.exception.code, "airport_link_generation_failed"
+                )
+                self.assertEqual(sleeps, [])
+                self.assertEqual(
+                    [request[0] for request in opener.requests], ["GET", "POST"]
+                )
+                if task.strip():
+                    self.assertNotIn(task.strip()[:8], str(caught.exception))
+
+    def test_conservative_task_id_shapes_still_resolve(self):
+        for task in ("placeholder-task-1", "123456", "a" * 128,
+                     "task-9f8e7d6c-b5a4-placeholder"):
+            with self.subTest(task=task[:24]):
+                client, opener = make_client(
+                    page_response(),
+                    generation_response("subid", task),
+                    generation_response("url", GENERATED_URL),
+                )
+                page = client.activate(ACTIVATION_URL)
+                self.assertEqual(client.generate_source_url(page), GENERATED_URL)
+                second_form = parse_qs(opener.requests[2][2].decode("utf-8"))
+                self.assertEqual(second_form.get("subid"), [task])
+
     def test_generated_link_must_be_https_same_origin_without_credentials(self):
         for link in (
             "http://portal.example/subscription",
