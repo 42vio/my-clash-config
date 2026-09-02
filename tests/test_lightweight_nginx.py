@@ -1497,6 +1497,11 @@ class RealNginxSubscriptionTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        # The tempdir itself defaults to 0700 root:root, which blocks the
+        # nginx worker (www-data) from traversing to the fixtures and the
+        # metadata socket on Linux; the fixture subtrees below already carry
+        # the production 2750 root:www-data discipline.
+        os.chmod(self.root, 0o755)
         self._make_runtime()
         self._render_routes()
         self._write_nginx_config()
@@ -1595,9 +1600,14 @@ class RealNginxSubscriptionTests(unittest.TestCase):
         self.prefix.mkdir()
         self.port = self._free_port()
         self.conf_path = self.prefix / "nginx.conf"
+        # Without a user directive the worker falls back to the compiled
+        # default (nobody), which cannot traverse the production-style
+        # 2750 root:www-data fixture tree; only a root master may set it.
+        user_directive = ("user www-data;",) if os.geteuid() == 0 else ()
         self.conf_path.write_text(
             "\n".join(
                 (
+                    *user_directive,
                     "worker_processes 1;",
                     "pid %s;" % (self.prefix / "nginx.pid"),
                     "error_log %s warn;" % (self.prefix / "error.log"),
