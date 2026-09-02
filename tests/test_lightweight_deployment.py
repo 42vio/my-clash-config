@@ -14,6 +14,8 @@ RECOVERY_DROP_IN = ROOT / "deploy" / "systemd" / "nginx.service.d" / "clash-sub-
 METADATA_SOCKET = ROOT / "deploy" / "systemd" / "clash-sub-metadata.socket"
 METADATA_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-metadata.service"
 METADATA_TMPFILES = ROOT / "deploy" / "systemd" / "tmpfiles.d" / "clash-sub-metadata.conf"
+AIRPORT_REFRESH_SERVICE = ROOT / "deploy" / "systemd" / "clash-sub-airport-refresh.service"
+AIRPORT_REFRESH_TIMER = ROOT / "deploy" / "systemd" / "clash-sub-airport-refresh.timer"
 REQUIREMENTS = ROOT / "requirements.txt"
 
 
@@ -168,9 +170,9 @@ class LightweightDeploymentTests(unittest.TestCase):
 
     def test_scheduled_traffic_units_are_gone_and_metadata_units_are_the_installed_set(self):
         # The retired scheduled-traffic units must not ship at all; the
-        # top-level unit set is exactly the socket-activated metadata pair
-        # plus the boot recovery oneshot (drop-ins live in nginx.service.d,
-        # the socket's directory rule in tmpfiles.d/).
+        # top-level unit set is exactly the socket-activated metadata pair,
+        # the boot recovery oneshot, and the weekly airport refresh pair
+        # (drop-ins live in nginx.service.d, the socket's rule in tmpfiles.d/).
         top_level_units = sorted(
             path.name
             for path in (ROOT / "deploy" / "systemd").iterdir()
@@ -179,6 +181,8 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertEqual(
             top_level_units,
             [
+                "clash-sub-airport-refresh.service",
+                "clash-sub-airport-refresh.timer",
                 "clash-sub-metadata.service",
                 "clash-sub-metadata.socket",
                 "clash-sub-recover.service",
@@ -280,6 +284,58 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("Requires=clash-sub-recover.service", drop_in)
         self.assertIn("After=clash-sub-recover.service", drop_in)
         self.assertNotIn("[Install]", service)
+
+    def test_airport_refresh_service_is_a_hardened_weekly_oneshot(self):
+        text = AIRPORT_REFRESH_SERVICE.read_text(encoding="utf-8")
+        self.assertIn("Wants=network-online.target", text)
+        self.assertIn("After=network-online.target", text)
+        required = {
+            "Type": "oneshot",
+            "ExecStart": "/usr/local/bin/clash-sub airport-scheduled-refresh",
+            "TimeoutStartSec": "180",
+            "User": "root",
+            "Group": "root",
+            "UMask": "0077",
+            "NoNewPrivileges": "true",
+            "PrivateTmp": "true",
+            "ProtectSystem": "strict",
+            "ProtectHome": "true",
+            "PrivateDevices": "true",
+            "ProtectKernelTunables": "true",
+            "ProtectKernelModules": "true",
+            "ProtectControlGroups": "true",
+            "RestrictSUIDSGID": "true",
+            "LockPersonality": "true",
+            "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
+            "ReadWritePaths": "/var/lib/clash-sub/private /var/lib/clash-sub/public/provider",
+        }
+        for key, value in required.items():
+            with self.subTest(key=key):
+                self.assertEqual(_unit_value(text, key), [value])
+        # Only the timer carries [Install]; the oneshot itself never starts
+        # at boot and keeps network access for the weekly refresh.
+        self.assertNotIn("[Install]", text)
+        self.assertNotIn("PrivateNetwork=true", text)
+        self.assertNotIn("http", text)
+
+    def test_airport_refresh_timer_runs_weekly_with_random_delay_and_persistence(self):
+        text = AIRPORT_REFRESH_TIMER.read_text(encoding="utf-8")
+        required = {
+            "OnCalendar": "weekly",
+            "RandomizedDelaySec": "6h",
+            "Persistent": "true",
+            "Unit": "clash-sub-airport-refresh.service",
+        }
+        for key, value in required.items():
+            with self.subTest(key=key):
+                self.assertEqual(_unit_value(text, key), [value])
+        self.assertIn("WantedBy=timers.target", text)
+        parser = configparser.ConfigParser()
+        parser.read_string(text)
+        self.assertEqual(set(parser.sections()), {"Unit", "Timer", "Install"})
+        # The units carry no URLs or credentials of any kind.
+        self.assertNotIn("http", text)
+        self.assertNotIn(AIRPORT_REFRESH_SERVICE.read_text(encoding="utf-8"), "://")
 
     def test_requirements_are_the_approved_pins(self):
         self.assertEqual(

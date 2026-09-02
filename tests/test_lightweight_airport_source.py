@@ -19,12 +19,18 @@ from clash_sub.airport_source import (
 from clash_sub.domain import Traffic
 
 SOURCE_URL = "https://example.invalid/subscription"
+ACTIVATION_URL = "https://example.invalid/Subscription/index?sid=placeholder&token=placeholder"
 SOURCE_TRAFFIC = Traffic(upload=1, download=2, total=3, expiry_ms=4)
 LAST_SUCCESS = 1788192000
 
 
 def sample_source():
-    return AirportSource(SOURCE_URL, SOURCE_TRAFFIC, LAST_SUCCESS)
+    return AirportSource(
+        source_url=SOURCE_URL,
+        traffic=SOURCE_TRAFFIC,
+        last_success=LAST_SUCCESS,
+        activation_url=ACTIVATION_URL,
+    )
 
 
 class AirportSourceModelTests(unittest.TestCase):
@@ -33,14 +39,29 @@ class AirportSourceModelTests(unittest.TestCase):
         self.assertEqual(source.source_url, SOURCE_URL)
         self.assertEqual(source.traffic, SOURCE_TRAFFIC)
         self.assertEqual(source.last_success, LAST_SUCCESS)
+        self.assertEqual(source.activation_url, ACTIVATION_URL)
 
     def test_model_is_frozen(self):
         with self.assertRaises(FrozenInstanceError):
             sample_source().source_url = "https://airport.example/other"
 
     def test_traffic_may_be_none(self):
-        source = AirportSource("https://airport.example/other", None, 7)
+        source = AirportSource(
+            source_url="https://airport.example/other",
+            traffic=None,
+            last_success=7,
+            activation_url=None,
+        )
         self.assertIsNone(source.traffic)
+
+    def test_activation_url_may_be_none(self):
+        source = AirportSource(
+            source_url="https://airport.example/other",
+            traffic=None,
+            last_success=7,
+            activation_url=None,
+        )
+        self.assertIsNone(source.activation_url)
 
 
 class SerializationTests(unittest.TestCase):
@@ -49,8 +70,9 @@ class SerializationTests(unittest.TestCase):
         self.assertEqual(
             payload,
             {
-                "schema_version": 1,
-                "source_url": "https://example.invalid/subscription",
+                "schema_version": 2,
+                "activation_url": ACTIVATION_URL,
+                "source_url": SOURCE_URL,
                 "traffic": {"upload": 1, "download": 2, "total": 3, "expire": 4},
                 "last_success": LAST_SUCCESS,
             },
@@ -58,14 +80,27 @@ class SerializationTests(unittest.TestCase):
 
     def test_serialized_traffic_may_be_null(self):
         payload = json.loads(
-            serialize_source(AirportSource("https://airport.example/other", None, 7))
+            serialize_source(
+                AirportSource(
+                    source_url="https://airport.example/other",
+                    traffic=None,
+                    last_success=7,
+                    activation_url=None,
+                )
+            )
         )
         self.assertIsNone(payload["traffic"])
+        self.assertIsNone(payload["activation_url"])
 
     def test_round_trip_preserves_the_record(self):
         records = (
             sample_source(),
-            AirportSource("https://airport.example/other", None, 0),
+            AirportSource(
+                source_url="https://airport.example/other",
+                traffic=None,
+                last_success=0,
+                activation_url=None,
+            ),
         )
         for record in records:
             self.assertEqual(parse_source(serialize_source(record)), record)
@@ -74,15 +109,18 @@ class SerializationTests(unittest.TestCase):
         invalid = (
             "not a source",
             None,
-            AirportSource("", SOURCE_TRAFFIC, 1),
-            AirportSource(123, SOURCE_TRAFFIC, 1),
-            AirportSource("https://airport.example/other", "traffic", 1),
-            AirportSource("https://airport.example/other", Traffic(True, 1, 1, 1), 1),
-            AirportSource("https://airport.example/other", Traffic(-1, 1, 1, 1), 1),
-            AirportSource("https://airport.example/other", Traffic(1.5, 1, 1, 1), 1),
-            AirportSource("https://airport.example/other", None, True),
-            AirportSource("https://airport.example/other", None, -1),
-            AirportSource("https://airport.example/other", None, "1"),
+            AirportSource(source_url="", traffic=SOURCE_TRAFFIC, last_success=1, activation_url=None),
+            AirportSource(source_url=123, traffic=SOURCE_TRAFFIC, last_success=1, activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic="traffic", last_success=1, activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic=Traffic(True, 1, 1, 1), last_success=1, activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic=Traffic(-1, 1, 1, 1), last_success=1, activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic=Traffic(1.5, 1, 1, 1), last_success=1, activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic=None, last_success=True, activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic=None, last_success=-1, activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic=None, last_success="1", activation_url=None),
+            AirportSource(source_url="https://airport.example/other", traffic=None, last_success=1, activation_url=""),
+            AirportSource(source_url="https://airport.example/other", traffic=None, last_success=1, activation_url=123),
+            AirportSource(source_url="https://airport.example/other", traffic=None, last_success=1, activation_url=True),
         )
         for record in invalid:
             with self.assertRaises(AirportSourceError) as caught:
@@ -102,13 +140,17 @@ class SerializationTests(unittest.TestCase):
             b"{not json",
             b"",
             b"[]",
-            variant(schema_version=2),
+            variant(schema_version=1),
+            variant(schema_version=3),
             variant(schema_version=True),
             variant(source_url=123),
             variant(source_url=""),
             variant(last_success=-1),
             variant(last_success=True),
             variant(last_success="1788192000"),
+            variant(activation_url=""),
+            variant(activation_url=123),
+            variant(activation_url=True),
             variant(traffic={"upload": 1, "download": 2, "total": 3}),
             variant(
                 traffic={
@@ -127,6 +169,9 @@ class SerializationTests(unittest.TestCase):
             json.dumps(
                 {key: value for key, value in valid.items() if key != "source_url"}
             ).encode("utf-8"),
+            json.dumps(
+                {key: value for key, value in valid.items() if key != "activation_url"}
+            ).encode("utf-8"),
         ]
         for payload in corrupt:
             with self.assertRaises(AirportSourceError) as caught:
@@ -137,7 +182,8 @@ class SerializationTests(unittest.TestCase):
         source = parse_source(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
+                    "activation_url": None,
                     "source_url": "https://airport.example/other",
                     "traffic": None,
                     "last_success": 5,
@@ -145,7 +191,13 @@ class SerializationTests(unittest.TestCase):
             ).encode("utf-8")
         )
         self.assertEqual(
-            source, AirportSource("https://airport.example/other", None, 5)
+            source,
+            AirportSource(
+                source_url="https://airport.example/other",
+                traffic=None,
+                last_success=5,
+                activation_url=None,
+            ),
         )
 
 
@@ -219,7 +271,8 @@ class ReadSourceFileTests(unittest.TestCase):
         self.path.write_bytes(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
+                    "activation_url": None,
                     "source_url": "https://example.invalid/subscription",
                     "traffic": None,
                     "last_success": 1,

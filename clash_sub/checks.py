@@ -122,7 +122,7 @@ def _validate_proxy_providers(providers, allowed_provider_url):
             or provider.get("type") != "http"
             or provider.get("url") != allowed_provider_url
             or type(interval) is not int
-            or interval != 604800
+            or interval != 86400
             or provider.get("path") != _PROVIDER_PATH
         ):
             raise CheckError("airport proxy-provider mapping is invalid")

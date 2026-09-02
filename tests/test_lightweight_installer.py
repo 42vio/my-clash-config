@@ -110,6 +110,10 @@ class InstallStateTests(unittest.TestCase):
         self.assertIsNone(loaded.nginx_active)
         self.assertIsNone(loaded.nginx_enabled)
         self.assertFalse(loaded.systemd_actions_started)
+        self.assertFalse(loaded.timer_enable_attempted)
+        self.assertIsNone(loaded.timer_active)
+        self.assertIsNone(loaded.timer_enabled)
+        self.assertFalse(loaded.timer_state_captured)
 
     def test_save_rejects_foreign_object(self):
         with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
@@ -1214,9 +1218,10 @@ class NginxActivationPhaseTests(unittest.TestCase):
         self.assertIn("systemd_harden", state.phases_done)
 
     def test_harden_installs_and_enables_only_the_metadata_socket(self):
-        # The service stays un-enabled and un-started: socket activation
-        # starts it on demand, and the tmpfiles directory rule must be
-        # applied before the socket is enabled so the listen path exists.
+        # The metadata service stays un-enabled and un-started: socket
+        # activation starts it on demand, the tmpfiles directory rule must
+        # be applied before the socket is enabled, and the airport refresh
+        # pair follows as timer-only (the oneshot is never enabled itself).
         self._installer().harden_systemd()
 
         enable_calls = [
@@ -1224,15 +1229,16 @@ class NginxActivationPhaseTests(unittest.TestCase):
         ]
         self.assertEqual(
             enable_calls,
-            [["systemctl", "enable", "--now", "clash-sub-metadata.socket"]],
+            [
+                ["systemctl", "enable", "--now", "clash-sub-metadata.socket"],
+                ["systemctl", "enable", "--now", "clash-sub-airport-refresh.timer"],
+            ],
         )
-        self.assertFalse(
-            any(
-                "clash-sub-metadata.service" in " ".join(call)
-                for call in self.runner_calls
-            ),
-            "the metadata service must never be enabled or started directly",
-        )
+        for unit in ("clash-sub-metadata.service", "clash-sub-airport-refresh.service"):
+            self.assertFalse(
+                any(unit in " ".join(call) for call in enable_calls),
+                "%s must never be enabled or started directly" % unit,
+            )
         tmpfiles_calls = [
             index
             for index, call in enumerate(self.runner_calls)
@@ -2195,6 +2201,139 @@ class RollbackPhaseGatingTests(unittest.TestCase):
         )
 
 
+class AirportRefreshTimerTests(unittest.TestCase):
+    """The weekly airport refresh pair joins the systemd install transaction."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.root = (Path(self.tempdir.name) / "repo").resolve()
+        (self.root / "private").mkdir(parents=True)
+        (self.root / "bin").mkdir()
+        (self.root / "bin" / "clash-sub").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.root / "usr-local-bin").mkdir()
+        self.paths = InstallPaths(
+            nginx_conf=self.root / "nginx.conf",
+            systemd_dir=self.root / "systemd",
+            tmpfiles_dir=self.root / "tmpfiles.d",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
+        )
+        self.paths.nginx_conf.write_text("user www-data;\nhttp {\n}\n", encoding="utf-8")
+        self.runner_calls = []
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def _runner(self, arguments, **_):
+        self.runner_calls.append(list(arguments))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def _installer(self):
+        return Installer(self.root, paths=self.paths, runner=self._runner)
+
+    def test_harden_writes_both_refresh_units_and_journals_the_timer_state(self):
+        self._installer().harden_systemd()
+
+        service = self.paths.systemd_dir / "clash-sub-airport-refresh.service"
+        timer = self.paths.systemd_dir / "clash-sub-airport-refresh.timer"
+        self.assertTrue(service.is_file())
+        self.assertTrue(timer.is_file())
+        self.assertIn("airport-scheduled-refresh", service.read_text(encoding="utf-8"))
+        journal = self.root / "private" / "install-state.json"
+        state = load_install_state(journal)
+        self.assertTrue(state.timer_state_captured)
+        self.assertTrue(state.timer_enable_attempted)
+        self.assertIsNotNone(state.timer_active)
+        self.assertIsNotNone(state.timer_enabled)
+        for unit in (str(service), str(timer)):
+            self.assertIn(unit, state.files_written)
+        # daemon-reload precedes the timer enable within the same phase.
+        self.assertLess(
+            self.runner_calls.index(["systemctl", "daemon-reload"]),
+            self.runner_calls.index(
+                ["systemctl", "enable", "--now", "clash-sub-airport-refresh.timer"]
+            ),
+        )
+
+    def test_harden_captures_the_timer_state_before_writing_units(self):
+        timer = self.paths.systemd_dir / "clash-sub-airport-refresh.timer"
+        observations = []
+
+        def runner(arguments, **_):
+            self.runner_calls.append(list(arguments))
+            if arguments[:2] == ["systemctl", "is-active"] and arguments[2] == "clash-sub-airport-refresh.timer":
+                observations.append(timer.exists())
+            return subprocess.CompletedProcess(arguments, 0)
+
+        Installer(self.root, paths=self.paths, runner=runner).harden_systemd()
+
+        self.assertEqual(observations, [False])
+
+    def test_rollback_disables_the_timer_then_restores_its_captured_state(self):
+        # Pre-existing foreign timer: enabled and active before the install.
+        timer = self.paths.systemd_dir / "clash-sub-airport-refresh.timer"
+        timer.parent.mkdir(parents=True, exist_ok=True)
+        timer.write_text("# foreign timer\n", encoding="utf-8")
+
+        installer = self._installer()
+        installer.harden_systemd()
+        installer.rollback_install()
+
+        # The foreign bytes come back byte-identical.
+        self.assertEqual(timer.read_text(encoding="utf-8"), "# foreign timer\n")
+        joined = [" ".join(c) for c in self.runner_calls]
+        disable_index = next(
+            index
+            for index, call in enumerate(self.runner_calls)
+            if call[:3] == ["systemctl", "disable", "--now"]
+            and "clash-sub-airport-refresh.timer" in call
+        )
+        # The rollback-phase reload is the last one on the record.
+        reload_index = max(
+            index
+            for index, call in enumerate(self.runner_calls)
+            if call == ["systemctl", "daemon-reload"]
+        )
+        self.assertLess(disable_index, reload_index)
+        # The captured (active, enabled) state is re-applied after the reload.
+        self.assertIn(["systemctl", "enable", "clash-sub-airport-refresh.timer"], self.runner_calls)
+        self.assertIn(["systemctl", "start", "clash-sub-airport-refresh.timer"], self.runner_calls)
+        self.assertGreater(
+            self.runner_calls.index(["systemctl", "start", "clash-sub-airport-refresh.timer"]),
+            reload_index,
+        )
+
+    def test_refresh_service_renders_custom_private_and_provider_roots(self):
+        custom = InstallPaths(
+            systemd_dir=self.root / "systemd-custom",
+            tmpfiles_dir=self.root / "tmpfiles-custom",
+            private_root=self.root / "runtime" / "private",
+            public_root=self.root / "runtime" / "public",
+            cli_symlink=self.root / "usr-local-bin" / "clash-sub",
+        )
+        Installer(self.root, paths=custom, runner=self._runner).harden_systemd()
+
+        service = (custom.systemd_dir / "clash-sub-airport-refresh.service").read_text(encoding="utf-8")
+        self.assertIn(
+            "ReadWritePaths=%s %s"
+            % (custom.private_root, custom.public_root / "provider"),
+            service,
+        )
+
+    def test_state_rejects_non_boolean_timer_flags(self):
+        path = self.root / "install-state.json"
+        for payload in (
+            {"schema_version": 1, "timer_enable_attempted": "yes"},
+            {"schema_version": 1, "timer_state_captured": 1},
+            {"schema_version": 1, "timer_active": "inactive"},
+            {"schema_version": 1, "timer_enabled": 0},
+        ):
+            with self.subTest(payload=payload):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                os.chmod(path, 0o600)
+                with self.assertRaisesRegex(InstallerError, "install_state_invalid"):
+                    load_install_state(path)
+
+
 class HardenSystemdRollbackTests(unittest.TestCase):
     """G2: install harden, post-update re-run, then rollback removes all units."""
 
@@ -2256,6 +2395,8 @@ class HardenSystemdRollbackTests(unittest.TestCase):
             self.paths.systemd_dir / "clash-sub-metadata.socket",
             self.paths.systemd_dir / "clash-sub-metadata.service",
             self.paths.systemd_dir / "clash-sub-recover.service",
+            self.paths.systemd_dir / "clash-sub-airport-refresh.service",
+            self.paths.systemd_dir / "clash-sub-airport-refresh.timer",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-restart.conf",
             self.paths.systemd_dir / "nginx.service.d" / "clash-sub-recover.conf",
         )
@@ -2272,6 +2413,12 @@ class HardenSystemdRollbackTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "disable" in item and "clash-sub-metadata.socket" in item
+                for item in joined
+            )
+        )
+        self.assertTrue(
+            any(
+                "disable" in item and "clash-sub-airport-refresh.timer" in item
                 for item in joined
             )
         )

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import yaml
 
+from clash_sub.airport_portal import AirportPortalError
 from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import MAX_PROVIDER_BYTES, AirportStore, AirportStoreError
 from clash_sub.domain import (
@@ -38,6 +39,31 @@ PROVIDER_DOCUMENT = (
     b"proxies:\n"
     b"- {name: Airport candidate, type: ss, server: amy.example.test, port: 443}\n"
 )
+
+ACTIVATION_URL = "https://portal.example/Subscription/index?sid=placeholder-sid&token=placeholder-token"
+GENERATED_URL = "https://portal.example/generated-placeholder"
+SAVED_URL = "https://airport.example/saved"
+
+
+class FakeAirportPortal:
+    def __init__(self):
+        self.page = object()
+        self.activate_calls = []
+        self.generate_calls = []
+        self.activate_error = None
+        self.generate_error = None
+
+    def activate(self, activation_url):
+        self.activate_calls.append(activation_url)
+        if self.activate_error is not None:
+            raise self.activate_error
+        return self.page
+
+    def generate_source_url(self, page):
+        self.generate_calls.append(page)
+        if self.generate_error is not None:
+            raise self.generate_error
+        return GENERATED_URL
 
 
 class OperationLockTests(unittest.TestCase):
@@ -165,7 +191,11 @@ class ServiceTests(unittest.TestCase):
         self.airport_store = MagicMock(spec=AirportStore)
         self.airport_store.path = self.airport_file
         self.airport_store.read.return_value = PROVIDER_DOCUMENT
+        self.airport_store.read_source.return_value = AirportSource(
+            source_url=SAVED_URL, traffic=None, last_success=1, activation_url=None
+        )
         self.airport_store.replace.side_effect = self._replace_provider
+        self.portal = FakeAirportPortal()
         self.generator_calls = []
         self.mihomo_calls = []
         self.fetch_calls = []
@@ -183,6 +213,7 @@ class ServiceTests(unittest.TestCase):
             fetch_xui_proxies=self._fetch,
             download_airport_document=self._download,
             airport_store=self.airport_store,
+            airport_portal=self.portal,
             render_user_bundle=self._render,
             validate_clash=self._validate,
             mihomo_validator=type("Validator", (), {"validate": lambda _, path: self.mihomo_calls.append(path)})(),
@@ -413,7 +444,14 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.replaced_documents, [self.download_document])
         self.assertEqual(
             self.replaced_sources,
-            [AirportSource(secret, self.download_traffic, int(self.clock_value))],
+            [
+                AirportSource(
+                    source_url=secret,
+                    traffic=self.download_traffic,
+                    last_success=int(self.clock_value),
+                    activation_url=None,
+                )
+            ],
         )
         self.assertEqual(self.service.status()["last_success"], self.clock_value)
         self.assertEqual(self.service.status()["last_errors"], ())
@@ -454,7 +492,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.mihomo_calls, [])
 
     def test_replace_airport_source_saves_the_new_link_only_after_a_successful_download(self):
-        old_source = AirportSource("https://airport.example/old", Traffic(1, 2, 10, 0), 111)
+        old_source = AirportSource(
+            source_url="https://airport.example/old",
+            traffic=Traffic(1, 2, 10, 0),
+            last_success=111,
+            activation_url=None,
+        )
         self.airport_store.read_source.return_value = old_source
         self.service._download = MagicMock(side_effect=SourceError("airport_download_failed"))
         secret = "https://airport.example/temporary-secret"
@@ -530,7 +573,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.replaced_documents, [])
 
     def test_refresh_airport_reuses_the_saved_link_without_any_input(self):
-        saved = AirportSource("https://airport.example/saved?token=example-secret", Traffic(1, 2, 10, 0), 111)
+        saved = AirportSource(
+            source_url="https://airport.example/saved?token=example-secret",
+            traffic=Traffic(1, 2, 10, 0),
+            last_success=111,
+            activation_url=None,
+        )
         self.airport_store.read_source.return_value = saved
         self.download_document = PROVIDER_DOCUMENT.replace(b"amy.example.test", b"amy-2.example.test")
         self.download_traffic = Traffic(upload=5, download=6, total=60, expiry_ms=4000)
@@ -543,12 +591,21 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.replaced_documents, [self.download_document])
         self.assertEqual(
             self.replaced_sources,
-            [AirportSource(saved.source_url, self.download_traffic, int(self.clock_value))],
+            [
+                AirportSource(
+                    source_url=saved.source_url,
+                    traffic=self.download_traffic,
+                    last_success=int(self.clock_value),
+                    activation_url=saved.activation_url,
+                )
+            ],
         )
         self.assertEqual(self.service.status()["last_success"], self.clock_value)
 
     def test_refresh_airport_marks_missing_traffic_explicitly(self):
-        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 111)
+        self.airport_store.read_source.return_value = AirportSource(
+            source_url="https://airport.example/saved", traffic=None, last_success=111, activation_url=None
+        )
 
         result = self.service.refresh_airport()
 
@@ -568,7 +625,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.service.status()["last_errors"], ("airport_source_missing",))
 
     def test_refresh_airport_download_failure_keeps_the_saved_trio(self):
-        saved = AirportSource("https://airport.example/saved", Traffic(1, 2, 10, 0), 111)
+        saved = AirportSource(
+            source_url="https://airport.example/saved",
+            traffic=Traffic(1, 2, 10, 0),
+            last_success=111,
+            activation_url=None,
+        )
         self.airport_store.read_source.return_value = saved
         self.service._download = MagicMock(side_effect=SourceError("airport_download_failed"))
 
@@ -582,7 +644,12 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.service.status()["last_errors"], ("airport_download_failed",))
 
     def test_refresh_airport_store_failure_keeps_the_saved_trio(self):
-        saved = AirportSource("https://airport.example/saved", Traffic(1, 2, 10, 0), 111)
+        saved = AirportSource(
+            source_url="https://airport.example/saved",
+            traffic=Traffic(1, 2, 10, 0),
+            last_success=111,
+            activation_url=None,
+        )
         self.airport_store.read_source.return_value = saved
         self.airport_store.replace.side_effect = AirportStoreError("airport_provider_write_failed")
 
@@ -595,7 +662,9 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(self.service.status()["last_errors"], ("airport_provider_write_failed",))
 
     def test_refresh_airport_maps_unexpected_failures_to_the_refresh_code(self):
-        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 1)
+        self.airport_store.read_source.return_value = AirportSource(
+            source_url="https://airport.example/saved", traffic=None, last_success=1, activation_url=None
+        )
         self.service._download = MagicMock(side_effect=RuntimeError("private detail"))
 
         with self.assertRaises(ServiceError) as caught:
@@ -606,7 +675,9 @@ class ServiceTests(unittest.TestCase):
         self.airport_store.replace.assert_not_called()
 
     def test_refresh_airport_does_not_read_xui_render_release_or_activate(self):
-        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 1)
+        self.airport_store.read_source.return_value = AirportSource(
+            source_url="https://airport.example/saved", traffic=None, last_success=1, activation_url=None
+        )
         self.service._read_snapshot = MagicMock()
         self.service._recover_runtime = MagicMock()
 
@@ -625,7 +696,10 @@ class ServiceTests(unittest.TestCase):
     def test_airport_status_reports_only_the_public_summary(self):
         secret_url = "https://user@airport.example:443/path/segment?token=example-secret"
         self.airport_store.read_source.return_value = AirportSource(
-            secret_url, Traffic(upload=3, download=10, total=100, expiry_ms=4000), 1750000000
+            source_url=secret_url,
+            traffic=Traffic(upload=3, download=10, total=100, expiry_ms=4000),
+            last_success=1750000000,
+            activation_url=None,
         )
 
         status = self.service.airport_status()
@@ -634,6 +708,9 @@ class ServiceTests(unittest.TestCase):
             status,
             {
                 "saved": True,
+                "activation_configured": False,
+                "activation_host": None,
+                "source_configured": True,
                 "source_host": "airport.example",
                 "traffic_total": 100,
                 "traffic_used": 13,
@@ -647,12 +724,33 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("token", repr(status))
         self.assertNotIn("/path", repr(status))
 
+    def test_airport_status_reports_both_source_hosts_without_the_urls(self):
+        secret_activation = "https://portal.example/Subscription/index?sid=placeholder&token=placeholder"
+        self.airport_store.read_source.return_value = AirportSource(
+            source_url=SAVED_URL,
+            traffic=None,
+            last_success=1,
+            activation_url=secret_activation,
+        )
+
+        status = self.service.airport_status()
+
+        self.assertTrue(status["activation_configured"])
+        self.assertEqual(status["activation_host"], "portal.example")
+        self.assertTrue(status["source_configured"])
+        self.assertEqual(status["source_host"], "airport.example")
+        self.assertNotIn("sid", repr(status))
+        self.assertNotIn("Subscription", repr(status))
+
     def test_airport_status_counts_upload_in_used_traffic(self):
         # Clash clients read used as upload+download from the same
         # Subscription-Userinfo, so a download-only figure would understate
         # the displayed 剩余流量.
         self.airport_store.read_source.return_value = AirportSource(
-            "https://airport.example/saved", Traffic(upload=7, download=0, total=10, expiry_ms=0), 1
+            source_url="https://airport.example/saved",
+            traffic=Traffic(upload=7, download=0, total=10, expiry_ms=0),
+            last_success=1,
+            activation_url=None,
         )
 
         status = self.service.airport_status()
@@ -662,7 +760,10 @@ class ServiceTests(unittest.TestCase):
 
     def test_airport_status_clamps_remaining_at_zero_when_over_quota(self):
         self.airport_store.read_source.return_value = AirportSource(
-            "https://airport.example/saved", Traffic(upload=60, download=60, total=100, expiry_ms=0), 1
+            source_url="https://airport.example/saved",
+            traffic=Traffic(upload=60, download=60, total=100, expiry_ms=0),
+            last_success=1,
+            activation_url=None,
         )
 
         status = self.service.airport_status()
@@ -679,6 +780,9 @@ class ServiceTests(unittest.TestCase):
             status,
             {
                 "saved": False,
+                "activation_configured": False,
+                "activation_host": None,
+                "source_configured": False,
                 "source_host": None,
                 "traffic_total": None,
                 "traffic_used": None,
@@ -722,7 +826,9 @@ class ServiceTests(unittest.TestCase):
 
         def roll_forward():
             self.airport_file.write_bytes(PROVIDER_DOCUMENT)
-            return AirportSource("https://airport.example/saved", None, 1)
+            return AirportSource(
+            source_url="https://airport.example/saved", traffic=None, last_success=1, activation_url=None
+        )
 
         self.airport_store.read_source.side_effect = roll_forward
 
@@ -732,7 +838,9 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(status["provider_present"])
 
     def test_airport_status_never_reads_xui_or_mutates_state(self):
-        self.airport_store.read_source.return_value = AirportSource("https://airport.example/saved", None, 1)
+        self.airport_store.read_source.return_value = AirportSource(
+            source_url="https://airport.example/saved", traffic=None, last_success=1, activation_url=None
+        )
         self.service._read_snapshot = MagicMock()
         self.service._recover_runtime = MagicMock()
 
@@ -742,6 +850,245 @@ class ServiceTests(unittest.TestCase):
         self.service._recover_runtime.assert_not_called()
         self.assertEqual(self.activator.calls, [])
         self.assertIsNone(self.state)
+
+    def saved_source(self, activation_url=ACTIVATION_URL):
+        return AirportSource(
+            source_url=SAVED_URL,
+            traffic=Traffic(1, 2, 10, 0),
+            last_success=111,
+            activation_url=activation_url,
+        )
+
+    def failing_download(self, codes=("airport_download_failed",)):
+        codes = list(codes)
+
+        def download(url, maximum):
+            self.download_calls.append(url)
+            raise SourceError(codes.pop(0) if codes else "airport_download_failed")
+
+        return download
+
+    def test_configure_airport_portal_validates_the_whole_chain_before_saving(self):
+        self.download_traffic = Traffic(upload=5, download=6, total=60, expiry_ms=4000)
+
+        result = self.service.configure_airport_portal(ACTIVATION_URL)
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": True})
+        self.assertEqual(self.portal.activate_calls, [ACTIVATION_URL])
+        self.assertEqual(len(self.portal.generate_calls), 1)
+        self.assertEqual(self.download_calls, [GENERATED_URL])
+        self.assertEqual(
+            self.replaced_sources,
+            [
+                AirportSource(
+                    source_url=GENERATED_URL,
+                    traffic=self.download_traffic,
+                    last_success=int(self.clock_value),
+                    activation_url=ACTIVATION_URL,
+                )
+            ],
+        )
+        self.assertEqual(self.fetch_calls, [])
+        self.assertEqual(self.store.prepared, [])
+        self.assertEqual(self.mihomo_calls, [])
+        self.assertEqual(self.activator.calls, [])
+        self.assertEqual(self.service.status()["last_success"], self.clock_value)
+        self.assertEqual(self.service.status()["last_errors"], ())
+
+    def test_configure_airport_portal_keeps_the_old_pair_on_any_failure(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        stages = (
+            ("activate", lambda: setattr(
+                self.portal, "activate_error", AirportPortalError("airport_portal_unavailable")
+            )),
+            ("generate", lambda: setattr(
+                self.portal, "generate_error", AirportPortalError("airport_link_generation_failed")
+            )),
+            ("download", lambda: setattr(
+                self.service, "_download", self.failing_download()
+            )),
+            ("store", lambda: self.airport_store.replace.configure_mock(
+                **{"side_effect": AirportStoreError("airport_provider_write_failed")}
+            )),
+        )
+        for stage, inject in stages:
+            with self.subTest(stage=stage):
+                inject()
+                with self.assertRaises(ServiceError):
+                    self.service.configure_airport_portal(ACTIVATION_URL)
+                self.assertEqual(self.replaced_documents, [])
+                self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+                self.assertNotEqual(self.service.status()["last_errors"], ())
+                self.airport_store.replace.side_effect = self._replace_provider
+
+    def test_configure_airport_portal_maps_portal_codes_untouched(self):
+        self.portal.activate_error = AirportPortalError("airport_activation_url_invalid")
+        with self.assertRaises(ServiceError) as caught:
+            self.service.configure_airport_portal(ACTIVATION_URL)
+        self.assertEqual(caught.exception.code, "airport_activation_url_invalid")
+        self.assertNotIn(ACTIVATION_URL, str(caught.exception))
+
+    def test_auto_refresh_prefers_the_saved_link_without_generating(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        self.download_traffic = Traffic(upload=5, download=6, total=60, expiry_ms=4000)
+
+        result = self.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": True})
+        self.assertEqual(self.portal.activate_calls, [ACTIVATION_URL])
+        self.assertEqual(self.portal.generate_calls, [])
+        self.assertEqual(self.download_calls, [SAVED_URL])
+        self.assertEqual(
+            self.replaced_sources,
+            [
+                AirportSource(
+                    source_url=SAVED_URL,
+                    traffic=self.download_traffic,
+                    last_success=int(self.clock_value),
+                    activation_url=ACTIVATION_URL,
+                )
+            ],
+        )
+
+    def test_auto_refresh_generates_a_new_link_after_the_saved_link_fails(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        new_document = PROVIDER_DOCUMENT.replace(b"amy.example.test", b"amy-2.example.test")
+        self.download_document = new_document
+        self.download_traffic = Traffic(upload=7, download=8, total=70, expiry_ms=4000)
+        self.service._download = self.link_aware_download()
+
+        result = self.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": True})
+        self.assertEqual(self.download_calls, [SAVED_URL, GENERATED_URL])
+        self.assertEqual(len(self.portal.generate_calls), 1)
+        self.assertEqual(
+            self.replaced_sources,
+            [
+                AirportSource(
+                    source_url=GENERATED_URL,
+                    traffic=self.download_traffic,
+                    last_success=int(self.clock_value),
+                    activation_url=ACTIVATION_URL,
+                )
+            ],
+        )
+
+    def link_aware_download(self):
+        def download(url, maximum):
+            self.download_calls.append(url)
+            if url == SAVED_URL:
+                raise SourceError("airport_download_failed")
+            return AirportDownload(document=self.download_document, traffic=self.download_traffic)
+
+        return download
+
+    def test_auto_refresh_skips_when_the_page_is_down_and_the_link_fails(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        self.portal.activate_error = AirportPortalError("airport_portal_unavailable")
+        self.service._download = self.failing_download()
+
+        result = self.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": False, "skipped": True})
+        self.assertEqual(self.replaced_documents, [])
+        self.assertEqual(self.airport_file.read_bytes(), PROVIDER_DOCUMENT)
+        self.assertEqual(self.portal.generate_calls, [])
+        self.assertEqual(self.service.status()["last_errors"], ())
+        self.assertNotEqual(self.service.status()["last_success"], self.clock_value)
+
+    def test_auto_refresh_still_updates_when_the_page_is_temporarily_down(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        self.portal.activate_error = AirportPortalError("airport_portal_unavailable")
+
+        result = self.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.assertEqual(self.download_calls, [SAVED_URL])
+        self.assertEqual(self.portal.generate_calls, [])
+        self.assertEqual(self.replaced_sources[0].source_url, SAVED_URL)
+        self.assertEqual(self.replaced_sources[0].activation_url, ACTIVATION_URL)
+
+    def test_auto_refresh_ignores_an_incompatible_page_when_the_link_works(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        self.portal.activate_error = AirportPortalError("airport_portal_unsupported")
+
+        result = self.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.assertEqual(self.download_calls, [SAVED_URL])
+        self.assertEqual(self.replaced_sources[0].source_url, SAVED_URL)
+
+    def test_auto_refresh_fails_when_the_page_is_incompatible_and_the_link_fails(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        self.portal.activate_error = AirportPortalError("airport_portal_unsupported")
+        self.service._download = self.failing_download()
+
+        with self.assertRaises(ServiceError) as caught:
+            self.service.auto_refresh_airport()
+
+        self.assertEqual(caught.exception.code, "airport_portal_unsupported")
+        self.assertEqual(self.replaced_documents, [])
+        self.assertEqual(self.service.status()["last_errors"], ("airport_portal_unsupported",))
+
+    def test_auto_refresh_requires_a_saved_activation_url(self):
+        self.airport_store.read_source.return_value = self.saved_source(activation_url=None)
+        with self.assertRaises(ServiceError) as caught:
+            self.service.auto_refresh_airport()
+        self.assertEqual(caught.exception.code, "airport_activation_missing")
+        self.assertEqual(self.download_calls, [])
+        self.assertEqual(self.portal.activate_calls, [])
+
+        self.airport_store.read_source.side_effect = AirportStoreError("airport_source_missing")
+        with self.assertRaises(ServiceError) as caught:
+            self.service.auto_refresh_airport()
+        self.assertEqual(caught.exception.code, "airport_activation_missing")
+
+    def test_auto_refresh_treats_an_html_response_as_a_failed_link(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+        self.download_traffic = None
+
+        def download(url, maximum):
+            self.download_calls.append(url)
+            if url == SAVED_URL:
+                raise SourceError("airport_response_invalid")
+            return AirportDownload(document=self.download_document, traffic=None)
+
+        self.service._download = download
+
+        result = self.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.assertEqual(self.download_calls, [SAVED_URL, GENERATED_URL])
+        self.assertEqual(len(self.portal.generate_calls), 1)
+
+    def test_refresh_airport_never_touches_the_portal(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+
+        self.service.refresh_airport()
+
+        self.assertEqual(self.portal.activate_calls, [])
+        self.assertEqual(self.portal.generate_calls, [])
+        self.assertEqual(self.replaced_sources[0].activation_url, ACTIVATION_URL)
+
+    def test_replace_airport_source_keeps_the_saved_activation_url(self):
+        self.airport_store.read_source.return_value = self.saved_source()
+
+        result = self.service.replace_airport_source("https://airport.example/new")
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.assertEqual(self.portal.activate_calls, [])
+        self.assertEqual(self.portal.generate_calls, [])
+        self.assertEqual(self.replaced_sources[0].activation_url, ACTIVATION_URL)
+        self.assertEqual(self.replaced_sources[0].source_url, "https://airport.example/new")
+
+    def test_replace_airport_source_creates_a_record_without_activation(self):
+        self.airport_store.read_source.side_effect = AirportStoreError("airport_source_missing")
+
+        self.service.replace_airport_source("https://airport.example/new")
+
+        self.assertIsNone(self.replaced_sources[0].activation_url)
+        self.assertEqual(self.replaced_sources[0].source_url, "https://airport.example/new")
 
     def test_rotate_owner_rebuilds_the_release_with_the_new_token_url(self):
         self.bootstrap()

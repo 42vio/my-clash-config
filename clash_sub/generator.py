@@ -93,7 +93,7 @@ def _with_provider(document, airport):
     providers[PROVIDER_NAME] = CommentedMap({
         "type": "http",
         "url": airport.url,
-        "interval": 604800,
+        "interval": 86400,
         "path": "./proxy_providers/%s" % AIRPORT_FILENAME,
     })
     try:

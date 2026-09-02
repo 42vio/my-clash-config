@@ -541,13 +541,43 @@ class AirportTrafficTests(StoreTestCase):
             raise AssertionError("airport query must not read the 3x-ui database")
 
         traffic = Traffic(upload=1, download=2, total=3, expiry_ms=4)
-        self.write_source(AirportSource(SOURCE_URL, traffic, LAST_SUCCESS))
+        self.write_source(
+            AirportSource(
+                source_url=SOURCE_URL,
+                traffic=traffic,
+                last_success=LAST_SUCCESS,
+                activation_url=None,
+            )
+        )
         store = self.make_store(forbidden)
         self.assertEqual(store.airport_traffic(), traffic)
 
     def test_source_without_traffic_returns_none(self):
-        self.write_source(AirportSource(SOURCE_URL, None, LAST_SUCCESS))
+        self.write_source(
+            AirportSource(
+                source_url=SOURCE_URL,
+                traffic=None,
+                last_success=LAST_SUCCESS,
+                activation_url=None,
+            )
+        )
         self.assertIsNone(self.make_store(RecordingReader()).airport_traffic())
+
+    def test_activation_url_never_enters_the_public_traffic_answer(self):
+        # Schema v2 records carry a private activation URL; the metadata
+        # surface must keep exposing traffic only.
+        self.write_source(
+            AirportSource(
+                source_url=SOURCE_URL,
+                traffic=Traffic(upload=1, download=2, total=3, expiry_ms=4),
+                last_success=LAST_SUCCESS,
+                activation_url="https://example.invalid/Subscription/index?sid=placeholder&token=placeholder",
+            )
+        )
+        answer = self.make_store(RecordingReader()).airport_traffic()
+        self.assertEqual(
+            answer, Traffic(upload=1, download=2, total=3, expiry_ms=4)
+        )
 
     def test_missing_source_returns_none(self):
         self.assertIsNone(self.make_store(RecordingReader()).airport_traffic())

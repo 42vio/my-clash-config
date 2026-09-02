@@ -448,6 +448,7 @@ class AirportStore:
         if (
             stat.S_ISLNK(details.st_mode)
             or not stat.S_ISDIR(details.st_mode)
+            or stat.S_IMODE(details.st_mode) != 0o2750
             or details.st_uid != self._expected_uid
             or details.st_gid != self._expected_gid
         ):

@@ -84,9 +84,11 @@ _MAIN_MENU_ROWS = (
 
 _AIRPORT_MENU_ROWS = (
     ("title", "机场订阅"),
-    ("option", "1", (("更换机场订阅链接", None),)),
-    ("option", "2", (("刷新机场订阅", None),)),
-    ("option", "3", (("查看机场状态", None),)),
+    ("option", "1", (("设置订阅开关页面", None),)),
+    ("option", "2", (("自动开启订阅并刷新", None), ("（推荐）", "green"))),
+    ("option", "3", (("手动开启订阅后刷新", None),)),
+    ("option", "4", (("使用新订阅链接更新", None),)),
+    ("option", "5", (("查看机场状态", None),)),
     ("option", "0", (("返回", None),)),
 )
 
@@ -175,7 +177,7 @@ def _render_submenu(rows, colors):
 
 
 MENU = _render_main_menu(_Colors(False)) + "请输入选项 [0-8]："
-AIRPORT_MENU = _render_submenu(_AIRPORT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
+AIRPORT_MENU = _render_submenu(_AIRPORT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
 MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
@@ -243,7 +245,7 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "1":
         return _run_submenu(
-            _AIRPORT_MENU_ROWS, 3, _airport_dispatch, stdin, stdout, stderr, factory, colors
+            _AIRPORT_MENU_ROWS, 5, _airport_dispatch, stdin, stdout, stderr, factory, colors
         )
     if choice == "2":
         return _call("sync", None, stdout, stderr, factory), False
@@ -288,10 +290,14 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
 
 def _airport_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "1":
-        return _menu_airport_replace(stdin, stdout, stderr, factory)
+        return _menu_airport_portal(stdin, stdout, stderr, factory)
     if choice == "2":
-        return _call("airport-refresh", None, stdout, stderr, factory), False
+        return _call("airport-auto-refresh", None, stdout, stderr, factory), False
     if choice == "3":
+        return _menu_airport_manual_refresh(stdin, stdout, stderr, factory)
+    if choice == "4":
+        return _menu_airport_source(stdin, stdout, stderr, factory)
+    if choice == "5":
         return _call("airport-status", None, stdout, stderr, factory), False
     return None
 
@@ -359,11 +365,38 @@ def _menu_error(stderr, code):
     stderr.write(_colors_for(stderr).red(_ERROR_TEMPLATE % code))
 
 
-def _menu_airport_replace(stdin, stdout, stderr, factory):
-    # The link is typed visibly (never hidden, never a command-line
-    # argument) and pasted whitespace is stripped; an empty answer is
-    # rejected before any service is constructed.
-    airport_url = _prompt(stdin, stdout, "请输入机场订阅地址：")
+def _menu_airport_portal(stdin, stdout, stderr, factory):
+    # Menu 1: one full-chain validation before anything is saved; the page
+    # URL is typed visibly (never hidden, never a command-line argument)
+    # and pasted whitespace is stripped; an empty answer is rejected
+    # before any service is constructed.
+    stdout.write("此操作会验证订阅开关页面、生成新的订阅链接，\n")
+    stdout.write("并在下载成功后更新 AmyTelecom.yaml。\n")
+    stdout.write("任一步失败都会保留当前配置。\n\n")
+    activation_url = _prompt(stdin, stdout, "请输入订阅开关页面：")
+    if activation_url is None:
+        return 0, False
+    if not activation_url:
+        return _error(stderr, "invalid_activation_url", 2), False
+    return _call("airport-portal", activation_url, stdout, stderr, factory), False
+
+
+def _menu_airport_manual_refresh(stdin, stdout, stderr, factory):
+    # Menu 3: the user enabled the subscription in a browser; the saved
+    # link is re-downloaded verbatim without visiting or naming the page.
+    stdout.write("请在浏览器中手动打开机场订阅开关页面。\n")
+    answer = _prompt(stdin, stdout, "确认订阅已开启后，按回车继续；输入 0 取消：")
+    if answer is None or answer == "0":
+        return 0, False
+    return _call("airport-refresh", None, stdout, stderr, factory), False
+
+
+def _menu_airport_source(stdin, stdout, stderr, factory):
+    # Menu 4: the permanent manual fallback — it never touches the portal
+    # page and only swaps the saved link after a successful download.
+    stdout.write("此操作不会访问订阅开关页面。\n")
+    stdout.write("下载成功后会保存新订阅链接，并更新 AmyTelecom.yaml。\n\n")
+    airport_url = _prompt(stdin, stdout, "请输入新的机场订阅链接：")
     if airport_url is None:
         return 0, False
     if not airport_url:
@@ -571,6 +604,8 @@ def _parser():
     commands.add_parser("recover", add_help=False)
     # Internal systemd entry (clash-sub-metadata.service); never in menus.
     commands.add_parser("metadata-serve", add_help=False)
+    # Internal systemd entry (clash-sub-airport-refresh.timer); never displayed.
+    commands.add_parser("airport-scheduled-refresh", add_help=False)
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
     template = commands.add_parser("template-sync", add_help=False)
@@ -635,7 +670,26 @@ def _run_command(parsed, stdout, stderr, factory):
         return _call("reinitialize", user, stdout, stderr, factory)
     if command == "recover":
         return _recover(stdout, stderr)
+    if command == "airport-scheduled-refresh":
+        return _scheduled_refresh(stdout, stderr, factory)
     return _error(stderr, "invalid_command", 2)
+
+
+def _scheduled_refresh(stdout, stderr, factory):
+    # Weekly timer entry: a normal skip (or a busy lock / missing activation
+    # page) is success for the unit; only real failures fail the run.
+    try:
+        result = factory().auto_refresh_airport()
+    except ServiceError as error:
+        if error.code in {"operation_busy", "airport_activation_missing", "airport_refresh_skipped"}:
+            return 0
+        return _error(stderr, error.code, 1)
+    except Exception:
+        return _error(stderr, "service_unavailable", 1)
+    if result.get("skipped"):
+        return 0
+    _write_airport_update(stdout, result)
+    return 0
 
 
 def _call(operation, value, stdout, stderr, factory):
@@ -643,6 +697,20 @@ def _call(operation, value, stdout, stderr, factory):
         service = factory()
         if operation == "airport-replace":
             _write_airport_update(stdout, service.replace_airport_source(value))
+        elif operation == "airport-portal":
+            _write_airport_update(stdout, service.configure_airport_portal(value))
+        elif operation == "airport-auto-refresh":
+            try:
+                result = service.auto_refresh_airport()
+            except ServiceError as error:
+                if error.code != "airport_activation_missing":
+                    raise
+                stderr.write("尚未设置订阅开关页面，请先使用菜单 1。\n")
+                return 0
+            if result.get("skipped"):
+                stdout.write("本次已跳过，当前机场配置保持不变。\n")
+                return 0
+            _write_airport_update(stdout, result)
         elif operation == "airport-refresh":
             try:
                 result = service.refresh_airport()
@@ -744,11 +812,14 @@ def _write_airport_update(stdout, result):
 
 
 def _write_airport_status(stdout, status):
-    # Only the public summary: hostname, aggregate traffic, expiry, last
-    # success, and provider presence — never the URL path, query, or token.
+    # Only the public summary: the two configured flags with their hostnames,
+    # aggregate traffic, expiry, last success, and provider presence — never
+    # a URL path, query, sid, or token.
     stdout.write("机场状态：\n")
-    stdout.write("已保存链接：%s\n" % ("是" if status["saved"] else "否"))
-    stdout.write("来源域名：%s\n" % (status["source_host"] or "无"))
+    stdout.write("开关页面已配置：%s\n" % ("是" if status.get("activation_configured") else "否"))
+    stdout.write("开关页面域名：%s\n" % (status.get("activation_host") or "无"))
+    stdout.write("订阅链接已配置：%s\n" % ("是" if status.get("source_configured") else "否"))
+    stdout.write("来源域名：%s\n" % (status.get("source_host") or "无"))
     stdout.write("总量：%s\n" % _traffic_number(status["traffic_total"]))
     stdout.write("已用：%s\n" % _traffic_number(status["traffic_used"]))
     stdout.write("剩余：%s\n" % _traffic_number(status["traffic_remaining"]))
