@@ -9,7 +9,7 @@
 - 旧链接失效时自动从页面生成新链接；
 - 页面自动化失效时仍可人工开启订阅或直接输入新链接；
 - 每 7 天自动刷新一次服务器上的机场配置；
-- 下载结果经过最小 YAML 验证，但保存时保持原始字节、顺序与注释不变。
+- 下载结果只经过传输与明显错误页面检查，保存时保持原始字节、顺序与注释不变。
 
 本设计只影响机场订阅链路。owner/member 发布矩阵、主配置生成、模板注释、Home 客户端脚本、Mihomo 校验、release 与 Nginx 路由契约保持不变。
 
@@ -44,11 +44,11 @@ ClashSubService
         │
         ├── download_airport_document
         │     ├── 下载原始正文
-        │     ├── 最小 YAML 验证
+        │     ├── 基础响应检查
         │     └── 捕获流量信息
         │
         └── AirportStore
-              └── 原子保存来源记录与 AmyTelecom.yaml
+              └── 以可恢复双文件事务更新来源记录与 AmyTelecom.yaml
 ```
 
 建议新增 `clash_sub/airport_portal.py`。页面 HTML、生成任务和接口响应的处理全部封装在该文件中，不进入通用下载模块。页面改版时只修改适配器；人工链接更新链路不依赖该适配器。
@@ -93,9 +93,9 @@ URL 使用可见交互输入，清除首尾空白，不接受命令行 URL 参�
 → 创建链接生成任务
 → 必要时等待并查询任务
 → 获得新的 source_url
-→ 下载并验证 YAML
+→ 下载并检查响应
 → 捕获流量信息
-→ 原子保存来源记录与 AmyTelecom.yaml
+→ 事务更新来源记录与 AmyTelecom.yaml
 ```
 
 不得优先复用旧 `source_url`，因为该操作必须确认新的开关页面具备完整的链接生成能力。任一步失败都保留旧开关页面、旧真实链接、旧机场文件、旧流量和旧成功时间。
@@ -151,9 +151,9 @@ URL 使用可见交互输入，清除首尾空白，不接受命令行 URL 参�
 
 ```text
 输入新的 source_url
-→ 下载并验证 YAML
+→ 下载并检查响应
 → 保留现有 activation_url
-→ 原子更新 source_url、正文、流量和时间
+→ 事务更新 source_url、正文、流量和时间
 ```
 
 如果尚无机场来源记录，则以 `activation_url=null` 创建记录。该操作是页面改版或自动化长期失效时的永久人工兜底。
@@ -209,7 +209,30 @@ Schema 升级为版本 2：
 - 两个 URL 都是私密凭据；
 - Schema v1 不迁移，测试服务器采用全新部署。
 
-`AirportStore.replace(document, source)` 继续将来源记录与机场正文作为可恢复的双文件事务原子切换。所有成功的正文更新都经过该事务；菜单 1 和菜单 4 同时替换对应 URL，菜单 2 和菜单 3 保留未变的 URL。
+`AirportStore.replace(document, source)` 继续将来源记录与机场正文作为可恢复的双文件事务更新。所有成功的正文更新都经过该事务；菜单 1 和菜单 4 同时更新对应 URL，菜单 2 和菜单 3 保留未变的 URL。
+
+来源记录在业务上是更新字段，在文件系统上仍采用同目录临时文件加 `os.replace` 整体替换：先读取旧记录，保留未变化的字段，构造完整新记录，写入并同步临时文件后再替换正式 `airport-source.json`。不得直接打开正式 JSON 原地覆盖，以免崩溃或并发读取留下空文件、半截 JSON。
+
+现有事务的正式文件切换顺序保持为：
+
+1. 替换 `public/provider/AmyTelecom.yaml`；
+2. 替换 `private/airport-source.json`；
+3. 同步两个目录并清理事务记录；
+4. 第二步或后续持久化失败时，根据事务记录恢复旧组合。
+
+这不是两个路径同时可见的严格原子切换。两次替换之间存在毫秒级窗口，一次恰好并发的订阅请求可能取得新机场正文和旧流量响应头；后续请求恢复一致，失败恢复后也只保留完整旧组合。该短暂的响应头与正文错位可以接受，不引入全局读取锁、版本目录或指针文件。
+
+## 基于当前主分支的接入约束
+
+当前代码尚未包含本设计，实施时必须同时完成以下接入，不能只新增页面适配器：
+
+- `airport_source.py` 当前是精确键集合的 Schema v1。升级为 v2 时，`AirportSource` 模型、序列化、解析、所有构造位置和测试 fixture 必须同时增加 `activation_url`；`metadata.py` 继续只读取其中的 `traffic`，但必须能读取 v2；
+- `service.py` 现有 `replace_airport_source(url)`、`refresh_airport()` 和 `airport_status()` 分别演进为菜单 4、菜单 3 和菜单 5 的能力；新增菜单 1 的 `configure_airport_portal(url)` 与菜单 2/定时任务共用的 `auto_refresh_airport()`，避免建立两套自动刷新状态机；
+- 现有下载器保持“下载原始字节、只拒绝传输失败和空响应”的方向，在其上增加明显 HTML 拒绝，不恢复曾经删除的 YAML 结构解析与 Mihomo provider 探针；
+- `generator.py` 与 `checks.py` 当前都把机场 provider 间隔固定为 `604800`，必须连同生成、守卫、端到端和文档测试统一改为 `86400`；
+- `installer.py` 当前 systemd 事务只管理 metadata 与 recover 单元。新增 refresh service/timer 后，安装前状态捕获、文件写入、启用、失败回滚、post-update 和卸载必须同步扩展；
+- 机场状态当前只反映一个来源 URL。Schema v2 后只在机场子菜单显示开关页面与真实链接的配置状态及两个主机名，通用状态页面不新增凭据相关内容；
+- `AirportStore` 在写入前除现有目录类型、属主和组检查外，还必须要求 `public/provider` 模式精确为 `02750`，防止目录被放宽后低权限进程替换 provider 文件。
 
 ## 页面适配器
 
@@ -269,7 +292,7 @@ class AirportPortalClient:
 
 接口失败、超时或返回非法任务结果时，返回稳定错误码，不得包含原始响应。
 
-## 机场下载与最小 YAML 验证
+## 机场下载与基础响应检查
 
 所有实际下载正文的操作共用同一管道：
 
@@ -278,14 +301,16 @@ class AirportPortalClient:
 - 15 秒超时；
 - 最大 5 MB；
 - 正文必须非空；
-- 拒绝 `text/html` 及正文开头具有明确 HTML 特征的响应；
-- 使用安全 YAML 解析器确认语法有效；
-- YAML 顶层必须是映射；
-- 不要求固定的 `proxies`、`proxy-groups`、`rules` 或其他业务键；
+- 响应类型为 `text/html` 或 `application/xhtml+xml` 时拒绝；
+- 去除 UTF-8 BOM 与开头空白后，正文以 `<!DOCTYPE html`、`<html`、`<head` 或 `<body` 开始时拒绝，匹配不区分大小写；
+- 不依赖 URL 扩展名或 YAML MIME；机场实测响应为 `text/plain`；
+- 不解析 YAML，不检查顶层类型，也不要求 `proxies`、`proxy-groups`、`rules` 或其他业务键；
 - 捕获最终响应的单个 `Subscription-Userinfo`；
 - 流量头缺失或非法不影响正文更新。
 
-YAML 解析只用于验证。通过后仍将下载到的原始字节直接写入 `AmyTelecom.yaml`，不得重新序列化或改变注释、顺序、缩进和换行。
+通过检查后，将下载到的原始字节直接写入 `AmyTelecom.yaml`，不得解码后重写、重新序列化或改变注释、顺序、缩进和换行。该检查只阻止空响应和明显的网页错误内容，不承诺判断任意正文是否为语义正确的 Clash 配置；这是保留现有“机场文件由上游保证可用”契约的有意选择。
+
+对状态机而言，传输失败、空响应、超限响应和 `airport_response_invalid` 都表示该 `source_url` 本次下载失败。菜单 2 使用旧链接遇到这些结果时，如果页面上下文可用，继续生成新链接并重试；其他菜单按各自定义保留完整旧数据。
 
 ## 定时刷新
 
@@ -305,12 +330,15 @@ clash-sub-airport-refresh.timer
 - 调用菜单 2 相同的服务方法；
 - 使用无 URL 参数的非交互内部命令 `clash-sub airport-scheduled-refresh`；
 - 与人工机场操作共用现有操作锁；
+- 操作锁已被占用时按本次跳过处理；
 - 不进行密集自动重试；
 - 未配置开关页面时跳过；
 - 页面临时不可用且旧链接失败时跳过；
 - 不执行 `sync`，不读取 3x-ui，不生成主配置，不调用 Mihomo，不操作 release，不重载 Nginx。
 
-该定时器与需要删除的旧流量定时机制没有运行依赖或兼容关系。
+`clash-sub-airport-refresh.service` 为一次性服务，需要网络访问并依赖 `network-online.target`，单次整体超时约 180 秒；只启用 timer，不单独启用 service。安装、升级失败回滚和卸载必须把这两个 unit 纳入现有 systemd 文件与启用状态事务，不能只把 unit 文件复制到服务器。
+
+项目按全新部署处理，不增加旧流量定时单元的迁移或清理逻辑。
 
 ## 三层刷新周期
 
@@ -348,7 +376,7 @@ airport_activation_missing
 airport_portal_unavailable
 airport_portal_unsupported
 airport_link_generation_failed
-airport_yaml_invalid
+airport_response_invalid
 airport_refresh_skipped
 ```
 
@@ -369,9 +397,9 @@ airport_refresh_skipped
 服务器恢复后：
 
 1. 恢复私密来源记录；
-2. 使用菜单 2重新取得机场正文；
-3. 如果页面自动化失效，使用菜单 3后再刷新；
-4. 如果真实链接也已失效，使用菜单 4输入新链接；
+2. 使用菜单 2 重新取得机场正文；
+3. 如果页面自动化失效，手动开启订阅后使用菜单 3 刷新；
+4. 如果真实链接也已失效，使用菜单 4 输入新链接；
 5. 机场文件恢复后再执行 `sync`。
 
 ## 验收标准
@@ -401,20 +429,26 @@ airport_refresh_skipped
 
 ### 下载与存储
 
-- HTML、无效 YAML、顶层非映射、空文件和超限文件被拒绝；
-- 有效 YAML 的原始字节、注释、顺序和换行完整保留；
+- HTML、空文件和超限文件被拒绝；
+- 非 HTML、非空且未超限的响应不做 YAML 结构校验；
+- 下载正文的原始字节、注释、顺序和换行完整保留；
 - Schema v2 文件安全检查完整；
-- 来源记录与机场正文的事务恢复只能得到完整旧组合或完整新组合。
+- 来源记录采用完整临时文件原子替换，未变化字段被保留；
+- 稳定状态和事务恢复只能得到完整旧组合或完整新组合；
+- 允许两次正式文件替换之间的一次并发请求短暂取得新正文与旧流量头。
 
 ### CLI、部署与安全
 
 - 菜单名称、编号、提示和取消行为精确匹配设计；
 - URL 只能通过可见交互输入，不能作为命令参数；
 - 定时任务复用菜单 2 的服务方法；
+- 定时 service 有网络依赖和整体超时，只启用 timer；
+- 安装事务、升级失败回滚、post-update 和卸载完整覆盖新增 systemd 单元；
 - 主配置继续声明 `Profile-Update-Interval: 24`；
 - owner 配置中的 `AmyTelecom.interval` 精确为 `86400`；
 - 服务器机场刷新周期精确为 7 天并带 0–6 小时随机延迟；
 - 安装、备份、恢复和卸载测试覆盖新增单元；
-- 旧流量定时机制继续从当前生产代码、部署文件和当前文档中清除；
+- `public/provider` 目录必须精确为 `02750 root:www-data`，存储前检查模式、属主和组；
+- 全新部署不实现旧流量定时单元的迁移与兼容；
 - 仓库、测试 fixture、命令输出和错误文本不出现真实机场凭据；
 - 完整测试、秘密扫描、`compileall`、systemd 单元守卫和 `git diff --check` 全部通过。
