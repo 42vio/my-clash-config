@@ -1,5 +1,6 @@
 import importlib
 import py_compile
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -162,6 +163,9 @@ DOCUMENTED_CLI_COMMANDS = frozenset(
         # Internal systemd entry: surfaced only to clash-sub-metadata.service,
         # never in the interactive menus or user documentation.
         "metadata-serve",
+        # Internal systemd entry: surfaced only to
+        # clash-sub-airport-refresh.timer, never in the interactive menus.
+        "airport-scheduled-refresh",
     )
 )
 
@@ -313,6 +317,8 @@ class RepositorySafetyTests(unittest.TestCase):
         self.assertEqual(frozenset(subparsers.choices), DOCUMENTED_CLI_COMMANDS)
         # `sync` never grows an upload target: it accepts no arguments.
         self.assertEqual(subparsers.choices["sync"]._actions, [])
+        # The internal timer entry never grows a URL or any other argument.
+        self.assertEqual(subparsers.choices["airport-scheduled-refresh"]._actions, [])
 
     def test_every_runtime_private_path_is_ignored(self):
         paths = (
@@ -428,6 +434,22 @@ class RepositorySafetyTests(unittest.TestCase):
         for relative in PROJECT_USE_DOCUMENTS:
             text = (ROOT / relative).read_text(encoding="utf-8")
             self.assertTrue(text.strip(), relative)
+
+    def test_project_use_documents_only_use_placeholder_url_hosts(self):
+        # The four manuals never carry a real portal or subscription host:
+        # only the project's own GitHub links and Chinese placeholder hosts
+        # (which this ASCII pattern cannot even match) may appear.
+        allowed = {"github.com", "sub"}
+        for relative in PROJECT_USE_DOCUMENTS:
+            document = (ROOT / relative).read_text(encoding="utf-8")
+            hosts = {
+                host.rstrip(".")
+                for host in re.findall(r"https://([A-Za-z0-9.-]+)", document)
+            }
+            self.assertFalse(
+                hosts - allowed,
+                "%s 引用了非占位主机名：%s" % (relative, sorted(hosts - allowed)),
+            )
 
     def test_active_sources_contain_no_legacy_business_references(self):
         search_roots = ("clash_sub", "templates", "config", "deploy", "scripts", "tests")

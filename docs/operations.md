@@ -60,27 +60,35 @@ git diff --check
 在服务器执行 `clash-sub`，主菜单选择 `1` 进入机场订阅子菜单：
 
 ```text
-1. 更换机场订阅链接
-2. 刷新机场订阅
-3. 查看机场状态
+1. 设置订阅开关页面
+2. 自动开启订阅并刷新（推荐）
+3. 手动开启订阅后刷新
+4. 使用新订阅链接更新
+5. 查看机场状态
 0. 返回
 ```
 
-- **更换机场订阅链接（1）**：在可见提示中粘贴新的 HTTPS 订阅地址，输入自动清理首尾空白。链接只在下载成功后保存：新正文、新链接与新流量一起生效；任一步失败时旧的正文、链接与流量全部保留。
-- **刷新机场订阅（2）**：使用已保存的链接重新下载，不再提示输入地址；来源记录缺失时报 `airport_source_missing`。
-- **查看机场状态（3）**：只显示公开摘要——是否已保存链接、来源域名、总量/已用/剩余、到期时间、最近成功时间与 `AmyTelecom.yaml` 是否存在；URL 路径、查询串与令牌永不显示。
+- **设置订阅开关页面（1）**：首次使用或更换机场时执行。在可见提示中粘贴带 `sid/token` 的订阅开关页面地址，输入自动清理首尾空白。该操作每次都强制完成全链路验证——访问页面开启订阅、生成一条新订阅链接、下载成功后才把开关页面地址、订阅链接、新正文与新流量一起保存；任一步失败时旧的开关页面、链接、正文与流量全部保留。
+- **自动开启订阅并刷新（2）**：日常推荐操作，也是定时任务复用的同一条链路。每次执行都会先访问一次开关页面开启订阅（不记录持续开启时间），然后优先用已保存的旧链接下载；旧链接失败且页面可用时才生成新链接重试。页面临时不可用时仍会尝试旧链接；页面和旧链接都不可用时本次跳过并完整保留旧数据。尚未设置开关页面时提示先用菜单 1。
+- **手动开启订阅后刷新（3）**：机场页面自动化失效时的过渡手段。先在浏览器里手动打开订阅开关页面确认订阅已开启，回车后程序只用已保存的旧链接下载——不访问、不解析、也不显示开关页面地址，不生成新链接。
+- **使用新订阅链接更新（4）**：永久可用的人工兜底，页面改版或自动化长期失效时使用。完全不访问订阅开关页面，在可见提示中粘贴新的订阅链接；下载成功后保存新链接并更新 `AmyTelecom.yaml`，已有的开关页面地址保持不变；尚无来源记录时以未设置开关页面新建记录。
+- **查看机场状态（5）**：只显示公开摘要——开关页面与订阅链接是否已配置、两个来源主机名、总量/已用/剩余、到期时间、最近成功时间与 `AmyTelecom.yaml` 是否存在；URL 路径、查询串、令牌与任务编号永不显示。
 
 地址会显示在当前终端，但不要把它作为 shell 参数、写入历史、仓库、重定向文件或工单。成功后可执行 `clash-sub status` 查看整体状态。
 
-下载与发布规则：按 HTTPS 下载原始字节（保留 HTTPS、最多三次 HTTPS 重定向、超时与 5 MB 大小限制），拒绝空响应，非空响应原字节、原注释写入随机临时文件，经日志式事务与来源记录同时原子替换 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`（权限 `0640 root:www-data` 不变）。来源记录 `/var/lib/clash-sub/private/airport-source.json` 保存订阅链接与最近一次下载的流量，固定 0600、root:root、非软链且硬链数为 1；崩溃中断的事务在下一次机场操作时恢复到完整的旧状态或完整的新状态。服务器不校验、不解析、不转换机场内容——完整 Clash 配置、注释与字节顺序原样保留。失败时保留当前 provider 与来源记录，只输出隐藏了源 URL、令牌、UUID 和节点敏感字段的稳定错误码。
+服务器还会通过 `clash-sub-airport-refresh.timer` 每 7 天（随机延迟 0–6 小时，错过的周期补跑）自动执行一次与菜单 2 相同的刷新：共用同一把操作锁，锁被占用时按本次跳过处理；未设置开关页面时直接跳过；不做密集重试，也不执行 sync、不读取 3x-ui、不生成主配置、不调用 Mihomo、不重载 Nginx。
 
-上游响应里唯一被读取的响应头是 `Subscription-Userinfo`：机场带此头时，流量数字随本次下载保存；无此头时提示「机场订阅已更新，未获取到流量信息」，正文照常发布。客户端之后请求 `AmyTelecom.yaml` 时看到的就是这份最近保存的流量与到期，服务器不会为此联系机场上游。
+三层刷新周期各管一段：服务器更新 `AmyTelecom.yaml` 每 7 天一次（带随机延迟）；owner 配置里 `AmyTelecom` provider 的 `interval: 86400` 让客户端每 24 小时从自有订阅服务器拉一次——服务器更新后最多约 24 小时内客户端取得新内容；主配置响应头 `Profile-Update-Interval: 24` 保持 24 小时不变。日常刷新只访问自有订阅服务器，不增加机场上游的访问频率。
+
+下载与发布规则：按 HTTPS 下载原始字节（保留 HTTPS、最多三次 HTTPS 重定向、超时与 5 MB 大小限制），拒绝空响应与明显 HTML 错误页（`text/html`/`application/xhtml+xml` 响应类型，或去除 BOM 与空白后以 `<!DOCTYPE html`、`<html`、`<head`、`<body` 开头的正文），其余非空响应原字节、原注释写入随机临时文件，经日志式事务与来源记录同时原子替换 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`（权限 `0640 root:www-data` 不变）。来源记录 `/var/lib/clash-sub/private/airport-source.json` 同时保存订阅开关页面地址、订阅链接与最近一次下载的流量，固定 0600、root:root、非软链且硬链数为 1；崩溃中断的事务在下一次机场操作时恢复到完整的旧状态或完整的新状态。服务器不做 YAML 解析、不校验机场内容结构——上游来的原始字节、注释与顺序原样保留；坏的上游内容需要通过菜单 2 或菜单 4 覆盖。失败时保留当前 provider 与来源记录，只输出隐藏了源 URL、令牌、UUID 和节点敏感字段的稳定错误码。
+
+上游响应里唯一被读取的响应头是 `Subscription-Userinfo`：机场带此头时，流量数字随本次下载保存；无此头时本次保存的流量明确置空，并提示「机场订阅已更新，未获取到流量信息」，正文照常发布。客户端之后请求 `AmyTelecom.yaml` 时看到的就是这份最近保存的流量与到期，服务器不会为此联系机场上游。
 
 机场字节变化本身不会创建新发布：发布输入哈希只含 3x-ui 数据。需要把新机场节点刷进客户端时，在 Clash Verge 中手动刷新 provider（见下节），或在内容需要重排时执行 `clash-sub sync`。
 
 ## 手动刷新 provider
 
-owner 客户端在 Clash Verge 的「订阅」页选中 `Clash-Compat` 或 `Clash-Balance`，对 `AmyTelecom` provider 执行手动更新即可拉取最新机场节点；主配置本身无需重新下载。provider 的自动刷新间隔为 7 天。Clash Verge 里显示的机场流量与到期是服务器最近一次机场下载保存的数字，刷新 provider 不会触发服务器访问机场上游。
+owner 客户端在 Clash Verge 的「订阅」页选中 `Clash-Compat` 或 `Clash-Balance`，对 `AmyTelecom` provider 执行手动更新即可拉取最新机场节点；主配置本身无需重新下载。provider 的自动刷新间隔为 24 小时。Clash Verge 里显示的机场流量与到期是服务器最近一次机场下载保存的数字，刷新 provider 不会触发服务器访问机场上游。
 
 ## 订阅流量元数据
 
@@ -221,11 +229,16 @@ clash-sub status
 
 4. `airport_provider_required` 表示稳定 provider 缺失或无效：按[机场更新](#机场更新)刷新或重新导入订阅，再 `sync`。机场更新失败会保留原 provider 与来源记录，并给出不含订阅地址的分类错误码：
 
-   - `airport_url_invalid`：不是允许的 HTTPS 地址；
-   - `airport_redirect_invalid`：重定向超过三次或转向非 HTTPS 地址；
+   - `airport_url_invalid` / `airport_activation_url_invalid`：订阅链接或开关页面不是允许的 HTTPS 地址；
+   - `airport_activation_missing`：尚未设置订阅开关页面（自动刷新先跳过，交互操作提示使用菜单 1）；
+   - `airport_portal_unavailable`：开关页面临时不可用（网络、超时、重定向越界）；
+   - `airport_portal_unsupported`：开关页面结构不兼容（页面改版；自动路径同时旧链接失败时报此码，改用菜单 3 或 4）；
+   - `airport_link_generation_failed`：订阅链接生成接口失败或返回非法结果；
+   - `airport_redirect_invalid`：下载重定向超过三次或转向非 HTTPS 地址；
    - `airport_download_failed`：网络、TLS 证书、上游响应失败，或响应为空；
    - `airport_document_too_large`：返回内容超过传输大小限制；
-   - `airport_provider_invalid`：provider 目录或文件的安全属性不合规（属主、组、类型、权限、硬链数），或待发布字节为空/超限；
+   - `airport_response_invalid`：响应为明显 HTML 错误页（HTML 响应类型或正文以 HTML 标签开头）；
+   - `airport_provider_invalid`：provider 目录或文件的安全属性不合规（属主、组、类型、权限、硬链数，或目录模式不是 `02750`），或待发布字节为空/超限；
    - `airport_provider_write_failed`：服务器无法原子写入 provider 文件。
 
    不要反复粘贴地址或把地址发送到日志；只记录上述错误码。
@@ -257,7 +270,7 @@ ls -l backups/clash-sub-backup-*.tar.gz
 1. 从受保护备份恢复 3x-ui 数据库与入站/client 配置；按[部署清单](../DEPLOYMENT.md#3x-ui-关键配置)检查面板、Reality 入站和端口。
 2. 恢复备份中的 `state.json` 与 `airport-source.json` 到新服务器的私密运行时目录。
 3. 克隆仓库到 `/opt/my-clash-config`，按[部署清单](../DEPLOYMENT.md#全新安装)执行 `bash install.sh`；安装时仅在隐藏提示输入新主机所需的域名、Cloudflare token 与 owner email。证书由安装流程重新签发。
-4. 执行 `clash-sub`，主菜单 `1` 进入机场订阅后选择 `2`（刷新机场订阅）：用恢复的已保存链接重建 `AmyTelecom.yaml`，无需重新输入地址；来源记录缺失时用 `1` 重新导入。然后发布并验收：
+4. 执行 `clash-sub`，主菜单 `1` 进入机场订阅后选择 `2`（自动开启订阅并刷新）：用恢复的开关页面与已保存链接重建 `AmyTelecom.yaml`，无需重新输入地址；页面自动化失效时先用浏览器手动开启订阅再选 `3` 刷新；真实链接也已失效时用 `4` 输入新链接。然后发布并验收：
 
    ```bash
    clash-sub sync

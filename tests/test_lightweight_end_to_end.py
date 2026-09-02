@@ -15,11 +15,14 @@ from unittest.mock import patch
 
 import yaml
 
+from clash_sub.airport_portal import AirportPortalError
 from clash_sub.airport_store import AirportStore
 from clash_sub.checks import MihomoValidator, validate_clash
 from clash_sub.cli import main as cli_main
 from clash_sub.config import load_config
+from clash_sub.domain import Traffic
 from clash_sub.generator import render_user_bundle
+from clash_sub.metadata import TrafficMetadataStore
 from clash_sub.nginx import activate_runtime, render_routes
 from clash_sub.release_store import ReleaseStore
 from clash_sub.service import ClashSubService, ServiceError
@@ -83,6 +86,29 @@ class FakeRunner:
             for command in self.calls
             if command[0] == str(self.harness.config.mihomo_binary)
         ]
+
+
+class FakePortal:
+    """In-memory portal adapter: every generated URL is fresh each call."""
+
+    def __init__(self, harness):
+        self.harness = harness
+        self.activate_calls = []
+        self.generate_calls = []
+        self.activate_error = None
+        self.generate_error = None
+
+    def activate(self, activation_url):
+        self.activate_calls.append(activation_url)
+        if self.activate_error is not None:
+            raise self.activate_error
+        return object()
+
+    def generate_source_url(self, page):
+        self.generate_calls.append(page)
+        if self.generate_error is not None:
+            raise self.generate_error
+        return "https://portal.example.test/generated-%d" % (len(self.generate_calls) + 1000)
 
 
 class AcceptanceHarness:
@@ -200,6 +226,7 @@ class AcceptanceHarness:
         self.runner = FakeRunner(self)
         self.release_store = ReleaseStore(self.private_root, self.public_root)
         self.airport_store = AirportStore(self.private_root, self.public_root)
+        self.portal = FakePortal(self)
         self.service = ClashSubService(
             self.config,
             read_snapshot=read_xui_snapshot,
@@ -209,7 +236,7 @@ class AcceptanceHarness:
             fetch_xui_proxies=self._fetch_xui,
             download_airport_document=self._download_airport,
             airport_store=self.airport_store,
-            airport_portal=object(),
+            airport_portal=self.portal,
             render_user_bundle=self._render,
             validate_clash=validate_clash,
             mihomo_validator=MihomoValidator(self.config.mihomo_binary, runner=self.runner),
@@ -702,23 +729,90 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotIn(airport_url, observed)
         self.assertNotIn(airport_credential, observed)
 
-        def failing(request, _timeout):
-            raise OSError("upstream failed")
 
-        harness._airport_opener = failing
-        stdout = io.StringIO()
-        stderr = io.StringIO()
-        with patch("clash_sub.cli.getpass", return_value=airport_url):
-            failed = cli_main(
-                [],
-                stdin=io.StringIO("1\n4\n" + airport_url + "\n"),
-                stdout=stdout,
-                stderr=stderr,
-                service_factory=lambda: harness.service,
+    def test_auto_refresh_falls_back_to_a_generated_link_end_to_end(self):
+        harness = self.make_harness()
+        activation_url = (
+            "https://portal.example.test/Subscription/index"
+            "?sid=placeholder-sid&token=placeholder-token"
+        )
+        # Menu 1 stores the Schema v2 pair: the activation URL plus the
+        # first generated link, with the initial verbatim provider bytes.
+        harness.service.configure_airport_portal(activation_url)
+        saved = harness.airport_store.read_source()
+        self.assertEqual(saved.activation_url, activation_url)
+        first_link = saved.source_url
+        self.assertEqual(harness.provider_path.read_bytes(), harness.airport_body)
+
+        # A week later the upstream body changed and carries a fresh traffic
+        # header; the saved link itself now fails on every request.
+        new_body = harness._document(
+            [harness._proxy("Airport Regenerated", "airport-new-secret")]
+        )
+        generates_before_fallback = len(harness.portal.generate_calls)
+
+        def failing_saved_link(request, _timeout):
+            if request.full_url == first_link:
+                raise OSError("saved link expired")
+            response = FakeResponse(request.full_url, new_body)
+            response.headers["Subscription-Userinfo"] = (
+                "upload=11; download=22; total=33; expire=44"
             )
-        self.assertEqual(failed, 1)
-        self.assertNotIn(airport_url, stdout.getvalue() + stderr.getvalue())
-        self.assertNotIn(airport_credential, stdout.getvalue() + stderr.getvalue())
+            return response
+
+        harness._airport_opener = failing_saved_link
+
+        result = harness.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": True})
+        self.assertEqual(
+            harness.portal.activate_calls, [activation_url, activation_url]
+        )
+        # Exactly one fallback generation on top of the initial setup call.
+        self.assertEqual(len(harness.portal.generate_calls), generates_before_fallback + 1)
+        # The regenerated provider bytes publish verbatim and the source
+        # record switches link while keeping the activation URL.
+        self.assertEqual(harness.provider_path.read_bytes(), new_body)
+        regenerated = harness.airport_store.read_source()
+        self.assertNotEqual(regenerated.source_url, first_link)
+        self.assertEqual(regenerated.activation_url, activation_url)
+        self.assertEqual(
+            regenerated.traffic, Traffic(upload=11, download=22, total=33, expiry_ms=44)
+        )
+        # The metadata surface serves the newly saved airport traffic.
+        self.assertEqual(
+            TrafficMetadataStore(harness.config).airport_traffic(),
+            Traffic(upload=11, download=22, total=33, expiry_ms=44),
+        )
+        # The refresh never degrades into a publish: no release, no Mihomo.
+        self.assertEqual(harness.release_store.history(harness.owner_id), ())
+        self.assertEqual(harness.runner.mihomo_calls(), [])
+
+    def test_auto_refresh_survives_a_down_page_with_the_saved_link(self):
+        harness = self.make_harness()
+        activation_url = (
+            "https://portal.example.test/Subscription/index"
+            "?sid=placeholder-sid&token=placeholder-token"
+        )
+        harness.service.configure_airport_portal(activation_url)
+        saved = harness.airport_store.read_source()
+        generates_before_refresh = len(harness.portal.generate_calls)
+
+        harness.portal.activate_error = AirportPortalError("airport_portal_unavailable")
+        new_body = harness._document(
+            [harness._proxy("Airport Weekly", "airport-weekly-secret")]
+        )
+        harness.airport_body = new_body
+
+        result = harness.service.auto_refresh_airport()
+
+        self.assertEqual(result, {"updated": True, "traffic_captured": False})
+        self.assertEqual(harness.provider_path.read_bytes(), new_body)
+        kept = harness.airport_store.read_source()
+        self.assertEqual(kept.source_url, saved.source_url)
+        self.assertEqual(kept.activation_url, activation_url)
+        # A down page never triggers link generation; the saved link suffices.
+        self.assertEqual(len(harness.portal.generate_calls), generates_before_refresh)
 
     def test_failed_owner_rotation_keeps_the_old_link_routes_and_release(self):
         harness = self.make_harness()

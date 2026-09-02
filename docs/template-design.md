@@ -34,10 +34,10 @@ proxy-providers:
     type: http
     url: "https://订阅域名/s/<owner-token>/AmyTelecom.yaml"
     path: ./proxy_providers/AmyTelecom.yaml
-    interval: 604800
+    interval: 86400
 ```
 
-provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL，Clash Verge 可单独手动刷新，自动刷新间隔 7 天。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`，只通过 owner 令牌路由访问；普通用户令牌没有任何机场路由。
+provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL，Clash Verge 可单独手动刷新，自动刷新间隔 24 小时（86400 秒）。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`，只通过 owner 令牌路由访问；普通用户令牌没有任何机场路由。
 
 订阅响应头（`Subscription-Userinfo` 流量头、`Profile-Update-Interval: 24`）由部署侧在请求时按需附加：模板、provider 文件与发布物从不携带流量数据，流量数字只保存在服务器私密目录的来源记录与缓存里。
 
