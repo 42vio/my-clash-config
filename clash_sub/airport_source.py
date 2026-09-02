@@ -9,9 +9,11 @@ from pathlib import Path
 from clash_sub.domain import Traffic
 
 AIRPORT_SOURCE_FILENAME = "airport-source.json"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SOURCE_MODE = 0o600
-_RECORD_KEYS = frozenset({"last_success", "schema_version", "source_url", "traffic"})
+_RECORD_KEYS = frozenset({
+    "activation_url", "last_success", "schema_version", "source_url", "traffic"
+})
 _TRAFFIC_KEYS = frozenset({"download", "expire", "total", "upload"})
 
 
@@ -30,6 +32,7 @@ class AirportSource:
     source_url: str
     traffic: Traffic | None
     last_success: int
+    activation_url: str | None
 
 
 def serialize_source(source) -> bytes:
@@ -39,9 +42,12 @@ def serialize_source(source) -> bytes:
     source_url = source.source_url
     traffic = source.traffic
     last_success = source.last_success
+    activation_url = source.activation_url
     if not isinstance(source_url, str) or not source_url:
         _invalid()
     if _bad_int(last_success) or last_success < 0:
+        _invalid()
+    if activation_url is not None and (not isinstance(activation_url, str) or not activation_url):
         _invalid()
     traffic_payload = None
     if traffic is not None:
@@ -58,6 +64,7 @@ def serialize_source(source) -> bytes:
         traffic_payload = fields
     payload = {
         "schema_version": SCHEMA_VERSION,
+        "activation_url": activation_url,
         "source_url": source_url,
         "traffic": traffic_payload,
         "last_success": last_success,
@@ -74,17 +81,25 @@ def parse_source(payload) -> AirportSource:
     if not isinstance(document, dict) or set(document) != _RECORD_KEYS:
         _invalid()
     schema_version = document["schema_version"]
+    activation_url = document["activation_url"]
     source_url = document["source_url"]
     traffic = document["traffic"]
     last_success = document["last_success"]
     if _bad_int(schema_version) or schema_version != SCHEMA_VERSION:
+        _invalid()
+    if activation_url is not None and (not isinstance(activation_url, str) or not activation_url):
         _invalid()
     if not isinstance(source_url, str) or not source_url:
         _invalid()
     if _bad_int(last_success) or last_success < 0:
         _invalid()
     parsed_traffic = None if traffic is None else _traffic_from_payload(traffic)
-    return AirportSource(source_url, parsed_traffic, last_success)
+    return AirportSource(
+        source_url=source_url,
+        traffic=parsed_traffic,
+        last_success=last_success,
+        activation_url=activation_url,
+    )
 
 
 def read_source_file(path, *, expected_uid=None) -> AirportSource:

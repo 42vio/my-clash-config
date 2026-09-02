@@ -26,9 +26,17 @@ OLD_BYTES = PROVIDER_BYTES.replace(b"airport.example", b"old-airport.example")
 NEW_BYTES = PROVIDER_BYTES.replace(b"airport.example", b"new-airport.example")
 
 OLD_SOURCE = AirportSource(
-    "https://airport.example/old", Traffic(1, 2, 3, 4), 1788192000
+    source_url="https://airport.example/old",
+    traffic=Traffic(1, 2, 3, 4),
+    last_success=1788192000,
+    activation_url=None,
 )
-NEW_SOURCE = AirportSource("https://airport.example/new", None, 1788192100)
+NEW_SOURCE = AirportSource(
+    source_url="https://airport.example/new",
+    traffic=None,
+    last_success=1788192100,
+    activation_url=None,
+)
 
 JOURNAL_NAME = "airport-transaction.json"
 
@@ -89,7 +97,8 @@ class AirportStoreTests(unittest.TestCase):
         self.assertEqual(details.st_uid, expected_uid)
         self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
         self.assertEqual(json.loads(record.read_text(encoding="utf-8")), {
-            "schema_version": 1,
+            "schema_version": 2,
+            "activation_url": None,
             "source_url": "https://airport.example/old",
             "traffic": {"upload": 1, "download": 2, "total": 3, "expire": 4},
             "last_success": 1788192000,
@@ -192,7 +201,9 @@ class AirportStoreTests(unittest.TestCase):
         self.assertFalse(self.source_path().exists())
 
     def test_invalid_source_record_is_rejected_without_disk_changes(self):
-        invalid = AirportSource("", Traffic(1, 2, 3, 4), 5)
+        invalid = AirportSource(
+            source_url="", traffic=Traffic(1, 2, 3, 4), last_success=5, activation_url=None
+        )
         with self.assertRaises(AirportStoreError) as caught:
             self.store.replace(PROVIDER_BYTES, invalid)
         self.assertEqual(caught.exception.code, "airport_source_invalid")

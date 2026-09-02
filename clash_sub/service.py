@@ -99,7 +99,7 @@ class ClashSubService:
         with self._lock():
             try:
                 downloaded=self._download(url,self.config.max_source_bytes)
-                self._airport.replace(downloaded.document,AirportSource(url,downloaded.traffic,int(self._clock())))
+                self._airport.replace(downloaded.document,AirportSource(url,downloaded.traffic,int(self._clock()),None))
             except SourceError as error:
                 code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
                 self._journal(errors=(code,)); raise ServiceError(code) from None
@@ -119,7 +119,7 @@ class ClashSubService:
             try:
                 saved=self._airport.read_source()
                 downloaded=self._download(saved.source_url,self.config.max_source_bytes)
-                self._airport.replace(downloaded.document,AirportSource(saved.source_url,downloaded.traffic,int(self._clock())))
+                self._airport.replace(downloaded.document,AirportSource(saved.source_url,downloaded.traffic,int(self._clock()),saved.activation_url))
             except SourceError as error:
                 code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
                 self._journal(errors=(code,)); raise ServiceError(code) from None
