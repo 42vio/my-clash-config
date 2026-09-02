@@ -23,6 +23,8 @@ _USERINFO_ERROR = "subscription traffic rejected"
 _TIMEOUT_SECONDS = 15
 _MAX_AIRPORT_REDIRECTS = 3
 _MAX_USERINFO_BYTES = 512
+_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+_HTML_PREFIXES = (b"<!doctype html", b"<html", b"<head", b"<body")
 XUI_INBOUND_PORT = 10443
 
 
@@ -63,16 +65,40 @@ def _fetch_document(url, max_bytes, opener):
                 raise SourceError("airport_redirect_invalid")
             body = response.read(max_bytes + 1)
             traffic = _final_traffic(response)
+            content_type = _content_type(response)
         if not isinstance(body, bytes) or len(body) > max_bytes:
             raise SourceError("airport_document_too_large")
         if not body:
             raise SourceError("airport_download_failed")
+        _reject_obvious_html(body, content_type)
         return AirportDownload(document=body, traffic=traffic)
     except SourceError:
         raise
     except Exception:
         pass
     raise SourceError("airport_download_failed")
+
+
+def _reject_obvious_html(body, content_type):
+    """Reject an obviously-HTML error page by media type or first markup tag.
+
+    This is deliberately a content-blind guard: the airport body is never
+    parsed as YAML, and a non-HTML body publishes verbatim.
+    """
+    media_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if media_type in _HTML_MEDIA_TYPES:
+        raise SourceError("airport_response_invalid")
+    prefix = body.removeprefix(b"\xef\xbb\xbf").lstrip().lower()
+    if prefix.startswith(_HTML_PREFIXES):
+        raise SourceError("airport_response_invalid")
+
+
+def _content_type(response):
+    """Read the final media type; an unreadable header only drops the check."""
+    try:
+        return response.headers.get("Content-Type")
+    except Exception:
+        return None
 
 
 def _final_traffic(response):

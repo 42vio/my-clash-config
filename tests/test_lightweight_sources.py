@@ -159,6 +159,7 @@ class SourceFetchingTests(unittest.TestCase):
         # body still publishes verbatim, byte for byte.
         for body in (
             b"just text, not yaml at all\n",
+            b"not yaml but upstream-owned\n",
             b"[]\n",
             b"proxies: []\n",
             b"rules:\n- MATCH,DIRECT\n",
@@ -174,6 +175,26 @@ class SourceFetchingTests(unittest.TestCase):
                     opener=self.opener_for(response),
                 )
                 self.assertEqual(result.document, body)
+
+    def test_airport_download_rejects_obvious_html_without_echoing_the_body(self):
+        cases = (
+            (b"proxies: []\n", "text/html"),
+            (b"\xef\xbb\xbf  <!DOCTYPE html><title>login</title>", "text/plain"),
+            (b"\n<HTML><body>expired</body></HTML>", None),
+            (b" <head><title>error</title></head>", "application/octet-stream"),
+            (b"<body>not enabled</body>", "text/plain"),
+        )
+        for body, content_type in cases:
+            response = FakeResponse(body, "https://airport.example/final")
+            if content_type is not None:
+                response.headers["Content-Type"] = content_type
+            with self.assertRaises(SourceError) as caught:
+                download_airport_document(
+                    "https://airport.example/private-token", 1024,
+                    opener=self.opener_for(response),
+                )
+            self.assertEqual(str(caught.exception), "airport_response_invalid")
+            self.assertNotIn("expired", str(caught.exception))
 
     def test_airport_download_rejects_an_empty_response(self):
         response = FakeResponse(b"", "https://airport.example/final")
