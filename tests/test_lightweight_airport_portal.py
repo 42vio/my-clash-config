@@ -380,6 +380,17 @@ class GenerationBoundaryTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "airport_link_generation_failed")
         self.assertEqual(sleeps, [DELAY])
 
+    def test_second_answer_must_be_a_url_even_when_the_msg_shaped_like_one(self):
+        # A second "subid" answer is a protocol anomaly: it must fail even
+        # when its message happens to be a valid same-origin link.
+        client, _, page = self.generate(
+            generation_response("subid", TASK_ID),
+            generation_response("subid", GENERATED_URL),
+        )
+        with self.assertRaises(AirportPortalError) as caught:
+            client.generate_source_url(page)
+        self.assertEqual(caught.exception.code, "airport_link_generation_failed")
+
     def test_post_network_failure_is_a_generation_failure(self):
         class ExplodingOpener:
             def open(self, request, timeout=None):

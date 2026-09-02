@@ -142,6 +142,9 @@ class AirportPortalClient:
         if answer[0] == "subid":
             self._sleeper(page._delay_seconds)
             answer = self._post(page, entry, dict(page._fields, subid=answer[1]))
+            if answer[0] != "url":
+                # The task answer must resolve to a link, never a second task.
+                raise AirportPortalError("airport_link_generation_failed")
         return _validated_source_url(answer[1], page._origin)
 
     def _post(self, page, entry, form):
