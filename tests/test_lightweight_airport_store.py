@@ -314,7 +314,7 @@ class AirportStoreTests(unittest.TestCase):
 
 
 class AirportTransactionRecoveryTests(unittest.TestCase):
-    """Crash at any stage; recovery must yield the old or the new pair."""
+    """Crash at any stage; the previous complete pair must survive."""
 
     def setUp(self):
         temporary = TemporaryDirectory()
@@ -355,20 +355,36 @@ class AirportTransactionRecoveryTests(unittest.TestCase):
     def assert_new_pair(self):
         self.assertEqual(self.raw_pair(), (NEW_BYTES, NEW_SOURCE))
 
+    def assert_clean(self):
+        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
+        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
+
     def replace_with_new(self):
         return self.store.replace(NEW_BYTES, NEW_SOURCE)
 
-    def failing_replaces(self, fail_on):
+    def failing_replaces(self, failures):
         real = airport_store._os_replace
         calls = {"count": 0}
 
         def flaky(source, target):
             calls["count"] += 1
-            if calls["count"] == fail_on:
+            if calls["count"] in failures:
                 raise OSError("injected")
             return real(source, target)
 
         return patch.object(airport_store, "_os_replace", side_effect=flaky)
+
+    def failing_unlinks(self, fail_on):
+        real = airport_store._os_unlink
+        calls = {"count": 0}
+
+        def flaky(path):
+            calls["count"] += 1
+            if calls["count"] == fail_on:
+                raise OSError("injected")
+            return real(path)
+
+        return patch.object(airport_store, "_os_unlink", side_effect=flaky)
 
     def failing_fsyncs(self, fail_on):
         real = airport_store.os.fsync
@@ -382,6 +398,36 @@ class AirportTransactionRecoveryTests(unittest.TestCase):
 
         return patch.object(airport_store, "_os_fsync", side_effect=flaky)
 
+    def write_pending_journal(
+        self,
+        *,
+        provider_mode=0o640,
+        source_mode=0o600,
+        provider_backup_mode=0o640,
+        source_backup_mode=0o600,
+    ):
+        provider_candidate = self.provider_directory / ".AmyTelecom.yaml.pending"
+        provider_candidate.write_bytes(NEW_BYTES)
+        os.chmod(provider_candidate, provider_mode)
+        source_candidate = self.private_root / ".airport-source.json.pending"
+        source_candidate.write_bytes(serialize_source(NEW_SOURCE))
+        os.chmod(source_candidate, source_mode)
+        provider_backup = self.provider_directory / ".AmyTelecom.yaml.old.pending"
+        provider_backup.write_bytes(OLD_BYTES)
+        os.chmod(provider_backup, provider_backup_mode)
+        source_backup = self.private_root / ".airport-source.json.old.pending"
+        source_backup.write_bytes(serialize_source(OLD_SOURCE))
+        os.chmod(source_backup, source_backup_mode)
+        self.write_journal(
+            {
+                "schema_version": 2,
+                "provider": provider_candidate.name,
+                "source": source_candidate.name,
+                "provider_backup": provider_backup.name,
+                "source_backup": source_backup.name,
+            }
+        )
+
     def test_candidate_write_failure_keeps_the_old_pair(self):
         with patch.object(airport_store, "_os_write", side_effect=OSError("injected")):
             with self.assertRaises(AirportStoreError) as caught:
@@ -389,6 +435,7 @@ class AirportTransactionRecoveryTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "airport_provider_write_failed")
         self.assertFalse(self.journal_path().exists())
         self.assert_old_pair()
+        self.assert_clean()
         self.store.recover()
         self.assert_old_pair()
         self.store.recover()
@@ -401,99 +448,166 @@ class AirportTransactionRecoveryTests(unittest.TestCase):
                 self.replace_with_new()
         self.assertEqual(caught.exception.code, "airport_provider_write_failed")
         self.assertFalse(self.journal_path().exists())
-        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
         self.assert_old_pair()
+        self.assert_clean()
         self.store.recover()
         self.assert_old_pair()
 
-    def test_journal_write_failure_cleans_up_all_candidates(self):
-        # replace call 1 is the journal's own rename into place.
-        with self.failing_replaces(fail_on=1):
+    def test_backup_fsync_failure_cleans_up_the_staged_backups(self):
+        # fsync call 3 is the provider backup's durability barrier.
+        with self.failing_fsyncs(fail_on=3):
             with self.assertRaises(AirportStoreError) as caught:
                 self.replace_with_new()
         self.assertEqual(caught.exception.code, "airport_provider_write_failed")
         self.assertFalse(self.journal_path().exists())
-        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
         self.assert_old_pair()
+        self.assert_clean()
         self.store.recover()
         self.assert_old_pair()
 
-    def test_first_target_replace_failure_recovers_to_the_new_pair(self):
-        # replace call 2 is the provider switch; the journal is already durable.
-        with self.failing_replaces(fail_on=2):
-            with self.assertRaises(AirportStoreError) as caught:
-                self.replace_with_new()
-        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
-        self.assertTrue(self.journal_path().exists())
-        self.assert_old_pair()
-        self.store.recover()
-        self.assert_new_pair()
-        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
-        self.store.recover()
-        self.assert_new_pair()
-        self.assertEqual(self.store.read(), NEW_BYTES)
-        self.assertEqual(self.store.read_source(), NEW_SOURCE)
-
-    def test_second_target_replace_failure_recovers_to_the_new_pair(self):
-        # replace call 3 is the source switch; the provider already switched,
-        # so the crash leaves a mixed pair that recovery rolls forward.
-        with self.failing_replaces(fail_on=3):
-            with self.assertRaises(AirportStoreError) as caught:
-                self.replace_with_new()
-        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
-        self.assertTrue(self.journal_path().exists())
-        self.assertEqual(self.store.path.read_bytes(), NEW_BYTES)
-        self.assertEqual(self.raw_pair()[1], OLD_SOURCE)
-        self.store.recover()
-        self.assert_new_pair()
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
-        self.store.recover()
-        self.assert_new_pair()
-
-    def test_directory_fsync_failure_is_recoverable_and_idempotent(self):
-        # fsync call 5 is the first directory sync after both switches.
+    def test_journal_candidate_fsync_failure_keeps_the_old_pair(self):
+        # fsync call 5 is the journal candidate's own durability barrier.
         with self.failing_fsyncs(fail_on=5):
             with self.assertRaises(AirportStoreError) as caught:
                 self.replace_with_new()
         self.assertEqual(caught.exception.code, "airport_provider_write_failed")
-        self.assert_new_pair()
-        self.assertTrue(self.journal_path().exists())
-        self.store.recover()
-        self.assert_new_pair()
         self.assertFalse(self.journal_path().exists())
+        self.assert_old_pair()
+        self.assert_clean()
         self.store.recover()
-        self.assert_new_pair()
+        self.assert_old_pair()
 
-    def test_journal_cleanup_failure_is_recoverable_and_idempotent(self):
+    def test_journal_directory_fsync_failure_drops_the_journal(self):
+        # fsync call 6 is the private-root sync after the journal rename; a
+        # journal that never became durable is quietly removed again.
+        with self.failing_fsyncs(fail_on=6):
+            with self.assertRaises(AirportStoreError) as caught:
+                self.replace_with_new()
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertFalse(self.journal_path().exists())
+        self.assert_old_pair()
+        self.assert_clean()
+        self.store.recover()
+        self.assert_old_pair()
+
+    def test_journal_write_failure_cleans_up_all_staging_files(self):
+        # replace call 1 is the journal's own rename into place.
+        with self.failing_replaces({1}):
+            with self.assertRaises(AirportStoreError) as caught:
+                self.replace_with_new()
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertFalse(self.journal_path().exists())
+        self.assert_old_pair()
+        self.assert_clean()
+        self.store.recover()
+        self.assert_old_pair()
+
+    def test_first_target_replace_failure_restores_the_old_pair(self):
+        # replace call 2 is the provider switch; the journal is already
+        # durable, so the aborted transaction rolls itself back to the old
+        # pair before the failure is raised.
+        with self.failing_replaces({2}):
+            with self.assertRaises(AirportStoreError) as caught:
+                self.replace_with_new()
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertFalse(self.journal_path().exists())
+        self.assert_old_pair()
+        self.assert_clean()
+        self.store.recover()
+        self.assert_old_pair()
+        self.store.recover()
+        self.assert_old_pair()
+
+    def test_second_target_replace_failure_restores_the_old_pair_immediately(self):
+        # replace call 3 is the source switch; the provider already
+        # switched, so the store must restore the old pair itself instead
+        # of reporting failure with the new provider already live.
+        with self.failing_replaces({3}):
+            with self.assertRaises(AirportStoreError) as caught:
+                self.replace_with_new()
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertFalse(self.journal_path().exists())
+        self.assert_old_pair()
+        self.assert_clean()
+        self.store.recover()
+        self.assert_old_pair()
+        self.assertEqual(self.store.read(), OLD_BYTES)
+        self.assertEqual(self.store.read_source(), OLD_SOURCE)
+
+    def test_directory_fsync_failure_after_the_switches_restores_the_old_pair(self):
+        # fsync calls 7 and 8 are the directory syncs after both switches.
+        for fail_on in (7, 8):
+            with self.subTest(fail_on=fail_on):
+                with self.failing_fsyncs(fail_on=fail_on):
+                    with self.assertRaises(AirportStoreError) as caught:
+                        self.replace_with_new()
+                self.assertEqual(
+                    caught.exception.code, "airport_provider_write_failed"
+                )
+                self.assertFalse(self.journal_path().exists())
+                self.assert_old_pair()
+                self.assert_clean()
+        self.store.recover()
+        self.assert_old_pair()
+
+    def test_journal_cleanup_failure_keeps_the_old_pair_and_the_journal(self):
+        # The commit-point unlink fails, so the abort restores the old pair
+        # but cannot drop the journal; recovery retries and completes.
         with patch.object(airport_store, "_os_unlink", side_effect=OSError("injected")):
             with self.assertRaises(AirportStoreError) as caught:
                 self.replace_with_new()
         self.assertEqual(caught.exception.code, "airport_provider_write_failed")
-        self.assert_new_pair()
         self.assertTrue(self.journal_path().exists())
+        self.assert_old_pair()
         self.store.recover()
-        self.assert_new_pair()
+        self.assert_old_pair()
         self.assertFalse(self.journal_path().exists())
+        self.assert_clean()
         self.store.recover()
-        self.assert_new_pair()
+        self.assert_old_pair()
 
-    def test_read_operations_complete_a_pending_transaction_first(self):
-        with self.failing_replaces(fail_on=3):
-            with self.assertRaises(AirportStoreError):
-                self.replace_with_new()
-        self.assertTrue(self.journal_path().exists())
-        self.assertEqual(self.store.read(), NEW_BYTES)
-        self.assertEqual(self.store.read_source(), NEW_SOURCE)
+    def test_backup_removal_failure_does_not_fail_the_committed_switch(self):
+        # unlink call 2 is the best-effort backup sweep after the commit
+        # point; the switch already succeeded and must stay live.
+        with self.failing_unlinks(fail_on=2):
+            path = self.replace_with_new()
+        self.assertEqual(path, self.store.path)
+        self.assert_new_pair()
         self.assertFalse(self.journal_path().exists())
+        self.store.recover()
+        self.assert_new_pair()
+        self.assert_clean()
+
+    def test_rollback_failure_retains_the_journal_for_recovery(self):
+        # replace call 3 fails the source switch and call 4 fails the
+        # provider restore, so the internal roll-back itself fails.
+        with self.failing_replaces({3, 4}):
+            with self.assertRaises(AirportStoreError) as caught:
+                self.replace_with_new()
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertTrue(self.journal_path().exists())
+        self.assertEqual(self.store.read(), OLD_BYTES)
+        self.assertEqual(self.store.read_source(), OLD_SOURCE)
+        self.assertFalse(self.journal_path().exists())
+        self.assert_clean()
+        self.store.recover()
+        self.assert_old_pair()
 
     def test_corrupt_journal_with_leftover_candidates_is_rejected(self):
         self.journal_path().write_bytes(b"{corrupt")
         os.chmod(self.journal_path(), 0o600)
         leftover = self.provider_directory / ".AmyTelecom.yaml.leftover"
         leftover.write_bytes(NEW_BYTES)
+        with self.assertRaises(AirportStoreError) as caught:
+            self.store.recover()
+        self.assertEqual(caught.exception.code, "airport_source_invalid")
+        self.assertTrue(self.journal_path().exists())
+
+    def test_corrupt_journal_with_leftover_backup_is_rejected(self):
+        self.journal_path().write_bytes(b"{corrupt")
+        os.chmod(self.journal_path(), 0o600)
+        leftover = self.private_root / ".airport-source.json.old.leftover"
+        leftover.write_bytes(serialize_source(OLD_SOURCE))
         with self.assertRaises(AirportStoreError) as caught:
             self.store.recover()
         self.assertEqual(caught.exception.code, "airport_source_invalid")
@@ -519,92 +633,19 @@ class AirportTransactionRecoveryTests(unittest.TestCase):
 
     def test_journal_with_escaping_names_is_discarded(self):
         self.write_journal(
-            {"schema_version": 1, "provider": "../outside.yaml", "source": "x"}
+            {
+                "schema_version": 2,
+                "provider": ".AmyTelecom.yaml.pending",
+                "source": ".airport-source.json.pending",
+                "provider_backup": "../outside.yaml",
+                "source_backup": None,
+            }
         )
         self.store.recover()
         self.assertFalse(self.journal_path().exists())
         self.assert_old_pair()
 
-    def test_consumed_candidates_with_missing_source_target_is_reported(self):
-        self.write_journal(
-            {
-                "schema_version": 1,
-                "provider": ".AmyTelecom.yaml.consumed",
-                "source": ".airport-source.json.consumed",
-            }
-        )
-        self.source_path().unlink()
-        with self.assertRaises(AirportStoreError) as caught:
-            self.store.recover()
-        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
-
-    def test_recovery_without_journal_is_a_noop(self):
-        self.store.recover()
-        self.assert_old_pair()
-        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
-
-    def test_manual_journal_rolls_a_complete_pair_forward(self):
-        # A durable journal plus both candidates is the pre-switch crash state.
-        provider_candidate = self.provider_directory / ".AmyTelecom.yaml.pending"
-        provider_candidate.write_bytes(NEW_BYTES)
-        os.chmod(provider_candidate, 0o640)
-        source_candidate = self.private_root / ".airport-source.json.pending"
-        source_candidate.write_bytes(serialize_source(NEW_SOURCE))
-        os.chmod(source_candidate, 0o600)
-        self.write_journal(
-            {
-                "schema_version": 1,
-                "provider": provider_candidate.name,
-                "source": source_candidate.name,
-            }
-        )
-        self.store.recover()
-        self.assert_new_pair()
-        self.assertFalse(self.journal_path().exists())
-        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
-
-    def write_pending_journal(self, *, provider_mode, source_mode):
-        provider_candidate = self.provider_directory / ".AmyTelecom.yaml.pending"
-        provider_candidate.write_bytes(NEW_BYTES)
-        os.chmod(provider_candidate, provider_mode)
-        source_candidate = self.private_root / ".airport-source.json.pending"
-        source_candidate.write_bytes(serialize_source(NEW_SOURCE))
-        os.chmod(source_candidate, source_mode)
-        self.write_journal(
-            {
-                "schema_version": 1,
-                "provider": provider_candidate.name,
-                "source": source_candidate.name,
-            }
-        )
-
-    def test_provider_leg_anomaly_is_reported_as_provider_invalid(self):
-        self.write_pending_journal(provider_mode=0o644, source_mode=0o600)
-        with self.assertRaises(AirportStoreError) as caught:
-            self.store.recover()
-        self.assertEqual(caught.exception.code, "airport_provider_invalid")
-        self.assert_old_pair()
-        self.assertTrue(self.journal_path().exists())
-
-    def test_source_leg_anomaly_is_reported_as_source_invalid(self):
-        self.write_pending_journal(provider_mode=0o640, source_mode=0o644)
-        with self.assertRaises(AirportStoreError) as caught:
-            self.store.recover()
-        self.assertEqual(caught.exception.code, "airport_source_invalid")
-        # The provider leg rolls forward first; the source leg stays old with
-        # the journal left in place, never a silently mixed final state.
-        self.assertEqual(self.store.path.read_bytes(), NEW_BYTES)
-        self.assertEqual(self.raw_pair()[1], OLD_SOURCE)
-        self.assertTrue(self.journal_path().exists())
-
-    def test_provider_final_anomaly_is_reported_as_provider_invalid(self):
-        # Both candidates already consumed, but the provider file was tampered
-        # with after the switch; recovery must not misreport the leg.
-        self.write_pending_journal(provider_mode=0o640, source_mode=0o600)
-        self.store.recover()
-        self.assert_new_pair()
+    def test_legacy_journal_schema_is_discarded(self):
         self.write_journal(
             {
                 "schema_version": 1,
@@ -612,37 +653,138 @@ class AirportTransactionRecoveryTests(unittest.TestCase):
                 "source": ".airport-source.json.pending",
             }
         )
+        self.store.recover()
+        self.assertFalse(self.journal_path().exists())
+        self.assert_old_pair()
+
+    def test_consumed_backup_with_missing_target_is_reported(self):
+        self.write_pending_journal()
+        (self.provider_directory / ".AmyTelecom.yaml.old.pending").unlink()
+        (self.private_root / ".airport-source.json.old.pending").unlink()
+        self.source_path().unlink()
+        with self.assertRaises(AirportStoreError) as caught:
+            self.store.recover()
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertTrue(self.journal_path().exists())
+
+    def test_recovery_without_journal_is_a_noop(self):
+        self.store.recover()
+        self.assert_old_pair()
+        self.assert_clean()
+
+    def test_recovery_sweeps_orphan_backups_only(self):
+        provider_orphan = self.provider_directory / ".AmyTelecom.yaml.old.orphan"
+        provider_orphan.write_bytes(OLD_BYTES)
+        os.chmod(provider_orphan, 0o640)
+        source_orphan = self.private_root / ".airport-source.json.old.orphan"
+        source_orphan.write_bytes(serialize_source(OLD_SOURCE))
+        os.chmod(source_orphan, 0o600)
+        stale_candidate = self.provider_directory / ".AmyTelecom.yaml.stale"
+        stale_candidate.write_bytes(NEW_BYTES)
+        self.store.recover()
+        self.assertFalse(provider_orphan.exists())
+        self.assertFalse(source_orphan.exists())
+        self.assertTrue(stale_candidate.exists())
+        self.assert_old_pair()
+
+    def test_manual_journal_rolls_back_to_the_previous_pair(self):
+        # A durable journal plus both candidates and backups is the
+        # pre-switch crash state; recovery restores the previous pair.
+        self.write_pending_journal()
+        self.store.recover()
+        self.assert_old_pair()
+        self.assertFalse(self.journal_path().exists())
+        self.assert_clean()
+
+    def test_provider_backup_anomaly_is_reported_as_provider_invalid(self):
+        self.write_pending_journal(provider_backup_mode=0o644)
+        with self.assertRaises(AirportStoreError) as caught:
+            self.store.recover()
+        self.assertEqual(caught.exception.code, "airport_provider_invalid")
+        self.assert_old_pair()
+        self.assertTrue(self.journal_path().exists())
+
+    def test_source_backup_anomaly_is_reported_as_source_invalid(self):
+        self.write_pending_journal(source_backup_mode=0o644)
+        with self.assertRaises(AirportStoreError) as caught:
+            self.store.recover()
+        self.assertEqual(caught.exception.code, "airport_source_invalid")
+        self.assert_old_pair()
+        self.assertTrue(self.journal_path().exists())
+
+    def test_restored_target_anomaly_is_reported_as_provider_invalid(self):
+        # Both backups were consumed by a finished roll-back; tampering
+        # with the restored provider must still be reported by its leg.
+        self.write_pending_journal()
+        self.store.recover()
+        self.assert_old_pair()
+        self.write_pending_journal()
+        (self.provider_directory / ".AmyTelecom.yaml.old.pending").unlink()
+        (self.private_root / ".airport-source.json.old.pending").unlink()
         os.chmod(self.store.path, 0o644)
         with self.assertRaises(AirportStoreError) as caught:
             self.store.recover()
         self.assertEqual(caught.exception.code, "airport_provider_invalid")
 
-    def test_journal_candidate_fsync_failure_keeps_the_old_pair(self):
-        # fsync call 3 is the journal candidate's own durability barrier.
-        with self.failing_fsyncs(fail_on=3):
-            with self.assertRaises(AirportStoreError) as caught:
-                self.replace_with_new()
-        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
-        self.assertFalse(self.journal_path().exists())
-        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
-        self.assert_old_pair()
-        self.store.recover()
-        self.assert_old_pair()
 
-    def test_journal_directory_fsync_failure_drops_the_journal(self):
-        # fsync call 4 is the private-root sync after the journal rename; a
-        # journal that never became durable is quietly removed again.
-        with self.failing_fsyncs(fail_on=4):
+class AirportFirstPublishTests(unittest.TestCase):
+    """The first publish has no previous pair; failures must leave nothing."""
+
+    def setUp(self):
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.private_root = Path(temporary.name) / "private"
+        self.private_root.mkdir(mode=0o700)
+        os.chmod(self.private_root, 0o700)
+        self.public_root = Path(temporary.name) / "public"
+        self.provider_directory = self.public_root / "provider"
+        self.provider_directory.mkdir(parents=True)
+        self.store = AirportStore(self.private_root, self.public_root)
+
+    def journal_path(self):
+        return self.private_root / JOURNAL_NAME
+
+    def provider_names(self):
+        return sorted(entry.name for entry in self.provider_directory.iterdir())
+
+    def private_names(self):
+        return sorted(entry.name for entry in self.private_root.iterdir())
+
+    def failing_replaces(self, failures):
+        real = airport_store._os_replace
+        calls = {"count": 0}
+
+        def flaky(source, target):
+            calls["count"] += 1
+            if calls["count"] in failures:
+                raise OSError("injected")
+            return real(source, target)
+
+        return patch.object(airport_store, "_os_replace", side_effect=flaky)
+
+    def test_failure_after_the_journal_restores_the_empty_state(self):
+        # replace call 3 fails the source switch after the provider switch;
+        # with no previous pair the roll-back removes both new files.
+        with self.failing_replaces({3}):
             with self.assertRaises(AirportStoreError) as caught:
-                self.replace_with_new()
+                self.store.replace(NEW_BYTES, NEW_SOURCE)
         self.assertEqual(caught.exception.code, "airport_provider_write_failed")
         self.assertFalse(self.journal_path().exists())
-        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
-        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
-        self.assert_old_pair()
+        self.assertEqual(self.provider_names(), [])
+        self.assertEqual(self.private_names(), [])
         self.store.recover()
-        self.assert_old_pair()
+        self.assertEqual(self.provider_names(), [])
+        self.assertEqual(self.private_names(), [])
+
+    def test_failure_before_the_journal_keeps_the_empty_state(self):
+        # replace call 1 fails the journal's own rename into place.
+        with self.failing_replaces({1}):
+            with self.assertRaises(AirportStoreError) as caught:
+                self.store.replace(NEW_BYTES, NEW_SOURCE)
+        self.assertEqual(caught.exception.code, "airport_provider_write_failed")
+        self.assertFalse(self.journal_path().exists())
+        self.assertEqual(self.provider_names(), [])
+        self.assertEqual(self.private_names(), [])
 
 
 if __name__ == "__main__":
