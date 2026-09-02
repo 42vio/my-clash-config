@@ -369,7 +369,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
             provider = document["proxy-providers"]["AmyTelecom"]
             self.assertEqual(provider["type"], "http", variant)
             self.assertEqual(provider["url"], expected_url, variant)
-            self.assertEqual(provider["interval"], 604800, variant)
+            self.assertEqual(provider["interval"], 86400, variant)
             self.assertEqual(
                 provider["path"],
                 "./proxy_providers/AmyTelecom.yaml",
@@ -677,7 +677,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         with patch("clash_sub.cli.getpass", return_value=airport_url):
             code = cli_main(
                 [],
-                stdin=io.StringIO("1\n1\n" + airport_url + "\n"),
+                stdin=io.StringIO("1\n4\n" + airport_url + "\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: harness.service,
@@ -711,7 +711,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         with patch("clash_sub.cli.getpass", return_value=airport_url):
             failed = cli_main(
                 [],
-                stdin=io.StringIO("1\n1\n" + airport_url + "\n"),
+                stdin=io.StringIO("1\n4\n" + airport_url + "\n"),
                 stdout=stdout,
                 stderr=stderr,
                 service_factory=lambda: harness.service,

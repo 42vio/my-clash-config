@@ -38,14 +38,14 @@ def owner_document():
     document["proxy-providers"] = {
         "AmyTelecom": {
             "type": "http", "url": PROVIDER_URL,
-            "path": "./proxy_providers/AmyTelecom.yaml", "interval": 604800,
+            "path": "./proxy_providers/AmyTelecom.yaml", "interval": 86400,
         }
     }
     return document
 
 
 class ProviderMappingTests(unittest.TestCase):
-    def test_owner_provider_requires_stable_filename_and_weekly_interval(self):
+    def test_owner_provider_requires_stable_filename_and_daily_interval(self):
         validate_clash(dump(owner_document()), (), PROVIDER_URL)
 
     def test_old_digest_path_is_rejected(self):
@@ -90,7 +90,8 @@ class ProviderMappingTests(unittest.TestCase):
         cases = (
             ("wrong type", {"AmyTelecom": dict(provider, type="file")}),
             ("wrong url", {"AmyTelecom": dict(provider, url=PROVIDER_URL + "x")}),
-            ("non-weekly interval", {"AmyTelecom": dict(provider, interval=3600)}),
+            ("wrong daily interval", {"AmyTelecom": dict(provider, interval=3600)}),
+            ("weekly interval", {"AmyTelecom": dict(provider, interval=604800)}),
             ("boolean interval", {"AmyTelecom": dict(provider, interval=False)}),
             ("missing interval", {"AmyTelecom": {"type": "http", "url": PROVIDER_URL, "path": provider["path"]}}),
             ("wrong stable path", {"AmyTelecom": dict(provider, path="./proxy_providers/airport.yaml")}),
