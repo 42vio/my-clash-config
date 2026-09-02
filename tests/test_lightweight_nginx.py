@@ -1479,7 +1479,12 @@ class DegradationScenarioLifecycleTests(unittest.TestCase):
     def _connect(self):
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(5)
-        client.connect(str(self.socket_path))
+        try:
+            client.connect(str(self.socket_path))
+        except OSError:
+            # The refusals these tests assert must not leak the socket.
+            client.close()
+            raise
         return client
 
     def test_a_stopped_listener_leaves_a_refusing_socket_file(self):
