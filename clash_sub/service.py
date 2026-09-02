@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from clash_sub.airport_portal import AirportPortalError
 from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
@@ -72,8 +73,8 @@ class _OperationLock:
         if error and exc_type is None: raise ServiceError("operation_lock_invalid")
 
 class ClashSubService:
-    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_document, airport_store, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, state_sink=None, lock_factory=None, clock=None, reinitialize_owner=None, recover_runtime=None):
-        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_document; self._airport=airport_store; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time; self._reinitialize=reinitialize_owner; self._recover_runtime=recover_runtime or (lambda *_, **__: None)
+    def __init__(self, config, *, read_snapshot, load_state, reconcile_state, rotate_user_token, fetch_xui_proxies, download_airport_document, airport_store, airport_portal, render_user_bundle, validate_clash, mihomo_validator, release_store, render_routes, activate_runtime, runner, state_sink=None, lock_factory=None, clock=None, reinitialize_owner=None, recover_runtime=None):
+        self.config=config; self._read_snapshot=read_snapshot; self._load_state=load_state; self._reconcile=reconcile_state; self._rotate=rotate_user_token; self._fetch=fetch_xui_proxies; self._download=download_airport_document; self._airport=airport_store; self._portal=airport_portal; self._render=render_user_bundle; self._validate=validate_clash; self._mihomo=mihomo_validator; self._releases=release_store; self._render_routes=render_routes; self._activate_runtime=activate_runtime; self._runner=runner; self._sink=state_sink or (lambda _: None); self._lock_factory=lock_factory or _OperationLock; self._clock=clock or time.time; self._reinitialize=reinitialize_owner; self._recover_runtime=recover_runtime or (lambda *_, **__: None)
     def sync_all(self):
         with self._lock():
             self._recover()
@@ -90,16 +91,18 @@ class ClashSubService:
             except ServiceError as error: self._journal(errors=(error.code,)); self._discard(candidates); raise
             return self._finish(next_state,candidates,updated,errors)
     def replace_airport_source(self,url):
-        # Replacing the saved airport link stores the new URL only after the
-        # document downloads: any failure keeps the previous provider file,
-        # source record, and traffic untouched (the store's dual-file
-        # transaction).  This flow never reconciles state, fetches x-ui,
-        # renders profiles, validates with Mihomo, or activates Nginx.  The
-        # bytes publish verbatim.
+        # Menu 4: replace the saved airport link without touching the portal.
+        # The new URL is stored only after the document downloads; a missing
+        # prior record starts activation_url at null, an existing one keeps
+        # its saved activation URL.  Any failure keeps the previous provider
+        # file, source record, and traffic untouched.  This flow never
+        # reconciles state, fetches x-ui, renders profiles, validates with
+        # Mihomo, or activates Nginx.  The bytes publish verbatim.
         with self._lock():
             try:
+                activation_url=self._saved_activation_url()
                 downloaded=self._download(url,self.config.max_source_bytes)
-                self._airport.replace(downloaded.document,AirportSource(url,downloaded.traffic,int(self._clock()),None))
+                result=self._replace_airport(downloaded,source_url=url,activation_url=activation_url)
             except SourceError as error:
                 code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
                 self._journal(errors=(code,)); raise ServiceError(code) from None
@@ -109,17 +112,18 @@ class ClashSubService:
             except Exception:
                 self._journal(errors=("airport_update_failed",)); raise ServiceError("airport_update_failed") from None
             self._journal(self._clock(),())
-            return {"updated": True, "traffic_captured": downloaded.traffic is not None}
+            return result
     def refresh_airport(self):
-        # Refresh re-uses the previously saved link verbatim: it prompts for
-        # nothing and never reconciles state, fetches x-ui, renders profiles,
-        # validates with Mihomo, or activates Nginx.  A missing source record
-        # is a dedicated stable failure.
+        # Menu 3: refresh re-uses the previously saved link verbatim after a
+        # manual in-browser activation.  It never touches the portal page,
+        # never reconciles state, fetches x-ui, renders profiles, validates
+        # with Mihomo, or activates Nginx.  A missing source record is a
+        # dedicated stable failure.
         with self._lock():
             try:
                 saved=self._airport.read_source()
                 downloaded=self._download(saved.source_url,self.config.max_source_bytes)
-                self._airport.replace(downloaded.document,AirportSource(saved.source_url,downloaded.traffic,int(self._clock()),saved.activation_url))
+                result=self._replace_airport(downloaded,source_url=saved.source_url,activation_url=saved.activation_url)
             except SourceError as error:
                 code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
                 self._journal(errors=(code,)); raise ServiceError(code) from None
@@ -129,7 +133,92 @@ class ClashSubService:
             except Exception:
                 self._journal(errors=("airport_refresh_failed",)); raise ServiceError("airport_refresh_failed") from None
             self._journal(self._clock(),())
-            return {"updated": True, "traffic_captured": downloaded.traffic is not None}
+            return result
+    def configure_airport_portal(self,activation_url):
+        # Menu 1: validate one activation page end to end before anything is
+        # saved.  A fresh link is always generated (the page must prove its
+        # full capability), downloaded, and only then do both URLs, the body,
+        # and the traffic switch together.  Any failure keeps every old
+        # value; this flow never reads x-ui, renders, runs Mihomo, prepares
+        # releases, or activates Nginx.
+        with self._lock():
+            try:
+                page=self._portal.activate(activation_url)
+                generated=self._portal.generate_source_url(page)
+                downloaded=self._download(generated,self.config.max_source_bytes)
+                result=self._replace_airport(downloaded,source_url=generated,activation_url=activation_url)
+            except AirportPortalError as error:
+                self._journal(errors=(str(error),)); raise ServiceError(str(error)) from None
+            except SourceError as error:
+                code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
+            except AirportStoreError as error:
+                code=error.code if error.code in _AIRPORT_STORE_CODES else "airport_update_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
+            except Exception:
+                self._journal(errors=("airport_update_failed",)); raise ServiceError("airport_update_failed") from None
+            self._journal(self._clock(),())
+            return result
+    def auto_refresh_airport(self):
+        # Menu 2 and the weekly timer: activate the page once, then prefer
+        # the saved link.  A temporarily unavailable page still allows the
+        # saved link; only when the saved link also fails does an available
+        # page generate a fresh one.  Page down + link down is a normal
+        # skip that keeps every old value and journals no error.
+        with self._lock():
+            try:
+                try: saved=self._airport.read_source()
+                except AirportStoreError as error:
+                    # Without a saved record there is no activation page to
+                    # visit: the auto flow reports the missing page, not the
+                    # missing file.
+                    if error.code=="airport_source_missing": raise ServiceError("airport_activation_missing") from None
+                    raise
+                if saved.activation_url is None: raise ServiceError("airport_activation_missing")
+                page=None; portal_error=None
+                try: page=self._portal.activate(saved.activation_url)
+                except AirportPortalError as error: portal_error=error
+                try:
+                    downloaded=self._download(saved.source_url,self.config.max_source_bytes)
+                    source_url=saved.source_url
+                except SourceError:
+                    if portal_error is not None:
+                        if portal_error.code=="airport_portal_unavailable": return {"updated": False, "skipped": True}
+                        raise ServiceError(portal_error.code) from None
+                    generated=self._portal.generate_source_url(page)
+                    downloaded=self._download(generated,self.config.max_source_bytes)
+                    source_url=generated
+                result=self._replace_airport(downloaded,source_url=source_url,activation_url=saved.activation_url)
+            except ServiceError as error:
+                self._journal(errors=(str(error),)); raise
+            except AirportPortalError as error:
+                self._journal(errors=(str(error),)); raise ServiceError(str(error)) from None
+            except SourceError as error:
+                code=str(error) if str(error).startswith("airport_") else "airport_download_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
+            except AirportStoreError as error:
+                code=error.code if error.code in _AIRPORT_STORE_CODES else "airport_refresh_failed"
+                self._journal(errors=(code,)); raise ServiceError(code) from None
+            except Exception:
+                self._journal(errors=("airport_refresh_failed",)); raise ServiceError("airport_refresh_failed") from None
+            self._journal(self._clock(),())
+            return result
+    def _saved_activation_url(self):
+        # The portal-agnostic manual link update keeps a saved activation
+        # URL when one exists; a missing record starts from null.
+        try: return self._airport.read_source().activation_url
+        except AirportStoreError as error:
+            if error.code=="airport_source_missing": return None
+            raise
+    def _replace_airport(self,downloaded,*,source_url,activation_url):
+        source=AirportSource(
+            source_url=source_url,
+            traffic=downloaded.traffic,
+            last_success=int(self._clock()),
+            activation_url=activation_url,
+        )
+        self._airport.replace(downloaded.document,source)
+        return {"updated": True, "traffic_captured": downloaded.traffic is not None}
     def airport_status(self):
         # Public summary only: hostname, aggregate traffic, expiry, last
         # success, and provider presence.  Paths, query strings, and tokens
@@ -142,13 +231,13 @@ class ClashSubService:
                 saved=self._airport.read_source()
             except AirportStoreError as error:
                 if error.code=="airport_source_missing":
-                    return {"saved": False, "source_host": None, "traffic_total": None, "traffic_used": None, "traffic_remaining": None, "traffic_expiry_ms": None, "last_success": None, "provider_present": self._provider_present()}
+                    return {"saved": False, "activation_configured": False, "activation_host": None, "source_configured": False, "source_host": None, "traffic_total": None, "traffic_used": None, "traffic_remaining": None, "traffic_expiry_ms": None, "last_success": None, "provider_present": self._provider_present()}
                 code=error.code if error.code in _AIRPORT_STORE_CODES else "airport_status_failed"
                 raise ServiceError(code) from None
             except Exception:
                 raise ServiceError("airport_status_failed") from None
             traffic=saved.traffic
-            return {"saved": True, "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": (traffic.upload+traffic.download) if traffic else None, "traffic_remaining": max(traffic.total-traffic.upload-traffic.download,0) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
+            return {"saved": True, "activation_configured": saved.activation_url is not None, "activation_host": _source_host(saved.activation_url) if saved.activation_url else None, "source_configured": bool(saved.source_url), "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": (traffic.upload+traffic.download) if traffic else None, "traffic_remaining": max(traffic.total-traffic.upload-traffic.download,0) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
     def rollback(self,user,release):
         with self._lock():
             self._recover()

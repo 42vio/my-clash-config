@@ -209,6 +209,7 @@ class AcceptanceHarness:
             fetch_xui_proxies=self._fetch_xui,
             download_airport_document=self._download_airport,
             airport_store=self.airport_store,
+            airport_portal=object(),
             render_user_bundle=self._render,
             validate_clash=validate_clash,
             mihomo_validator=MihomoValidator(self.config.mihomo_binary, runner=self.runner),
