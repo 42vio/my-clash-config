@@ -51,6 +51,7 @@ class AirportStoreTests(unittest.TestCase):
         self.public_root = Path(temporary.name) / "public"
         self.provider_directory = self.public_root / "provider"
         self.provider_directory.mkdir(parents=True)
+        os.chmod(self.provider_directory, 0o2750)
         self.store = AirportStore(self.private_root, self.public_root)
 
     def source_path(self):
@@ -210,6 +211,22 @@ class AirportStoreTests(unittest.TestCase):
         self.assertEqual(self.provider_names(), [])
         self.assertFalse(self.source_path().exists())
 
+    def test_provider_directory_requires_exact_setgid_mode(self):
+        self.store.replace(OLD_BYTES, OLD_SOURCE)
+        for mode in (0o750, 0o775, 0o2770, 0o2775):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.provider_directory, mode)
+                with self.assertRaises(AirportStoreError) as caught:
+                    self.store.replace(PROVIDER_BYTES, NEW_SOURCE)
+                self.assertEqual(caught.exception.code, "airport_provider_invalid")
+                os.chmod(self.provider_directory, 0o2750)
+        # Every rejected attempt leaves the published pair untouched and no
+        # candidate, backup, or journal artifacts behind.
+        self.assertEqual(self.store.read(), OLD_BYTES)
+        self.assertEqual(self.store.read_source(), OLD_SOURCE)
+        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
+        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
+
     def test_oversized_stored_provider_is_rejected_on_read(self):
         self.store.replace(OLD_BYTES, OLD_SOURCE)
         target = self.store.path
@@ -283,6 +300,22 @@ class AirportStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(AirportStoreError, "airport_provider_invalid"):
             store.replace(PROVIDER_BYTES, OLD_SOURCE)
 
+    def test_provider_directory_requires_exact_setgid_mode(self):
+        # A loosened provider directory would let a lower-privileged process
+        # replace AmyTelecom.yaml; only the exact 02750 mode is accepted.
+        self.store.replace(OLD_BYTES, OLD_SOURCE)
+        for mode in (0o750, 0o775, 0o2770, 0o2775):
+            with self.subTest(mode=oct(mode)):
+                os.chmod(self.provider_directory, mode)
+                with self.assertRaises(AirportStoreError) as caught:
+                    self.store.replace(NEW_BYTES, NEW_SOURCE)
+                self.assertEqual(caught.exception.code, "airport_provider_invalid")
+                os.chmod(self.provider_directory, 0o2750)
+        self.assertEqual(self.store.read(), OLD_BYTES)
+        self.assertEqual(self.raw_source(), OLD_SOURCE)
+        self.assertEqual(self.provider_names(), ["AmyTelecom.yaml"])
+        self.assertEqual(self.private_names(), [AIRPORT_SOURCE_FILENAME])
+
     def test_symlinked_provider_directory_is_rejected(self):
         real = self.private_root.parent / "real-provider"
         real.mkdir()
@@ -336,6 +369,7 @@ class AirportTransactionRecoveryTests(unittest.TestCase):
         self.public_root = Path(temporary.name) / "public"
         self.provider_directory = self.public_root / "provider"
         self.provider_directory.mkdir(parents=True)
+        os.chmod(self.provider_directory, 0o2750)
         self.store = AirportStore(self.private_root, self.public_root)
         self.store.replace(OLD_BYTES, OLD_SOURCE)
 
@@ -750,6 +784,7 @@ class AirportFirstPublishTests(unittest.TestCase):
         self.public_root = Path(temporary.name) / "public"
         self.provider_directory = self.public_root / "provider"
         self.provider_directory.mkdir(parents=True)
+        os.chmod(self.provider_directory, 0o2750)
         self.store = AirportStore(self.private_root, self.public_root)
 
     def journal_path(self):
