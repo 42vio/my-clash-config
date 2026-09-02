@@ -1,24 +1,35 @@
 """Pure-HTTP adapter for the airport subscription portal page.
 
-The portal speaks a small, fixed protocol: GET the activation page (this
-also enables the subscription), then POST form-encoded fields to the
-GetSubscription entry, which answers either with the real subscription
-URL or with a task id that resolves after the page-declared delay.  This
-module keeps every portal-specific detail (HTML shape, form fields, JSON
-envelope) inside itself; the rest of the code base only sees stable
-error codes and a generated URL.
+The portal protocol was verified against the live page with plain HTTP on
+2026-09-02 (redacted structural capture: tests/fixtures/portal-page.html):
+
+* GET ``/Subscription/index?sid=&token=`` returns the page and enables the
+  subscription; the page declares ``delaytime``, ``pid``, ``sid`` and
+  ``token`` in a script block and carries one target button whose onclick
+  calls ``GetSubscription('<relative url>', 'Clash1_Anyttls')``.
+* The button's relative URL points at the same-origin ``/Subscription/Clash``
+  entry with ``t=anytls_clash`` and several opaque marker parameters; it
+  travels **verbatim** inside the form's ``info`` field.
+* POST ``/Subscription/GetSubscription?<random>`` with form fields
+  ``sid/token/pid/info`` answers ``{"result": true, "msg": "subid:<uuid>"}``
+  (or directly ``"url:<link>"``); after the page-declared wait the same POST
+  is repeated with an extra ``subid`` field and answers
+  ``{"result": true, "msg": "url:<link>"}``.  Failures answer
+  ``{"result": false, "msg": "<human text>"}`` and the text never leaves
+  this module.
 
 Nothing here executes remote JavaScript, persists cookies beyond one
-activate/generate session, or lets page values (sid, token, pid, task
-id, URLs) leak into error text.
+activate/generate session, or lets page values (sid, token, pid, task id,
+URLs) leak into error text.
 """
 
 import json
+import random
 import re
 import time
 from html.parser import HTMLParser
 from http.cookiejar import CookieJar
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlencode
 from urllib.request import (
     HTTPCookieProcessor,
     HTTPRedirectHandler,
@@ -38,12 +49,17 @@ _MAX_PAGE_BYTES = 1024 * 1024
 _MAX_JSON_BYTES = 4096
 _DELAY_MIN = 0
 _DELAY_MAX = 30
-# The portal answers a first POST with a short machine-generated task id that
-# goes back verbatim as the "subid" form field.  Only printable, ASCII,
-# delimiter-free identifiers of a bounded length may ever reach the wire;
-# anything else (URLs, paths, form syntax, whitespace, control characters)
-# is a malformed answer, not a task.
-_TASK_ID_PATTERN = re.compile(r"\A[A-Za-z0-9_-]{1,128}\Z")
+# Every observed task id is a lowercase UUID; anything else is a malformed
+# answer, never a task, and must fail before the second POST is sent.
+_TASK_ID_PATTERN = re.compile(
+    r"\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z"
+)
+_ONCALL_PATTERN = re.compile(
+    r"\AGetSubscription\('([^']*)','%s'\)\Z" % re.escape(BUTTON_ID)
+)
+_PAGE_VAR_PATTERN = re.compile(
+    r"var\s+(delaytime|pid|sid|token)\s*=\s*(?:'([^']*)'|([0-9]+))\s*;"
+)
 
 
 class AirportPortalError(RuntimeError):
@@ -79,9 +95,9 @@ class AirportPortalPage:
     """In-memory context of one activated portal page.
 
     Holds only what the follow-up generation call needs: the session
-    opener (cookies live inside it), the origin every URL must match,
-    the form fields taken from the verified button, and the page-declared
-    wait.  Never persisted; the repr never shows field values.
+    opener (cookies live inside it), the origin every URL must match, and
+    the form fields taken from the verified page.  Never persisted; the
+    repr never shows field values.
     """
 
     def __init__(self, opener, origin, fields, delay_seconds):
@@ -95,7 +111,7 @@ class AirportPortalPage:
 
 
 class _ButtonParser(HTMLParser):
-    """Collect the tag carrying the exact target button id, if any."""
+    """Collect the onclick attribute of the exact target button, if any."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -104,7 +120,9 @@ class _ButtonParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         for name, value in attrs:
             if name == "id" and value == BUTTON_ID:
-                self.matches.append(list(attrs))
+                self.matches.append(
+                    next((entry for entry_name, entry in attrs if entry_name == "onclick"), None)
+                )
                 return
 
 
@@ -144,14 +162,13 @@ class AirportPortalClient:
 
     def generate_source_url(self, page) -> str:
         """Create (and if needed resolve) the real subscription URL."""
-        entry = _join_origin(page._origin, GET_SUBSCRIPTION_PATH)
+        entry = _join_origin(
+            page._origin, "%s?%s" % (GET_SUBSCRIPTION_PATH, random.random())
+        )
         answer = self._post(page, entry, dict(page._fields))
         if answer[0] == "subid":
             self._sleeper(page._delay_seconds)
             answer = self._post(page, entry, dict(page._fields, subid=answer[1]))
-            if answer[0] != "url":
-                # The task answer must resolve to a link, never a second task.
-                raise AirportPortalError("airport_link_generation_failed")
         return _validated_source_url(answer[1], page._origin)
 
     def _post(self, page, entry, form):
@@ -182,14 +199,18 @@ class AirportPortalClient:
         if (
             not isinstance(document, dict)
             or set(document) != {"result", "msg"}
-            or document["result"] not in ("url", "subid")
+            or document["result"] is not True
             or not isinstance(document["msg"], str)
             or not document["msg"]
         ):
             raise AirportPortalError("airport_link_generation_failed")
-        if document["result"] == "subid" and _TASK_ID_PATTERN.fullmatch(document["msg"]) is None:
+        message = document["msg"]
+        if message.startswith("url:"):
+            return "url", message[len("url:"):]
+        task = message[len("subid:"):] if message.startswith("subid:") else None
+        if task is None or _TASK_ID_PATTERN.fullmatch(task) is None:
             raise AirportPortalError("airport_link_generation_failed")
-        return document["result"], document["msg"]
+        return "subid", task
 
 
 def _parse_portal_page(body, origin):
@@ -198,38 +219,46 @@ def _parse_portal_page(body, origin):
         parser.feed(body.decode("utf-8", errors="strict"))
     except UnicodeError:
         raise AirportPortalError("airport_portal_unsupported") from None
-    if len(parser.matches) != 1:
+    if len(parser.matches) != 1 or parser.matches[0] is None:
         raise AirportPortalError("airport_portal_unsupported")
-    attrs = {}
-    for name, value in parser.matches[0]:
-        if name in attrs:
+    match = _ONCALL_PATTERN.fullmatch(parser.matches[0])
+    if match is None:
+        raise AirportPortalError("airport_portal_unsupported")
+    button_url = match.group(1)
+    if not _is_clash_entry(button_url, origin):
+        raise AirportPortalError("airport_portal_unsupported")
+    variables = {}
+    for name, text, number in _PAGE_VAR_PATTERN.findall(body.decode("utf-8", errors="strict")):
+        if name in variables:
             raise AirportPortalError("airport_portal_unsupported")
-        attrs[name] = value
-    action = attrs.get("data-action")
-    subscription_type = attrs.get("data-type")
-    sid = attrs.get("data-sid")
-    token = attrs.get("data-token")
-    pid = attrs.get("data-pid")
-    delay_text = attrs.get("data-delay")
-    if not _is_clash_entry(action, origin) or subscription_type != SUBSCRIPTION_TYPE:
+        variables[name] = number if number else text
+    if set(variables) != {"delaytime", "pid", "sid", "token"}:
         raise AirportPortalError("airport_portal_unsupported")
-    if not _nonempty_text(sid) or not _nonempty_text(token) or not _nonempty_text(pid):
+    if not _nonempty_text(variables["sid"]) or not _nonempty_text(variables["token"]) or not _nonempty_text(variables["pid"]):
         raise AirportPortalError("airport_portal_unsupported")
-    delay_seconds = _parse_delay(delay_text)
+    delay_seconds = _parse_delay(variables["delaytime"])
     if delay_seconds is None:
         raise AirportPortalError("airport_portal_unsupported")
-    fields = {"sid": sid, "token": token, "pid": pid, "type": subscription_type}
+    fields = {
+        "sid": variables["sid"],
+        "token": variables["token"],
+        "pid": variables["pid"],
+        "info": button_url,
+    }
     return fields, delay_seconds
 
 
-def _is_clash_entry(action, origin):
-    if not _nonempty_text(action):
+def _is_clash_entry(button_url, origin):
+    if not _nonempty_text(button_url):
         return False
-    target = urlsplit(urljoin(_join_origin(origin, "/"), action))
+    target = urlsplit(urljoin(_join_origin(origin, "/"), button_url))
+    types = parse_qs(target.query).get("t", [])
     return (
         target.scheme == "https"
         and _same_origin((target.scheme, target.netloc), origin)
         and target.path == CLASH_ENTRY_PATH
+        and not target.fragment
+        and types == [SUBSCRIPTION_TYPE]
     )
 
 

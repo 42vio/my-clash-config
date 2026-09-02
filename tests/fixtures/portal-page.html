@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Subscription</title>
+</head>
+<body>
+    <!--
+      Redacted structural fixture of the real subscription portal page
+      (captured 2026-09-02 via plain-HTTP GET, all dynamic values replaced
+      with placeholders).  The parser must rely only on this shape:
+      one target <input> button whose onclick calls GetSubscription with the
+      full relative subscription URL, plus the page-level var declarations.
+      Sibling buttons with other ids must be ignored.
+    -->
+    <div class="config">
+
+        <input type="button" class="forconfigbtn" value="Clash Subscription Anyttls" onclick="GetSubscription('/Subscription/Clash?t=anytls_clash&sid=placeholder-sid&token=placeholder-token&mm=97045&ktmm=placeholder-base64%3d%3d&placeholder-random-marker','Clash1_Anyttls')" id="Clash1_Anyttls">
+
+        <input type="button" class="forconfigbtn" value="Clash Subscription Anyttls" onclick="GetSubscription('/Subscription/Clash?t=anytls_clash&sid=placeholder-sid&token=placeholder-token&mm=97045&ktmm=placeholder-base64%3d%3d&placeholder-other-marker','Clash2_Anyttls')" id="Clash2_Anyttls">
+
+        <input type="button" class="forconfigbtn" value="QuantumultX Subscription Anytls" onclick="GetSubscription('/Subscription/QuantumultX?sid=placeholder-sid&t=anytls_qx&token=placeholder-token','QuantumultX_Anytls')" id="QuantumultX_Anytls">
+
+    </div>
+
+    <script>
+        var IsCheckIpProxy = '0';
+
+        var delaytime =8;
+            var pid = 'placeholder-pid-0000-4000-8000-000000000000';
+            var sid = 'placeholder-sid';
+            var token='placeholder-token';
+            var loadck = 0;
+    </script>
+</body>
+</html>
