@@ -942,6 +942,55 @@ class CertificatePhaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(InstallerError, "invalid_domain|missing_cf_token"):
                     installer.issue_certificate(domain, token)
 
+    def test_installs_acme_from_inside_its_extracted_directory(self):
+        # acme.sh 3.1.4's --install copies "acme.sh" relative to the current
+        # working directory; running it from anywhere else fails with
+        # "cannot copy acme.sh" on a real host.  The installer must chdir
+        # into the extracted tree for that one command.
+        installer = self._installer()
+        captured = self.runner_calls
+
+        def cwd_runner(arguments, **kwargs):
+            captured.append({"argv": list(arguments), "cwd": kwargs.get("cwd")})
+            if arguments[:1] == ["curl"]:
+                Path(arguments[-1]).write_bytes(b"pinned archive fixture")
+            if (
+                arguments
+                and arguments[0] == str(installer.paths.acme_home / "acme.sh")
+                and "--issue" in arguments
+            ):
+                account_conf = installer.paths.acme_home / "account.conf"
+                account_conf.parent.mkdir(parents=True, exist_ok=True)
+                account_conf.write_text(
+                    "SAVED_CF_Token='fixture-token'\n", encoding="utf-8"
+                )
+                os.chmod(account_conf, 0o600)
+            if (
+                arguments
+                and arguments[0] == str(installer.paths.acme_home / "acme.sh")
+                and "--install-cert" in arguments
+            ):
+                installer.paths.ssl_dir.mkdir(parents=True, exist_ok=True)
+                installer.paths.fullchain().write_text("CERT", encoding="ascii")
+                installer.paths.privkey().write_text("KEY", encoding="ascii")
+            return subprocess.CompletedProcess(list(arguments), 0)
+
+        installer.runner = cwd_runner
+        with patch("clash_sub.installer.hashlib.sha256") as digest:
+            digest.return_value.hexdigest.return_value = (
+                "e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
+            )
+            installer.issue_certificate("example.com", "cf-token-value")
+
+        bootstrap_install = next(
+            call
+            for call in captured
+            if "--install" in call["argv"] and call["argv"][:1] == ["sh"]
+        )
+        self.assertEqual(
+            bootstrap_install["cwd"], self.root / "private" / "acme.sh-3.1.4"
+        )
+
     def test_rejects_acme_archive_with_wrong_hash_before_extracting(self):
         installer = self._installer()
 
