@@ -224,13 +224,17 @@ def parse_subscription_userinfo(value):
             if not separator or name in fields or not _nonnegative_decimal(number):
                 _userinfo_fail()
             fields[name] = int(number)
-        if set(fields) != {"upload", "download", "total", "expire"}:
+        if not {"upload", "download", "total"} <= set(fields) <= {
+            "upload", "download", "total", "expire"
+        }:
+            # The live airport's header carries the three byte counters only;
+            # expire stays optional and defaults to 0 (未设置) when absent.
             _userinfo_fail()
         return Traffic(
             upload=fields["upload"],
             download=fields["download"],
             total=fields["total"],
-            expiry_ms=fields["expire"],
+            expiry_ms=fields.get("expire", 0),
         )
     except SourceError:
         raise

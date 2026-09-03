@@ -576,11 +576,24 @@ class TrafficHeaderTests(unittest.TestCase):
             parse_subscription_userinfo("upload=12; download=34; total=56; expire=78"),
             Traffic(upload=12, download=34, total=56, expiry_ms=78),
         )
+
+    def test_accepts_the_real_three_field_header_without_expire(self):
+        # The live airport's steady-state header carries upload/download/
+        # total only; expire stays optional and defaults to 0 (未设置).
+        self.assertEqual(
+            parse_subscription_userinfo("upload=1; download=2; total=3"),
+            Traffic(upload=1, download=2, total=3, expiry_ms=0),
+        )
+
+    def test_rejects_incomplete_or_malformed_subscription_traffic(self):
         for value in (
             "upload=-1; download=34; total=56; expire=78",
-            "upload=1; download=2; total=three; expire=4",
-            "upload=1; download=2; total=3",
+            "upload=1; download=2; total=three",
+            "upload=1; download=2",
+            "upload=1; total=3",
+            "download=2; total=3",
             "upload=1; download=2; total=3; expire=4; other=5",
+            "upload=1; download=2; total=3; expire=4; upload=5",
             "upload=" + "9" * 1024,
         ):
             with self.subTest(value=value[:32]):
