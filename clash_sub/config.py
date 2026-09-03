@@ -117,7 +117,7 @@ def _subscription_authority(value: Any) -> str:
         parsed = urlsplit("//" + authority)
         valid = (
             parsed.hostname is not None
-            and parsed.port == 443
+            and parsed.port in (None, 443)
             and parsed.username is None
             and parsed.password is None
             and not parsed.path
@@ -128,7 +128,9 @@ def _subscription_authority(value: Any) -> str:
         valid = False
     if not valid:
         raise ConfigError("subscription authority must use port 443")
-    return authority
+    # 443 is the https default: normalize it away so every rendered
+    # subscription URL stays free of a redundant ":443".
+    return authority[:-4] if authority.endswith(":443") else authority
 
 
 def _xui_public_endpoint(value: Any) -> str:
