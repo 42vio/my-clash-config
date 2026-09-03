@@ -1357,13 +1357,46 @@ class InstallCommandTests(unittest.TestCase):
     def test_install_rejects_empty_domain(self):
         with patch.dict("os.environ", {"CLASH_SUB_DOMAIN": ""}), patch(
             "builtins.input", return_value=""
-        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+        ), patch(
             "clash_sub.cli.os.geteuid", return_value=0
         ):
             status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
 
         self.assertEqual(status, 2)
         self.assertIn("invalid_domain", self.stderr.getvalue())
+
+    def test_install_reads_the_cf_token_visibly(self):
+        # The Cloudflare token is typed as normal visible input (pasted
+        # whitespace stripped); hiding it made paste failures invisible.
+        captured = {}
+
+        class FakeInstaller:
+            def __init__(self, root, print_fn=None, progress_offset=0):
+                pass
+
+            def install(self, **kwargs):
+                captured["kwargs"] = kwargs
+                return {"panel_url": "https://sub.example.com/x/", "gate_instruction": ""}
+
+        stdout = io.StringIO()
+        with patch.dict(
+            "os.environ", {"CLASH_SUB_DOMAIN": "example.com"}, clear=False
+        ), patch(
+            "builtins.input", side_effect=["  tok-visible  ", ""]
+        ), patch(
+            "clash_sub.cli.getpass", side_effect=AssertionError("token input must be visible")
+        ), patch(
+            "clash_sub.cli._suggest_owner_email", return_value="owner@x"
+        ), patch(
+            "clash_sub.cli.Installer", FakeInstaller
+        ), patch(
+            "clash_sub.cli.os.geteuid", return_value=0
+        ):
+            status = main(["install"], stdout=stdout, stderr=self.stderr)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["kwargs"]["cf_token"], "tok-visible")
+        self.assertIn("请输入 Cloudflare API Token：", stdout.getvalue())
 
     def test_install_prompts_owner_with_snapshot_default(self):
         captured = {}
@@ -1380,9 +1413,7 @@ class InstallCommandTests(unittest.TestCase):
         with patch.dict(
             "os.environ", {"CLASH_SUB_DOMAIN": "example.com"}, clear=False
         ), patch(
-            "clash_sub.cli.getpass", return_value="tok"
-        ), patch(
-            "builtins.input", return_value=""
+            "builtins.input", side_effect=["tok", ""]
         ), patch(
             "clash_sub.cli._suggest_owner_email", return_value="real-owner@x"
         ), patch(
@@ -1428,9 +1459,7 @@ class InstallCommandTests(unittest.TestCase):
         with patch.dict(
             "os.environ", {"CLASH_SUB_DOMAIN": "example.com"}, clear=False
         ), patch(
-            "clash_sub.cli.getpass", return_value="tok"
-        ), patch(
-            "builtins.input", return_value=""
+            "builtins.input", side_effect=["tok", ""]
         ), patch(
             "clash_sub.cli._suggest_owner_email", return_value=""
         ), patch(
@@ -1449,9 +1478,7 @@ class InstallCommandTests(unittest.TestCase):
             {"CLASH_SUB_DOMAIN": "example.com", "CLASH_SUB_OWNER_EMAIL": ""},
             clear=False,
         ), patch(
-            "clash_sub.cli.getpass", return_value="tok"
-        ), patch(
-            "builtins.input", side_effect=EOFError
+            "builtins.input", side_effect=["tok", EOFError]
         ), patch(
             "clash_sub.cli._suggest_owner_email", return_value="someone@x"
         ) as suggest, patch(
@@ -1513,7 +1540,7 @@ class InstallCommandTests(unittest.TestCase):
             {"CLASH_SUB_DOMAIN": "example.com", "CLASH_SUB_OWNER_EMAIL": "env-owner@x"},
             clear=False,
         ), patch(
-            "clash_sub.cli.getpass", return_value="tok"
+            "builtins.input", return_value="tok"
         ), patch(
             "clash_sub.cli._suggest_owner_email"
         ) as suggest, patch(
@@ -1546,7 +1573,7 @@ class InstallCommandTests(unittest.TestCase):
                 "CLASH_SUB_PROGRESS_OFFSET": "3",
             },
             clear=False,
-        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+        ), patch("builtins.input", return_value="tok"), patch(
             "clash_sub.cli.Installer", FakeInstaller
         ), patch("clash_sub.cli.os.geteuid", return_value=0):
             status = main(["install"], stdout=stdout, stderr=self.stderr)
@@ -1575,7 +1602,7 @@ class InstallCommandTests(unittest.TestCase):
                 "CLASH_SUB_PROGRESS_OFFSET": "not-a-number",
             },
             clear=False,
-        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+        ), patch("builtins.input", return_value="tok"), patch(
             "clash_sub.cli.Installer", FakeInstaller
         ), patch("clash_sub.cli.os.geteuid", return_value=0):
             status = main(["install"], stdout=stdout, stderr=self.stderr)
@@ -1596,7 +1623,7 @@ class InstallCommandTests(unittest.TestCase):
             "os.environ",
             {"CLASH_SUB_DOMAIN": "example.com", "CLASH_SUB_OWNER_EMAIL": "owner@x"},
             clear=False,
-        ), patch("clash_sub.cli.getpass", return_value="tok"), patch(
+        ), patch("builtins.input", return_value="tok"), patch(
             "clash_sub.cli.Installer", FakeInstaller
         ), patch("clash_sub.cli.os.geteuid", return_value=0):
             status = main(["install"], stdout=io.StringIO(), stderr=self.stderr)
