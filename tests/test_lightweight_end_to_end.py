@@ -391,7 +391,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(member_names, ["Member 3x-ui"])
 
         owner_token = harness.state().users[harness.owner_id].token
-        expected_url = "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % owner_token
+        expected_url = "https://sub.example.test/s/%s/AmyTelecom.yaml" % owner_token
         for variant, document in owner_documents.items():
             provider = document["proxy-providers"]["AmyTelecom"]
             self.assertEqual(provider["type"], "http", variant)
@@ -561,7 +561,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
                 self.assertIn("-%s/" % item["readable_code"], url)
                 self.assertRegex(
                     url,
-                    r"^https://sub\.example\.test:443/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/Clash-(?:Compat|Balance)\.yaml$",
+                    r"^https://sub\.example\.test/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/Clash-(?:Compat|Balance)\.yaml$",
                 )
 
     def test_routes_authorize_only_exact_token_user_and_variant_combinations(self):
@@ -857,7 +857,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         compat = yaml.safe_load(rolled.public_paths["compat"].read_text())
         self.assertEqual(
             compat["proxy-providers"]["AmyTelecom"]["url"],
-            "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % old_token,
+            "https://sub.example.test/s/%s/AmyTelecom.yaml" % old_token,
         )
 
         rotated = harness.service.rotate_link(harness.owner_id)
@@ -876,7 +876,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual(
             rotated_compat["proxy-providers"]["AmyTelecom"]["url"],
-            "https://sub.example.test:443/s/%s/AmyTelecom.yaml" % rotated["token"],
+            "https://sub.example.test/s/%s/AmyTelecom.yaml" % rotated["token"],
         )
         harness.assert_lock_and_markers(self)
 

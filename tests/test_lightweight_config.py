@@ -57,7 +57,7 @@ class LightweightConfigTests(unittest.TestCase):
         config = load_config(self.path, self.root)
 
         self.assertEqual(config.owner_email, "owner-example")
-        self.assertEqual(config.subscription_authority, "sub.example.com:443")
+        self.assertEqual(config.subscription_authority, "sub.example.com")
         self.assertEqual(VARIANTS, ("compat", "balance"))
         self.assertEqual(OWNER_VARIANTS, VARIANTS)
         self.assertEqual(MEMBER_VARIANTS, ("compat",))
@@ -141,8 +141,17 @@ class LightweightConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "subscription authority"):
             load_config(self.path, self.root)
 
-    def test_rejects_authority_without_port_443(self):
+    def test_accepts_bare_authority_host_and_normalizes_port_443(self):
+        # 443 is the https default: a bare host renders cleaner subscription
+        # URLs, and an explicit ":443" is normalized away on load.
         self.write_config(replacement=CONFIG.replace("sub.example.com:443", "sub.example.com"))
+
+        config = load_config(self.path, self.root)
+
+        self.assertEqual(config.subscription_authority, "sub.example.com")
+
+    def test_rejects_authority_with_a_non_default_port(self):
+        self.write_config(replacement=CONFIG.replace("sub.example.com:443", "sub.example.com:8443"))
 
         with self.assertRaisesRegex(ConfigError, "443"):
             load_config(self.path, self.root)
