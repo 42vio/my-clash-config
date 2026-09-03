@@ -831,7 +831,16 @@ def _write_airport_status(stdout, status):
 def _traffic_number(value):
     if isinstance(value, bool) or not isinstance(value, int):
         return "未获取"
-    return str(value)
+    amount = float(value)
+    unit = "B"
+    for step in ("KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024:
+            break
+        amount /= 1024
+        unit = step
+    if unit == "B":
+        return "%d B" % value
+    return "%.2f %s" % (amount, unit)
 
 
 def _format_expiry(value):

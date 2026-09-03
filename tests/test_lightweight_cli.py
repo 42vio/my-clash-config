@@ -25,6 +25,7 @@ from clash_sub.cli import (
     _parser,
     _prompt,
     _suggest_owner_email,
+    _traffic_number,
     main,
 )
 from clash_sub.runtime import build_service
@@ -434,9 +435,9 @@ class LightweightCliTests(unittest.TestCase):
             "开关页面域名：portal.example",
             "订阅链接已配置：是",
             "来源域名：airport.example",
-            "总量：107374182400",
-            "已用：21474836480",
-            "剩余：85899345920",
+            "总量：100.00 GiB",
+            "已用：20.00 GiB",
+            "剩余：80.00 GiB",
             "到期时间：2030-01-01 00:00:00Z",
             "最近成功时间：2025-06-15 15:06:40Z",
             "AmyTelecom.yaml：存在",
@@ -491,6 +492,25 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("到期时间：未设置", stdout)
         self.assertNotIn("1970", stdout)
+
+    def test_traffic_amounts_render_in_human_units(self):
+        # Binary units match how airport plans are sold (150 GiB, not 161 GB).
+        for value, expected in (
+            (161061273600, "150.00 GiB"),
+            (24964315063, "23.25 GiB"),
+            (136096958537, "126.75 GiB"),
+            (1099511627776, "1.00 TiB"),
+            (1073741824, "1.00 GiB"),
+            (1048576, "1.00 MiB"),
+            (1024, "1.00 KiB"),
+            (512, "512 B"),
+            (0, "0 B"),
+            (None, "未获取"),
+            (True, "未获取"),
+            ("150", "未获取"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(_traffic_number(value), expected)
 
     def test_scheduled_refresh_command_exits_zero_on_success_and_normal_skips(self):
         for result in (
