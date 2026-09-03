@@ -650,7 +650,13 @@ class Installer:
                 raise InstallerError("acme_download_invalid")
             self._run(["tar", "-xzf", str(bootstrap), "-C", str(bootstrap.parent)])
             source = bootstrap.parent / "acme.sh-3.1.4" / "acme.sh"
-            self._run(["sh", str(source), "--install", "--home", str(self.paths.acme_home)])
+            # acme.sh's --install copies "acme.sh" relative to the current
+            # working directory, so it must run from inside the extracted
+            # tree or it fails with "cannot copy acme.sh".
+            self._run(
+                ["sh", str(source), "--install", "--home", str(self.paths.acme_home)],
+                cwd=source.parent,
+            )
         environment = {"CF_Token": cf_token}
         # acme.sh --issue exits 2 when the cert already exists and is not due
         # for renewal ("Skipping. Next renewal time is ..."); the existing
@@ -1192,7 +1198,7 @@ class Installer:
             if Path(temporary).exists():
                 Path(temporary).unlink(missing_ok=True)
 
-    def _run(self, arguments, env=None, allowed_exit_codes=(0,)):
+    def _run(self, arguments, env=None, allowed_exit_codes=(0,), cwd=None):
         try:
             result = self.runner(
                 list(arguments),
@@ -1202,6 +1208,7 @@ class Installer:
                 timeout=600,
                 check=False,
                 env=dict(os.environ, **env) if env else None,
+                cwd=cwd,
             )
         except Exception:
             raise InstallerError("command_failed") from None
