@@ -472,7 +472,7 @@ def _menu_mihomo_update(stdin, stdout, stderr):
 
 
 def _menu_history_view(stdin, stdout, stderr, factory):
-    user = _menu_user_id(stdin, stdout, stderr)
+    user = _menu_user_id(stdin, stdout, stderr, factory)
     if user is None:
         return 0, False
     try:
@@ -484,7 +484,7 @@ def _menu_history_view(stdin, stdout, stderr, factory):
 
 
 def _menu_rollback(stdin, stdout, stderr, factory):
-    user = _menu_user_id(stdin, stdout, stderr)
+    user = _menu_user_id(stdin, stdout, stderr, factory)
     if user is None:
         return 0, False
     try:
@@ -510,7 +510,7 @@ def _menu_rollback(stdin, stdout, stderr, factory):
 
 
 def _menu_single_user(stdin, stdout, stderr, factory, operation):
-    user = _menu_user_id(stdin, stdout, stderr)
+    user = _menu_user_id(stdin, stdout, stderr, factory)
     if user is None:
         return 0, False
     if operation == "rotate":
@@ -561,11 +561,35 @@ def _menu_install_rollback(stdin, stdout, stderr):
     return 0, False
 
 
-def _menu_user_id(stdin, stdout, stderr):
-    raw = _prompt(stdin, stdout, "请输入用户 ID：")
-    user = _user_id(raw) if raw is not None else None
+def _menu_user_id(stdin, stdout, stderr, factory):
+    # The operator should never have to guess which numeric ids exist:
+    # list the live users (with the owner marked) before reading the id,
+    # and treat 0 / empty / EOF as cancelling back to the submenu.
+    try:
+        status = factory().status()
+    except Exception:
+        _menu_error(stderr, "service_unavailable")
+        return None
+    users = sorted(
+        (user for user in status["users"] if user.get("active")),
+        key=lambda user: user["client_id"],
+    )
+    if not users:
+        stdout.write("当前没有可用用户。\n")
+        return None
+    stdout.write("当前用户：\n")
+    for user in users:
+        owner = "（owner）" if user["client_id"] == status["owner_client_id"] else ""
+        stdout.write("  ID %d  %s%s\n" % (user["client_id"], user["email"], owner))
+    raw = _prompt(stdin, stdout, "\n请输入用户 ID（0 返回）：")
+    if not raw or raw == "0":
+        return None
+    user = _user_id(raw)
     if user is None:
-        _error(stderr, "invalid_command", 2)
+        _menu_error(stderr, "invalid_menu_selection")
+        return None
+    if user not in {item["client_id"] for item in users}:
+        _menu_error(stderr, "invalid_client")
         return None
     return user
 

@@ -1073,8 +1073,37 @@ class MenuLoopTests(unittest.TestCase):
         code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n7\n\n0\n0\n")
 
         self.assertEqual(code, 0)
-        self.assertEqual(self.service.calls, [("history", (7,))])
+        self.assertEqual(self.service.calls, [("status", ()), ("history", (7,))])
         self.assertIn("用户 7 的历史版本", stdout)
+
+    def test_user_menu_lists_current_users_before_asking_for_the_id(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n7\n\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertIn("当前用户：", stdout)
+        self.assertIn("ID 7  Alice（owner）", stdout)
+        self.assertIn("ID 8  Bob", stdout)
+        self.assertIn("请输入用户 ID（0 返回）：", stdout)
+
+    def test_user_menu_zero_cancels_without_touching_the_user_flows(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n0\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(self.service.calls, [("status", ())])
+
+    def test_user_menu_rejects_an_unknown_id_and_stays_in_the_menu(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n99\n0\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertIn("invalid_client", stderr)
+        self.assertEqual(self.service.calls, [("status", ())])
+
+    def test_user_menu_rejects_a_non_numeric_id_and_stays_in_the_menu(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\nabc\n0\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertIn("invalid_menu_selection", stderr)
+        self.assertEqual(self.service.calls, [("status", ())])
 
     def test_rollback_entry_prompts_for_each_value(self):
         code, stdout, stderr = run_cli(
@@ -1084,7 +1113,7 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(
             self.service.calls,
-            [("history", (7,)), ("rollback", (7, "release-7"))],
+            [("status", ()), ("history", (7,)), ("rollback", (7, "release-7"))],
         )
         self.assertIn("用户 7 的历史版本", stdout)
 
@@ -1092,7 +1121,7 @@ class MenuLoopTests(unittest.TestCase):
         code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n2\n7\n\n\n0\n0\n")
 
         self.assertEqual(code, 0)
-        self.assertEqual(self.service.calls, [("history", (7,))])
+        self.assertEqual(self.service.calls, [("status", ()), ("history", (7,))])
 
     def test_rollback_confirmation_cancel_keeps_zero_side_effects(self):
         code, stdout, stderr = run_cli(
@@ -1100,7 +1129,7 @@ class MenuLoopTests(unittest.TestCase):
         )
 
         self.assertEqual(code, 0)
-        self.assertEqual(self.service.calls, [("history", (7,))])
+        self.assertEqual(self.service.calls, [("status", ()), ("history", (7,))])
 
     def test_menu_rotate_link_requires_confirmation_and_cancel_keeps_tokens(self):
         confirmed_code, _, _ = run_cli(None, self.service, stdin_text="8\n3\n7\ny\n\n0\n0\n")
@@ -1108,15 +1137,21 @@ class MenuLoopTests(unittest.TestCase):
 
         self.assertEqual(confirmed_code, 0)
         self.assertEqual(cancelled_code, 0)
-        self.assertEqual(self.service.calls, [("rotate_link", (7,))])
+        self.assertEqual(
+            self.service.calls,
+            [("status", ()), ("rotate_link", (7,)), ("status", ())],
+        )
 
     def test_menu_reinitialize_owner_requires_confirmation(self):
-        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="8\n4\n9\ny\n\n0\n0\n")
-        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="8\n4\n9\nn\n\n0\n0\n")
+        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="8\n4\n7\ny\n\n0\n0\n")
+        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="8\n4\n7\nn\n\n0\n0\n")
 
         self.assertEqual(confirmed_code, 0)
         self.assertEqual(cancelled_code, 0)
-        self.assertEqual(self.service.calls, [("reinitialize_owner", (9,))])
+        self.assertEqual(
+            self.service.calls,
+            [("status", ()), ("reinitialize_owner", (7,)), ("status", ())],
+        )
 
     def test_menu_install_rollback_requires_the_exact_confirmation_text(self):
         class FakeInstaller:
