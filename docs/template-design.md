@@ -17,6 +17,12 @@
 2. 生成 Balance：先取 Compat 完整基础模板，以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）整体替换 DNS，再按 owner 路径注入 3x-ui 节点与机场 provider，输出 `Clash-Balance.yaml`。
 3. 普通用户只生成 Compat，渲染层直接拒绝传入机场 provider。
 
+## 动态节点的插入顺序
+
+同步时，`profiles.yaml` 的 `inject-node-positions` 记录各注入分组中第一个动态节点的位置（从 0 开始），不记录私密节点名称。生成时按用户节点顺序在该位置插入整组节点，保留其余选项的相对顺序；普通用户的不可用机场分组在节点插入后移除。若来源中的动态节点分散在多个位置，统一合并到第一个位置。
+
+没有位置字段或某分组没有位置记录的旧清单，继续把节点追加到该分组末尾。位置必须是对应节点注入分组的非负整数，且不能超过净化后选项列表的长度；无效位置会阻止生成，不会静默调整。
+
 ## 导出矩阵
 
 | 身份 | 生成 profile | 机场 provider |
@@ -99,8 +105,8 @@ provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL�
 
 脚本只对两个精确 profile 标题生效：
 
-- `Clash-Compat`
-- `Clash-Balance`
+- `Clash-Compat.yaml`
+- `Clash-Balance.yaml`
 
 其他 profile 原样返回。脚本把 Home 节点、`HomeServer` 和 `ProxyServer` 分组插入主配置，两个分组放在“自动选择”之后；对应规则保持在规则列表预定的高优先级位置。
 

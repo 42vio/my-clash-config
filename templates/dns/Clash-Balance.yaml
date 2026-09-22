@@ -6,10 +6,6 @@
 # https://github.com/clash-verge-rev/clash-verge-rev/discussions/2526
 # https://blog.arisa.moe/blog/2025/250814-best-practice-of-anti-dns-leak/#24-dns
 
-
-# 方案3  Balanced
-# 默认海外 DNS + CN Policy 隐私与准确性折中
-
 dns:
   enable: true
   ipv6: false

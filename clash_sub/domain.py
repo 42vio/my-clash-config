@@ -13,8 +13,8 @@ PROFILE_FILENAMES = MappingProxyType({
     "balance": "Clash-Balance.yaml",
 })
 PROFILE_TITLES = MappingProxyType({
-    "compat": "Clash-Compat",
-    "balance": "Clash-Balance",
+    "compat": "Clash-Compat.yaml",
+    "balance": "Clash-Balance.yaml",
 })
 AIRPORT_FILENAME = "AmyTelecom.yaml"
 

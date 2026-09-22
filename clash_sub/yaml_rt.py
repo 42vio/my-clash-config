@@ -45,7 +45,10 @@ def clone_round_trip(value):
 
 def clone_round_trip_document(document):
     """Clone one complete YAML document without changing its anchor graph."""
-    return load_round_trip(dump_round_trip(copy.deepcopy(document)))
+    # deepcopy breaks merge-key identity in ruamel.yaml: the emitter then
+    # expands aliases and repeats inherited keys/comments. A serialize/parse
+    # boundary isolates the document while preserving its internal references.
+    return load_round_trip(dump_round_trip(document))
 
 
 def clone_isolated_round_trip(value):

@@ -42,11 +42,11 @@ def render_user_bundle(
 
 
 def _render_variant(template_root, variant, xui, airport):
-    document, injections = _compose_variant(template_root, variant)
+    document, injections, positions = _compose_variant(template_root, variant)
     document["proxies"] = CommentedSeq(merge_proxy_sources((("3x-ui", xui),)))
     if airport is not None:
         _with_provider(document, airport)
-    _inject_proxy_names(document, injections, airport is not None)
+    _inject_proxy_names(document, injections, airport is not None, positions)
     if airport is None:
         _drop_unusable_groups(document)
     try:
@@ -104,7 +104,7 @@ def _with_provider(document, airport):
         document.insert(index, "proxy-providers", providers)
 
 
-def _compose_variant(template_root: Path, variant: str) -> tuple[CommentedMap, dict[str, str]]:
+def _compose_variant(template_root: Path, variant: str) -> tuple[CommentedMap, dict[str, str], dict[str, int]]:
     if variant not in OWNER_VARIANTS:
         raise ValueError("unknown profile")
     root = Path(template_root)
@@ -125,7 +125,7 @@ def _compose_variant(template_root: Path, variant: str) -> tuple[CommentedMap, d
     injections = {group: "all" for group in manifest["inject-node-groups"]}
     for group in manifest["inject-provider-groups"]:
         injections[group] = "all-provider" if group in injections else "provider"
-    return document, injections
+    return document, injections, dict(manifest.get("inject-node-positions", {}))
 
 
 def _load_round_trip(path):
@@ -137,7 +137,8 @@ def _load_round_trip(path):
 
 def _load_manifest(path):
     manifest = _load_round_trip(path)
-    if set(manifest) != {"profiles", "inject-node-groups", "inject-provider-groups"}:
+    required = {"profiles", "inject-node-groups", "inject-provider-groups"}
+    if not required.issubset(manifest) or set(manifest) - required - {"inject-node-positions"}:
         raise ValueError("profile manifest shape is invalid")
     profiles = manifest.get("profiles")
     if not isinstance(profiles, Mapping) or set(profiles) != set(OWNER_VARIANTS):
@@ -150,10 +151,19 @@ def _load_manifest(path):
         groups = manifest.get(key)
         if not isinstance(groups, list) or any(not isinstance(group, str) or not group.strip() for group in groups) or len(set(groups)) != len(groups):
             raise ValueError("profile injection list is invalid")
+    positions = manifest.get("inject-node-positions", {})
+    if not isinstance(positions, Mapping) or any(
+        group not in manifest["inject-node-groups"]
+        or isinstance(position, bool)
+        or not isinstance(position, int)
+        or position < 0
+        for group, position in positions.items()
+    ):
+        raise ValueError("profile node position mapping is invalid")
     return manifest
 
 
-def _inject_proxy_names(document, injections, has_provider):
+def _inject_proxy_names(document, injections, has_provider, positions):
     groups = document.get("proxy-groups")
     if not isinstance(groups, list):
         raise ValueError("proxy-groups must be a list")
@@ -172,11 +182,14 @@ def _inject_proxy_names(document, injections, has_provider):
             targets = group.setdefault("proxies", CommentedSeq())
             if not isinstance(targets, list):
                 raise ValueError("inject-node-group must expose proxies")
-            if source == "all-provider":
-                source = "all"
-            for name in proxy_names:
-                if name not in targets:
-                    targets.append(name)
+            position = positions.get(group_name, len(targets))
+            if position > len(targets):
+                raise ValueError("profile node position exceeds group size")
+            # Copy before insertion: a group may inherit or alias this list.
+            targets = copy.deepcopy(targets)
+            additions = [name for name in proxy_names if name not in targets]
+            targets[position:position] = additions
+            group["proxies"] = targets
         if has_provider and source in {"provider", "all-provider"}:
             uses = group.setdefault("use", CommentedSeq())
             if not isinstance(uses, list):

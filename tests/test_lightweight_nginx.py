@@ -289,19 +289,19 @@ class LightweightNginxTests(unittest.TestCase):
         cases = {
             "location = /accel/7/Clash-Compat.yaml": (
                 self.public_root / "releases" / "7" / release / "Clash-Compat.yaml",
-                'add_header Profile-Title "Clash-Compat";',
+                'add_header Profile-Title "Clash-Compat.yaml";',
                 "add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml';",
                 'add_header Profile-Update-Interval "24";',
             ),
             "location = /accel/7/Clash-Balance.yaml": (
                 self.public_root / "releases" / "7" / release / "Clash-Balance.yaml",
-                'add_header Profile-Title "Clash-Balance";',
+                'add_header Profile-Title "Clash-Balance.yaml";',
                 "add_header Content-Disposition 'attachment; filename=Clash-Balance.yaml';",
                 'add_header Profile-Update-Interval "24";',
             ),
             "location = /accel/8/Clash-Compat.yaml": (
                 self.public_root / "releases" / "8" / release / "Clash-Compat.yaml",
-                'add_header Profile-Title "Clash-Compat";',
+                'add_header Profile-Title "Clash-Compat.yaml";',
                 "add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml';",
                 'add_header Profile-Update-Interval "24";',
             ),
@@ -314,7 +314,7 @@ class LightweightNginxTests(unittest.TestCase):
                 self.assertIn('default_type "text/yaml; charset=utf-8";', block)
                 for line in header_lines:
                     self.assertIn(line, block)
-                self.assertNotIn('add_header Profile-Title "Clash-Compat" always;', block)
+                self.assertNotIn('add_header Profile-Title "Clash-Compat.yaml" always;', block)
                 self.assertNotIn(
                     "add_header Content-Disposition 'attachment; filename=Clash-Compat.yaml' always;",
                     block,
@@ -1807,7 +1807,7 @@ class RealNginxSubscriptionTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, expected_body)
         self.assertEqual(headers["content-type"], "text/yaml; charset=utf-8")
-        self.assertEqual(headers["profile-title"], "Clash-Compat")
+        self.assertEqual(headers["profile-title"], "Clash-Compat.yaml")
         self.assertEqual(
             headers["content-disposition"], "attachment; filename=Clash-Compat.yaml"
         )
@@ -1839,7 +1839,7 @@ class RealNginxSubscriptionTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(body, b"")
-        self.assertEqual(headers["profile-title"], "Clash-Compat")
+        self.assertEqual(headers["profile-title"], "Clash-Compat.yaml")
         self.assertEqual(headers["profile-update-interval"], "24")
         self.assertEqual(headers["cache-control"], "no-store")
         # The metadata service answers HEAD like GET, so the traffic
@@ -1928,7 +1928,7 @@ class RealNginxSubscriptionTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(body, b"")
-        self.assertEqual(headers["profile-title"], "Clash-Compat")
+        self.assertEqual(headers["profile-title"], "Clash-Compat.yaml")
         self.assertEqual(headers["cache-control"], "no-store")
         self.assertNotIn("subscription-userinfo", headers)
 

@@ -88,7 +88,7 @@ git diff --check
 
 ## 手动刷新 provider
 
-owner 客户端在 Clash Verge 的「订阅」页选中 `Clash-Compat` 或 `Clash-Balance`，对 `AmyTelecom` provider 执行手动更新即可拉取最新机场节点；主配置本身无需重新下载。provider 的自动刷新间隔为 24 小时。Clash Verge 里显示的机场流量与到期是服务器最近一次机场下载保存的数字，刷新 provider 不会触发服务器访问机场上游。
+owner 客户端在 Clash Verge 的「订阅」页选中 `Clash-Compat.yaml` 或 `Clash-Balance.yaml`，对 `AmyTelecom` provider 执行手动更新即可拉取最新机场节点；主配置本身无需重新下载。provider 的自动刷新间隔为 24 小时。Clash Verge 里显示的机场流量与到期是服务器最近一次机场下载保存的数字，刷新 provider 不会触发服务器访问机场上游。
 
 ## 订阅流量元数据
 
@@ -172,7 +172,7 @@ Home 节点、`HomeServer` 与 `ProxyServer` 分组只存在于本机 `private/c
 node --check private/clash-verge-home.js
 ```
 
-语法通过后在 Clash Verge 中重新载入配置验证效果。脚本只对 `Clash-Compat` 和 `Clash-Balance` 两个标题生效；其他 profile 原样返回。不要把脚本内容或其中的节点值写入仓库、文档或终端记录。
+语法通过后在 Clash Verge 中重新载入配置验证效果。脚本只对 `Clash-Compat.yaml` 和 `Clash-Balance.yaml` 两个标题生效；其他 profile 原样返回。不要把脚本内容或其中的节点值写入仓库、文档或终端记录。
 
 ## 证书和组件更新
 

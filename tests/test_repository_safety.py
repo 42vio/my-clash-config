@@ -347,8 +347,8 @@ class RepositorySafetyTests(unittest.TestCase):
         if not script.is_file():
             self.skipTest("local-only home script is absent from this checkout")
         source = script.read_text(encoding="utf-8")
-        self.assertIn('"Clash-Compat"', source)
-        self.assertIn('"Clash-Balance"', source)
+        self.assertTrue('"Clash-Compat.yaml"' in source)
+        self.assertTrue('"Clash-Balance.yaml"' in source)
         self.assertNotIn("Clash Compat Universal", source)
         self.assertNotIn("Clash Balance Universal", source)
 

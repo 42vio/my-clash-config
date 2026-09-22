@@ -139,9 +139,10 @@ class LightweightGeneratorTests(unittest.TestCase):
             render_user_bundle(False, [reality_proxy("Member")], provider(), self.templates)
 
     def test_manifest_is_strict_and_compose_keeps_round_trip_document(self):
-        document, injections = _compose_variant(self.templates, "compat")
+        document, injections, positions = _compose_variant(self.templates, "compat")
         self.assertIsInstance(document, CommentedMap)
         self.assertEqual(injections, {"Public": "all"})
+        self.assertEqual(positions, {})
         self._write("templates/profiles.yaml", PROFILES + "legacy: true\n")
         with self.assertRaises(ValueError):
             _compose_variant(self.templates, "compat")
@@ -203,6 +204,54 @@ class LightweightGeneratorTests(unittest.TestCase):
         rendered = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)["compat"]
         document = load_round_trip(rendered.encode("utf-8"))
         self.assertIs(document["routing-default"], document["routing-default-copy"])
+
+    def test_positioned_nodes_preserve_order_for_owner_and_member(self):
+        self._write("templates/base/Clash-Compat.yaml", BASE_COMPAT.replace(
+            "proxies: [DIRECT]", "proxies: [DIRECT, REJECT]"))
+        self._write("templates/profiles.yaml", PROFILES + "inject-node-positions: {Public: 1}\n")
+        nodes = [reality_proxy("First"), reality_proxy("Second")]
+        for owner in (True, False):
+            for text in render_user_bundle(owner, nodes, provider() if owner else None, self.templates).values():
+                group = yaml.safe_load(text)["proxy-groups"][0]
+                self.assertEqual(group["proxies"], ["DIRECT", "First", "Second", "REJECT"])
+
+    def test_legacy_manifest_still_appends_nodes(self):
+        text = render_user_bundle(False, [reality_proxy("Node")], None, self.templates)["compat"]
+        self.assertEqual(yaml.safe_load(text)["proxy-groups"][0]["proxies"], ["DIRECT", "Node"])
+
+    def test_positions_support_start_and_end(self):
+        for position, expected in ((0, ["Node", "DIRECT"]), (1, ["DIRECT", "Node"])):
+            self._write("templates/profiles.yaml", PROFILES + f"inject-node-positions: {{Public: {position}}}\n")
+            text = render_user_bundle(False, [reality_proxy("Node")], None, self.templates)["compat"]
+            self.assertEqual(yaml.safe_load(text)["proxy-groups"][0]["proxies"], expected)
+
+    def test_invalid_node_positions_are_rejected(self):
+        for positions in ("[]", "null", "{Missing: 0}", "{Public: true}", "{Public: -1}",
+                          "{Public: 0.5}", "{Public: '0'}", "{Public: 2}"):
+            with self.subTest(positions=positions):
+                self._write("templates/profiles.yaml", PROFILES + f"inject-node-positions: {positions}\n")
+                with self.assertRaisesRegex(ValueError, "position"):
+                    render_user_bundle(False, [reality_proxy("Node")], None, self.templates)
+
+    def test_positioned_insertion_does_not_mutate_another_aliased_group(self):
+        self._write("templates/base/Clash-Compat.yaml", BASE_COMPAT.replace(
+            "proxies: [DIRECT]", "proxies: &shared-options [DIRECT]").replace(
+            "rule-providers: {}", "- name: Other\n  type: select\n  proxies: *shared-options\nrule-providers: {}"))
+        self._write("templates/profiles.yaml", PROFILES + "inject-node-positions: {Public: 0}\n")
+        text = render_user_bundle(False, [reality_proxy("Node")], None, self.templates)["compat"]
+        groups = yaml.safe_load(text)["proxy-groups"]
+        self.assertEqual(groups[0]["proxies"], ["Node", "DIRECT"])
+        self.assertEqual(groups[1]["proxies"], ["DIRECT"])
+
+    def test_group_can_receive_positioned_nodes_and_owner_provider(self):
+        self._write("templates/profiles.yaml", PROFILES.replace(
+            "inject-provider-groups: []", "inject-provider-groups: [Public]")
+            + "inject-node-positions: {Public: 0}\n")
+        for owner in (True, False):
+            text = render_user_bundle(owner, [reality_proxy("Node")], provider() if owner else None, self.templates)["compat"]
+            group = yaml.safe_load(text)["proxy-groups"][0]
+            self.assertEqual(group["proxies"], ["Node", "DIRECT"])
+            self.assertEqual(group.get("use", []), ["AmyTelecom"] if owner else [])
 
     def test_identical_inputs_are_byte_stable(self):
         first = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)

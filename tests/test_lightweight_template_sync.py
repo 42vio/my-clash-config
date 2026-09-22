@@ -163,6 +163,23 @@ class TemplateSyncTests(unittest.TestCase):
         run_template_sync(self.root, compat=source)
         self.assertIn("http://provider.example/other.yaml", (self.root / "templates/base/Clash-Compat.yaml").read_text())
 
+    def test_sync_records_node_position_without_private_names(self):
+        for members, position in (("[Dynamic, DIRECT]", 0), ("[DIRECT, Dynamic]", 1)):
+            source = load_round_trip(COMPAT.replace("[DIRECT, Dynamic]", members))
+            sanitized, injections = template_sync._sanitize_compat(source)
+            manifest = template_sync._profiles(injections)
+            self.assertEqual(manifest["inject-node-positions"], {"Select": position})
+            self.assertNotIn("Dynamic", template_sync._dump(manifest))
+            self.assertEqual(sanitized["proxy-groups"][0]["proxies"], ["DIRECT"])
+
+    def test_shared_merge_groups_each_keep_original_node_position(self):
+        source = load_round_trip(COMPAT.replace("proxy-groups:\n", "shared: &shared {type: select, proxies: [Dynamic, DIRECT]}\nproxy-groups:\n").replace(
+            "- name: Select\n  type: select\n  proxies: [DIRECT, Dynamic]", "- name: Other\n  <<: *shared\n- name: Select\n  <<: *shared"))
+        sanitized, injections = template_sync._sanitize_compat(source)
+        manifest = template_sync._profiles(injections)
+        self.assertEqual(manifest["inject-node-positions"], {"Other": 0, "Select": 0})
+        self.assertNotIn("Dynamic", template_sync._dump(sanitized))
+
     def test_compat_removes_local_airport_alias_providers_and_comments(self):
         sanitized, injections = template_sync._sanitize_compat(load_round_trip(AIRPORT_ALIAS))
 

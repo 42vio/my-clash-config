@@ -8,9 +8,9 @@
 
 | 身份 | 输出文件 | Clash 标题 | 机场 provider |
 | --- | --- | --- | --- |
-| owner | `Clash-Compat.yaml` | `Clash-Compat` | 有（`AmyTelecom`） |
-| owner | `Clash-Balance.yaml` | `Clash-Balance` | 有（`AmyTelecom`） |
-| 普通用户 | `Clash-Compat.yaml` | `Clash-Compat` | 无 |
+| owner | `Clash-Compat.yaml` | `Clash-Compat.yaml` | 有（`AmyTelecom`） |
+| owner | `Clash-Balance.yaml` | `Clash-Balance.yaml` | 有（`AmyTelecom`） |
+| 普通用户 | `Clash-Compat.yaml` | `Clash-Compat.yaml` | 无 |
 
 owner 与普通用户不通过文件名区分，由订阅令牌和服务端授权决定。普通用户不生成 Balance，也不包含或访问任何机场 provider。机场节点由独立文件 `AmyTelecom.yaml` 单独发布，只挂在 owner 的订阅路由下。
 
@@ -29,7 +29,7 @@ owner 与普通用户不通过文件名区分，由订阅令牌和服务端授�
 - `templates/base/Clash-Compat.yaml`：Compat 完整基础模板（已去除动态节点与机场痕迹）。
 - `templates/dns/Clash-Balance.yaml`：只含 Balance 的完整 `dns:` 段及其注释。
 - `templates/profiles.yaml`：两个 profile 的 DNS 配方与注入策略组列表。
-- `private/clash-verge-home.js`：Git 忽略的本机 Home 扩展脚本，仅对 `Clash-Compat` 和 `Clash-Balance` 两个标题生效。
+- `private/clash-verge-home.js`：Git 忽略的本机 Home 扩展脚本，仅对 `Clash-Compat.yaml` 和 `Clash-Balance.yaml` 两个标题生效。
 
 ## 常用命令
 

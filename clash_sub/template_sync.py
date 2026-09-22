@@ -261,15 +261,21 @@ def _sanitize_compat(source):
         raise TemplateSyncError("template_source_invalid")
     public["proxies"] = CommentedSeq()
     airports = _airport_provider_names(public.get("proxy-providers"))
+    _detach_private_merge_lists(public, proxy_names, airports)
     provider_groups, node_groups = [], []
-    for group in public["proxy-groups"]:
+    node_positions = {}
+    for index, group in enumerate(public["proxy-groups"]):
         if not isinstance(group, Mapping) or not isinstance(group.get("name"), str):
             raise TemplateSyncError("template_source_invalid")
-        members = group.get("proxies")
+        # Read the untouched source: earlier groups can share merge anchors.
+        members = source["proxy-groups"][index].get("proxies")
         if isinstance(members, list):
             kept = [member for member in members if member not in proxy_names]
             if len(kept) != len(members):
                 node_groups.append(group["name"])
+                node_positions[group["name"]] = next(
+                    i for i, member in enumerate(members) if member in proxy_names
+                )
                 group["proxies"] = CommentedSeq(kept)
         for entry in list(getattr(group, "merge", None) or []):
             base = entry[0] if isinstance(entry, (list, tuple)) else entry
@@ -295,7 +301,46 @@ def _sanitize_compat(source):
             del public["proxy-providers"]
     _strip_private_names_from_anchors(public, proxy_names)
     _strip_airport_cache_comments(public)
-    return public, (tuple(dict.fromkeys(node_groups)), tuple(dict.fromkeys(provider_groups)))
+    return public, (tuple(dict.fromkeys(node_groups)), tuple(dict.fromkeys(provider_groups)), node_positions)
+
+
+def _detach_private_merge_lists(document, proxy_names, airports):
+    """Isolate inherited private lists before modifying shared merge bases.
+
+    Only private node/provider lists become explicit overrides; unrelated
+    inherited policy fields keep their original aliases. Materializing all
+    affected referents first also avoids ruamel's merge-key deletion bug.
+    """
+    seen = set()
+
+    def visit(node):
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, CommentedMap):
+            explicit = dict(node.non_merged_items())
+            for key, private_names in (("proxies", proxy_names), ("use", airports)):
+                values = node.get(key)
+                if key not in explicit and isinstance(values, list) and any(value in private_names for value in values):
+                    # New overrides belong before the icon, after the policy
+                    # merge. ruamel's insert positions include the merge key.
+                    if "icon" in explicit:
+                        position = [name for name, _ in node.non_merged_items()].index("icon")
+                        merge = getattr(node, "merge", ())
+                        if merge and merge.merge_pos <= position:
+                            position += 1
+                        node.insert(position, key, copy.deepcopy(values))
+                    else:
+                        node[key] = copy.deepcopy(values)
+            for value in list(node.values()):
+                visit(value)
+            for base in getattr(node, "merge", ()):
+                visit(base)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                visit(value)
+
+    visit(document)
 
 
 def _strip_private_names_from_anchors(node, proxy_names):
@@ -365,8 +410,6 @@ def _drop_airport_group_uses(group, airports):
                 del group["use"]
             except KeyError:
                 pass
-            if "proxies" not in group and group.get("include-all") is not True:
-                group["proxies"] = CommentedSeq()
     return referenced
 
 
@@ -411,11 +454,12 @@ def _token_mentions_airport_cache(value):
 
 
 def _profiles(injections):
-    node_groups, provider_groups = injections
+    node_groups, provider_groups, node_positions = injections
     return CommentedMap({
         "profiles": CommentedMap({"compat": CommentedMap({"dns": "compat"}), "balance": CommentedMap({"dns": "balance"})}),
         "inject-node-groups": CommentedSeq(node_groups),
         "inject-provider-groups": CommentedSeq(provider_groups),
+        "inject-node-positions": CommentedMap(node_positions),
     })
 
 

@@ -13,3 +13,6 @@ inject-provider-groups:
 - 🇺🇲 美国节点
 - 🇨🇳 台湾节点
 - 🇸🇬 新加坡节点
+inject-node-positions:
+  加速线路: 1
+  AI服务: 0
