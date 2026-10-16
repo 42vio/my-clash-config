@@ -55,7 +55,10 @@ def _release(metadata):
     assets = metadata.get("assets")
     if metadata.get("prerelease") is not False or not isinstance(tag, str) or not _TAG_RE.fullmatch(tag) or not isinstance(assets, list):
         raise MihomoUpdateError("mihomo_release_invalid")
-    expected_name = "mihomo-linux-amd64-%s.gz" % tag
+    # The default amd64 build requires x86-64-v3 instructions, which some VPS
+    # CPUs do not expose.  This binary only validates configurations, so use
+    # the portable v1 build on every amd64 host.
+    expected_name = "mihomo-linux-amd64-v1-%s.gz" % tag
     matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == expected_name]
     if len(matches) != 1:
         raise MihomoUpdateError("mihomo_release_invalid")
