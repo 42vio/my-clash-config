@@ -11,37 +11,54 @@ from pathlib import Path
 from clash_sub.domain import RuntimeState, UserState
 
 
-READABLE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$")
-
-
-def airport_only_token(owner_token):
-    """Derive a separate, non-reversible capability for the owner's airport profile."""
-    if not isinstance(owner_token, str) or not TOKEN_RE.fullmatch(owner_token):
-        raise StateError("invalid state")
-    digest = hashlib.sha256(b"clash-sub-airport-only-v1:" + owner_token.encode("ascii")).digest()
-    core = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
-    return core + "-" + owner_token.rsplit("-", 1)[1]
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{22}-[A-Za-z0-9._@+-]{1,254}$")
+LEGACY_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$")
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._@+-]{1,254}$")
 
 
 class StateError(ValueError):
     pass
 
 
-def generate_token(existing_codes, *, random_bytes=secrets.token_bytes, choose=secrets.choice):
+def validate_email(email: str) -> str:
+    if not isinstance(email, str) or not EMAIL_RE.fullmatch(email):
+        raise StateError("invalid client email")
+    return email
+
+
+def airport_only_token(owner_token, *, schema_version=2):
+    """Derive a separate, non-reversible capability for the owner's airport profile."""
+    if not isinstance(owner_token, str):
+        raise StateError("invalid state")
+    legacy = schema_version == 1
+    pattern = LEGACY_TOKEN_RE if legacy else TOKEN_RE
+    if schema_version not in (1, 2) or not pattern.fullmatch(owner_token):
+        raise StateError("invalid state")
+    digest = hashlib.sha256(b"clash-sub-airport-only-v1:" + owner_token.encode("ascii")).digest()
+    core = base64.urlsafe_b64encode(digest if legacy else digest[:16]).decode("ascii").rstrip("=")
+    return core + owner_token[43 if legacy else 22:]
+
+
+def generate_token(email: str, *, random_bytes=secrets.token_bytes) -> str:
+    validate_email(email)
     try:
-        core_bytes = random_bytes(32)
-        if not isinstance(core_bytes, bytes) or len(core_bytes) != 32:
+        core_bytes = random_bytes(16)
+        if not isinstance(core_bytes, bytes) or len(core_bytes) != 16:
             raise ValueError
         core = base64.urlsafe_b64encode(core_bytes).decode("ascii").rstrip("=")
-        while True:
-            code = "".join(choose(READABLE_ALPHABET) for _ in range(6))
-            if code not in existing_codes:
-                return core + "-" + code, code
+        return core + "-" + email
     except StateError:
         raise
     except Exception as error:
         raise StateError("token generation failed") from error
+
+
+def _generate_legacy_token(existing_codes):
+    core = base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii").rstrip("=")
+    while True:
+        code = "".join(secrets.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(6))
+        if code not in existing_codes:
+            return core + "-" + code, code
 
 
 def load_state(path):
@@ -108,7 +125,8 @@ def reconcile_state(previous, clients, owner_email):
             raise StateError("owner_reinitialization_required")
         retained_users = dict(previous.users)
 
-    existing_codes = {user.readable_code for user in retained_users.values()}
+    version = previous.schema_version if previous else 2
+    existing_codes = {user.readable_code for user in retained_users.values() if user.readable_code}
     users = {
         client_id: UserState(
             client_id=user.client_id,
@@ -124,8 +142,11 @@ def reconcile_state(previous, clients, owner_email):
         client = clients_by_id[client_id]
         existing = retained_users.get(client_id)
         if existing is None:
-            token, code = generate_token(existing_codes)
-            existing_codes.add(code)
+            if version == 1:
+                token, code = _generate_legacy_token(existing_codes)
+                existing_codes.add(code)
+            else:
+                token, code = generate_token(client.email), None
             users[client_id] = UserState(
                 client_id=client_id,
                 email=client.email,
@@ -137,13 +158,13 @@ def reconcile_state(previous, clients, owner_email):
         else:
             users[client_id] = UserState(
                 client_id=client_id,
-                email=client.email,
+                email=existing.email,
                 token=existing.token,
                 readable_code=existing.readable_code,
                 active=client.enabled,
                 current_release=existing.current_release,
             )
-    return RuntimeState(1, owner_client_id, users)
+    return RuntimeState(version, owner_client_id, users)
 
 
 def reinitialize_owner(previous, clients, owner_email, owner_client_id):
@@ -168,14 +189,17 @@ def reinitialize_owner(previous, clients, owner_email, owner_client_id):
         for client_id, user in previous.users.items()
         if client_id in clients_by_id and client_id != owner_client_id
     }
-    existing_codes = {user.readable_code for user in retained_users.values()}
+    existing_codes = {user.readable_code for user in retained_users.values() if user.readable_code}
     users = {}
     for client_id in sorted(clients_by_id):
         client = clients_by_id[client_id]
         existing = retained_users.get(client_id)
         if existing is None:
-            token, code = generate_token(existing_codes)
-            existing_codes.add(code)
+            if previous.schema_version == 1:
+                token, code = _generate_legacy_token(existing_codes)
+                existing_codes.add(code)
+            else:
+                token, code = generate_token(client.email), None
             users[client_id] = UserState(
                 client_id=client_id,
                 email=client.email,
@@ -187,13 +211,13 @@ def reinitialize_owner(previous, clients, owner_email, owner_client_id):
         else:
             users[client_id] = UserState(
                 client_id=client_id,
-                email=client.email,
+                email=existing.email,
                 token=existing.token,
                 readable_code=existing.readable_code,
                 active=client.enabled,
                 current_release=existing.current_release,
             )
-    return RuntimeState(1, owner_client_id, users)
+    return RuntimeState(previous.schema_version, owner_client_id, users)
 
 
 def rotate_user_token(state, client_id):
@@ -201,7 +225,10 @@ def rotate_user_token(state, client_id):
     user = state.users.get(client_id)
     if user is None:
         raise StateError("unknown client")
-    token, code = generate_token({item.readable_code for item in state.users.values()})
+    if state.schema_version == 1:
+        token, code = _generate_legacy_token({item.readable_code for item in state.users.values()})
+    else:
+        token, code = generate_token(user.email), None
     users = dict(state.users)
     users[client_id] = UserState(
         client_id=user.client_id,
@@ -212,6 +239,28 @@ def rotate_user_token(state, client_id):
         current_release=user.current_release,
     )
     return RuntimeState(state.schema_version, state.owner_client_id, users)
+
+
+def prepare_link_update(state: RuntimeState, clients: tuple) -> RuntimeState:
+    _validate_runtime_state(state)
+    clients_by_id = _validate_clients(clients)
+    users = {}
+    for client_id, user in state.users.items():
+        client = clients_by_id.get(client_id)
+        # Deleted legacy records have no route and need no new capability.
+        if state.schema_version == 1 and client is None:
+            continue
+        email = validate_email(client.email if client else user.email)
+        if state.schema_version == 1:
+            token = generate_token(email)
+        elif email != user.email:
+            token = user.token[:22] + "-" + email
+        else:
+            token = user.token
+        users[client_id] = UserState(
+            user.client_id, email, token, None, user.active, user.current_release
+        )
+    return RuntimeState(2, state.owner_client_id, users)
 
 
 def _validate_clients(clients):
@@ -249,14 +298,13 @@ def _state_to_payload(state):
         "schema_version": state.schema_version,
         "owner_client_id": state.owner_client_id,
         "users": [
-            {
+            ({
                 "client_id": user.client_id,
                 "email": user.email,
                 "token": user.token,
-                "readable_code": user.readable_code,
                 "active": user.active,
                 "current_release": user.current_release,
-            }
+            } | ({"readable_code": user.readable_code} if state.schema_version == 1 else {}))
             for _, user in sorted(state.users.items())
         ],
     }
@@ -269,14 +317,16 @@ def _state_from_payload(payload):
     return state
 
 
-def _user_from_payload(payload):
-    expected = {"client_id", "email", "token", "readable_code", "active", "current_release"}
+def _user_from_payload(payload, schema_version):
+    expected = {"client_id", "email", "token", "active", "current_release"}
+    if schema_version == 1:
+        expected.add("readable_code")
     if not isinstance(payload, dict) or set(payload) != expected:
         raise StateError("invalid state")
     client_id = payload["client_id"]
     email = payload["email"]
     token = payload["token"]
-    code = payload["readable_code"]
+    code = payload.get("readable_code")
     active = payload["active"]
     release = payload["current_release"]
     if (
@@ -285,15 +335,16 @@ def _user_from_payload(payload):
         or not isinstance(email, str)
         or not email
         or not isinstance(token, str)
-        or not TOKEN_RE.fullmatch(token)
-        or not isinstance(code, str)
-        or code != token.rsplit("-", 1)[1]
+        or (schema_version == 1 and (not LEGACY_TOKEN_RE.fullmatch(token) or not isinstance(code, str) or code != token[44:]))
+        or (schema_version == 2 and (not TOKEN_RE.fullmatch(token) or token[23:] != email or code is not None or not EMAIL_RE.fullmatch(email)))
         or not isinstance(active, bool)
         or (release is not None and not isinstance(release, str))
     ):
         raise StateError("invalid state")
     try:
-        if len(base64.urlsafe_b64decode(token[:43] + "=")) != 32:
+        core = token[:43] if schema_version == 1 else token[:22]
+        raw = base64.urlsafe_b64decode(core + ("=" if schema_version == 1 else "=="))
+        if len(raw) != (32 if schema_version == 1 else 16) or base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != core:
             raise ValueError
     except Exception as error:
         raise StateError("invalid state") from error
@@ -307,14 +358,13 @@ def _validate_runtime_state(state):
         "schema_version": state.schema_version,
         "owner_client_id": state.owner_client_id,
         "users": [
-            {
+            ({
                 "client_id": user.client_id,
                 "email": user.email,
                 "token": user.token,
-                "readable_code": user.readable_code,
                 "active": user.active,
                 "current_release": user.current_release,
-            }
+            } | ({"readable_code": user.readable_code} if state.schema_version == 1 else {}))
             for user in state.users.values()
         ],
     }
@@ -332,7 +382,7 @@ def _state_from_payload_unowned(payload):
     if (
         not isinstance(schema_version, int)
         or isinstance(schema_version, bool)
-        or schema_version != 1
+        or schema_version not in (1, 2)
         or not isinstance(owner_client_id, int)
         or isinstance(owner_client_id, bool)
         or not isinstance(raw_users, list)
@@ -341,11 +391,12 @@ def _state_from_payload_unowned(payload):
     users = {}
     codes = set()
     for raw_user in raw_users:
-        user = _user_from_payload(raw_user)
-        if user.client_id in users or user.readable_code in codes:
+        user = _user_from_payload(raw_user, schema_version)
+        if user.client_id in users or (user.readable_code is not None and user.readable_code in codes):
             raise StateError("invalid state")
         users[user.client_id] = user
-        codes.add(user.readable_code)
+        if user.readable_code is not None:
+            codes.add(user.readable_code)
     return RuntimeState(schema_version, owner_client_id, users)
 
 

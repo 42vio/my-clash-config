@@ -41,7 +41,7 @@ except ImportError:
 
 
 def token(byte, code):
-    return base64.urlsafe_b64encode(byte * 32).decode("ascii").rstrip("=") + "-" + code
+    return base64.urlsafe_b64encode(byte * 16).decode("ascii").rstrip("=") + "-" + code
 
 
 class FakeRunner:
@@ -109,20 +109,20 @@ class LightweightNginxTests(unittest.TestCase):
             systemctl_binary=Path("/usr/bin/systemctl"),
             template_root=root / "templates",
         )
-        self.owner_token = token(b"o", "ABCDEF")
-        self.member_token = token(b"m", "GHJKMN")
+        self.owner_token = token(b"o", "owner@example.invalid")
+        self.member_token = token(b"m", "member@example.invalid")
         self.owner = XuiClient(7, "owner@example.invalid", "owner-sub", True, 1, 2, 3, 4000)
         self.member = XuiClient(8, "member@example.invalid", "member-sub", True, 5, 6, 7, 8000)
         self.disabled = XuiClient(9, "disabled@example.invalid", "disabled-sub", False, 0, 0, 0, 0)
         release = "2026-08-23T12-00-00Z-1234abcd"
         self.state = RuntimeState(
-            1,
+            2,
             7,
             {
-                7: UserState(7, self.owner.email, self.owner_token, "ABCDEF", True, release),
-                8: UserState(8, self.member.email, self.member_token, "GHJKMN", True, release),
-                9: UserState(9, self.disabled.email, token(b"d", "PQRSTU"), "PQRSTU", False, release),
-                10: UserState(10, "deleted@example.invalid", token(b"x", "VWXYZA"), "VWXYZA", True, release),
+                7: UserState(7, self.owner.email, self.owner_token, None, True, release),
+                8: UserState(8, self.member.email, self.member_token, None, True, release),
+                9: UserState(9, self.disabled.email, token(b"d", "disabled@example.invalid"), None, False, release),
+                10: UserState(10, "deleted@example.invalid", token(b"x", "deleted@example.invalid"), None, True, release),
             },
         )
         for client_id, variants in ((7, ("compat", "balance", "airport")), (8, ("compat",))):
@@ -149,7 +149,7 @@ class LightweightNginxTests(unittest.TestCase):
 
     def _activation_artifacts(self):
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         old_state = state_path.read_bytes()
         self.routes.write_bytes(b"old routes\n")
         current_path = self.private_root / "current" / "7"
@@ -159,7 +159,7 @@ class LightweightNginxTests(unittest.TestCase):
         os.chmod(current_path, 0o600)
         return state_path, old_state, current_path
 
-    def test_routes_are_exact_anonymous_and_limited_to_authorized_variants(self):
+    def test_routes_include_email_and_are_limited_to_authorized_variants(self):
         self.assertIsNotNone(render_routes, "Nginx routes are not implemented")
 
         text = render_routes(self.config, self.state, (self.owner, self.member, self.disabled))
@@ -173,14 +173,23 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertNotIn("location /s/", text)
         self.assertNotIn("/s/ABCDEF/", text)
         self.assertNotIn("deleted@example.invalid", text)
-        self.assertNotIn(self.owner.email, text)
-        self.assertNotIn(self.member.email, text)
+        self.assertIn(self.owner.email, text)
+        self.assertIn(self.member.email, text)
         self.assertNotIn(self.disabled.email, text)
         self.assertIn("alias %s;" % (self.public_root / "releases" / "8" / self.state.users[8].current_release / "Clash-Compat.yaml"), text)
         self.assertIn('if ($request_method !~ ^(GET|HEAD)$) { return 405; }', text)
         self.assertIn('if ($args != "") { return 400; }', text)
         self.assertIn("limit_req zone=clash_subscription burst=5 nodelay;", text)
         self.assertIn("limit_req_status 429;", text)
+
+    def test_legacy_state_can_render_routes_before_migration(self):
+        users = {}
+        for user, byte, code in ((self.state.users[7], b"o", "ABCDEF"), (self.state.users[8], b"m", "GHJKMN")):
+            legacy = base64.urlsafe_b64encode(byte * 32).decode("ascii").rstrip("=") + "-" + code
+            users[user.client_id] = replace(user, token=legacy, readable_code=code)
+        legacy_state = RuntimeState(1, 7, users)
+        text = render_routes(self.config, legacy_state, (self.owner, self.member))
+        self.assertIn("location = /s/%s/Clash-Compat.yaml" % users[7].token, text)
         self.assertIn("client_max_body_size 1k;", text)
         self.assertNotIn("limit_except GET HEAD", text)
         self.assertIn("access_log off;", text)
@@ -548,7 +557,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_activate_installs_state_routes_and_extra_only_after_a_silent_nginx_test(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        old_state = RuntimeState(1, 7, {7: self.state.users[7]})
+        old_state = RuntimeState(2, 7, {7: self.state.users[7]})
         save_state(state_path, old_state)
         self.routes.write_bytes(b"old routes\n")
         extra_path = self.private_root / "airport.json"
@@ -580,7 +589,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_failed_nginx_test_restores_prior_bytes_then_revalidates_and_reloads_old_runtime(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         old_state = state_path.read_bytes()
         self.routes.write_bytes(b"old routes\n")
         extra_path = self.private_root / "airport.json"
@@ -612,7 +621,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_failed_reload_restores_all_artifacts_then_revalidates_and_reloads_old_config(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         old_state = state_path.read_bytes()
         self.routes.write_bytes(b"old routes\n")
         extra_path = self.private_root / "airport.json"
@@ -646,7 +655,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_failed_reload_never_reloads_an_old_configuration_that_fails_validation(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         self.routes.write_bytes(b"old routes\n")
         runner = FakeRunner((0, 1, 1))
 
@@ -699,7 +708,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_failed_validation_restores_prior_modes(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         self.routes.write_bytes(b"old routes\n")
         os.chmod(self.routes, 0o644)
         extra_path = self.private_root / "airport.json"
@@ -722,7 +731,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_partial_install_failure_restores_all_artifacts_and_removes_candidates(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         old_state = state_path.read_bytes()
         self.routes.write_bytes(b"old routes\n")
         old_routes = self.routes.read_bytes()
@@ -748,7 +757,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_candidate_write_failure_preserves_artifacts_and_removes_prior_candidates(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         old_state = state_path.read_bytes()
         self.routes.write_bytes(b"old routes\n")
         old_routes = self.routes.read_bytes()
@@ -774,7 +783,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_first_install_fsync_failure_restores_all_prior_artifacts_before_raising(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         old_state = state_path.read_bytes()
         self.routes.write_bytes(b"old routes\n")
         old_routes = self.routes.read_bytes()
@@ -803,7 +812,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_termination_at_each_install_boundary_leaves_a_prepared_journal_that_recovers_old_runtime(self):
         self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
         state_path = self.private_root / "state.json"
-        old_state = RuntimeState(1, 7, {7: self.state.users[7]})
+        old_state = RuntimeState(2, 7, {7: self.state.users[7]})
         extra_path = self.private_root / "airport.json"
         journal = self.private_root / ".activation-journal.json"
         targets = (state_path, self.routes, extra_path)
@@ -843,7 +852,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_failed_prepared_recovery_keeps_its_private_journal_without_secret_output(self):
         self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         self.routes.write_bytes(b"old routes\n")
         journal = self.private_root / ".activation-journal.json"
         real_replace = nginx_module.os.replace
@@ -868,7 +877,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_failed_prepared_recovery_retains_journal_when_restore_cannot_replace(self):
         self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         self.routes.write_bytes(b"old routes\n")
         journal = self.private_root / ".activation-journal.json"
         real_replace = nginx_module.os.replace
@@ -894,7 +903,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_committed_journal_recovery_keeps_new_runtime_without_an_nginx_command(self):
         self.assertIsNotNone(recover_runtime, "Nginx recovery is not implemented")
         state_path = self.private_root / "state.json"
-        old_state = RuntimeState(1, 7, {7: self.state.users[7]})
+        old_state = RuntimeState(2, 7, {7: self.state.users[7]})
         save_state(state_path, old_state)
         self.routes.write_bytes(b"old routes\n")
         snapshots = (
@@ -922,7 +931,7 @@ class LightweightNginxTests(unittest.TestCase):
     def test_committed_journal_cleanup_failure_keeps_the_new_runtime_and_journal(self):
         self.assertIsNotNone(activate_runtime, "Nginx activation is not implemented")
         state_path = self.private_root / "state.json"
-        save_state(state_path, RuntimeState(1, 7, {7: self.state.users[7]}))
+        save_state(state_path, RuntimeState(2, 7, {7: self.state.users[7]}))
         self.routes.write_bytes(b"old routes\n")
         journal = self.private_root / ".activation-journal.json"
 
@@ -1617,8 +1626,8 @@ class RealNginxSubscriptionTests(unittest.TestCase):
         self.public_root.mkdir()
         self.routes_path = self.root / "nginx" / "routes.conf"
         self.routes_path.parent.mkdir()
-        self.owner_token = token(b"r", "RWXYZA")
-        self.member_token = token(b"n", "ABCDEF")
+        self.owner_token = token(b"r", "owner@example.invalid")
+        self.member_token = token(b"n", "member@example.invalid")
         self.compat_bytes = b"# owner clash-compat profile\nproxies: []\n"
         self.balance_bytes = b"# owner clash-balance profile\nproxies: []\n"
         self.member_bytes = b"# member clash-compat profile\nproxies: []\n"
@@ -1654,11 +1663,11 @@ class RealNginxSubscriptionTests(unittest.TestCase):
             template_root=self.root / "templates",
         )
         self.state = RuntimeState(
-            1,
+            2,
             7,
             {
-                7: UserState(7, "owner@example.invalid", self.owner_token, "RWXYZA", True, self.release_id),
-                8: UserState(8, "member@example.invalid", self.member_token, "ABCDEF", True, self.release_id),
+                7: UserState(7, "owner@example.invalid", self.owner_token, None, True, self.release_id),
+                8: UserState(8, "member@example.invalid", self.member_token, None, True, self.release_id),
             },
         )
         self.owner_client = XuiClient(7, "owner@example.invalid", "owner-sub", True, 1, 2, 3, 4000)

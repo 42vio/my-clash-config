@@ -96,7 +96,7 @@ class OperationLockTests(unittest.TestCase):
 
 
 def token(byte, code):
-    return base64.urlsafe_b64encode(byte * 32).decode("ascii").rstrip("=") + "-" + code
+    return base64.urlsafe_b64encode(byte * 16).decode("ascii").rstrip("=") + "-" + code
 
 
 def client(client_id, email, enabled=True, upload=1):
@@ -251,17 +251,17 @@ class ServiceTests(unittest.TestCase):
         owner_id = 7 if previous is None else previous.owner_client_id
         for current in clients:
             prior = users.get(current.client_id)
-            users[current.client_id] = UserState(current.client_id, current.email, prior.token if prior else token(bytes([current.client_id]), "ABCDEF" if current.client_id == 7 else "GHJKMN"), prior.readable_code if prior else ("ABCDEF" if current.client_id == 7 else "GHJKMN"), current.enabled, prior.current_release if prior else None)
+            users[current.client_id] = UserState(current.client_id, prior.email if prior else current.email, prior.token if prior else token(bytes([current.client_id]), current.email), None, current.enabled, prior.current_release if prior else None)
         for current_id, prior in list(users.items()):
             if current_id not in {item.client_id for item in clients}:
                 users[current_id] = replace(prior, active=False)
-        return RuntimeState(1, owner_id, users)
+        return RuntimeState(2, owner_id, users)
 
     def _rotate(self, state, client_id):
         user = state.users[client_id]
         users = dict(state.users)
-        users[client_id] = replace(user, token=token(b"r", "PQRSTU"), readable_code="PQRSTU")
-        return RuntimeState(1, state.owner_client_id, users)
+        users[client_id] = replace(user, token=token(b"r", user.email), readable_code=None)
+        return RuntimeState(2, state.owner_client_id, users)
 
     def _fetch(self, url, max_bytes):
         self.fetch_calls.append(url)
@@ -286,7 +286,7 @@ class ServiceTests(unittest.TestCase):
                     "proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\n"
                     "    path: ./proxy_providers/AmyTelecom.yaml\n    interval: 604800\n"
                     "proxy-groups:\n- name: Airport Select\n  type: select\n  use: [AmyTelecom]\n"
-                    "proxies:\n- name: Owner %s\n" % (airport.url, variant)
+                    "proxies:\n- name: Owner %s\n" % (airport.airport_only_url if variant == "airport" else airport.url, variant)
                 )
                 for variant in ("compat", "balance", "airport")
             }
@@ -344,7 +344,7 @@ class ServiceTests(unittest.TestCase):
     def test_owner_render_receives_the_stable_provider_url(self):
         self.bootstrap()
 
-        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "ABCDEF")
+        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "owner@example.test")
         self.assertEqual(
             {call[1].url for call in self.generator_calls if call[0]},
             {provider_url},
@@ -357,11 +357,11 @@ class ServiceTests(unittest.TestCase):
         member_calls = [call for call in self.validation_calls if call[1] is None]
         self.assertTrue(owner_calls)
         self.assertTrue(member_calls)
-        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "ABCDEF")
+        provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "owner@example.test")
         self.assertEqual(len({call[1] for call in owner_calls}), 2)
         self.assertIn(provider_url, {call[1] for call in owner_calls})
         seen = set(owner_calls[0][0])
-        self.assertIn(token(bytes([8]), "GHJKMN"), seen)
+        self.assertIn(token(bytes([8]), "member@example.test"), seen)
         self.assertIn("sub-7", seen)
 
     def test_owner_mihomo_validation_uses_an_offline_copy_with_a_fixed_file_provider(self):
@@ -1103,7 +1103,7 @@ class ServiceTests(unittest.TestCase):
         self.assertNotEqual(self.state.users[7].current_release, first_release)
         new_provider_urls = {call[1].url for call in self.generator_calls if call[0]} - old_provider_urls
         self.assertEqual(len(new_provider_urls), 1)
-        self.assertIn(token(b"r", "PQRSTU"), next(iter(new_provider_urls)))
+        self.assertIn(token(b"r", "owner@example.test"), next(iter(new_provider_urls)))
         self.assertIn("AmyTelecom.yaml", next(iter(new_provider_urls)))
         self.assertEqual(len(rotated["urls"]), 4)
         self.assertEqual(rotated["urls"][-1], "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % rotated["token"])
@@ -1153,6 +1153,11 @@ class ServiceTests(unittest.TestCase):
     def test_rollback_never_changes_the_provider(self):
         self.bootstrap()
         release = self.state.users[7].current_release
+        record = self.store.verify_release(7, release)
+        paths = {variant: self.config.private_root / (variant + ".yaml") for variant in record.bundle}
+        for variant, path in paths.items():
+            path.write_text(record.bundle[variant])
+        object.__setattr__(record, "public_paths", paths)
         self.service._releases.mark_current = lambda *_: None
 
         self.service.rollback(7, release)
@@ -1186,7 +1191,7 @@ class ServiceTests(unittest.TestCase):
             if not owner:
                 return {"compat": "member changed"}
             return {
-                variant: ("proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\nproxies:\n- name: Owner %s changed\n" % (airport.url, variant))
+                variant: ("proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\nproxies:\n- name: Owner %s changed\n" % (airport.airport_only_url if variant == "airport" else airport.url, variant))
                 for variant in ("compat", "balance", "airport")
             }
 
@@ -1200,8 +1205,8 @@ class ServiceTests(unittest.TestCase):
     def test_links_and_rotation_reject_release_less_or_inactive_users(self):
         self.bootstrap()
         users = dict(self.state.users)
-        users[9] = UserState(9, "pending@example.test", token(b"p", "PQRSTU"), "PQRSTU", True, None)
-        self.state = RuntimeState(1, 7, users)
+        users[9] = UserState(9, "pending@example.test", token(b"p", "pending@example.test"), None, True, None)
+        self.state = RuntimeState(2, 7, users)
         self.assertNotIn(9, [item["client_id"] for item in self.service.links()])
         with self.assertRaises(ServiceError) as caught:
             self.service.rotate_link(9)
@@ -1212,9 +1217,24 @@ class ServiceTests(unittest.TestCase):
         users = dict(self.state.users)
         users[3] = replace(self.state.users[8], client_id=3, email="inactive@example.test", active=False)
         del users[8]
-        self.state = RuntimeState(1, 7, users)
+        self.state = RuntimeState(2, 7, users)
         self.assertEqual([item["client_id"] for item in self.service.status()["users"]], [3, 7, 8])
         self.assertNotIn("token", repr(self.service.status()))
+
+    def test_links_before_rename_show_only_published_urls_and_sync_prompt(self):
+        self.bootstrap()
+        published = self.state.users[8].token
+        self.clients[1] = replace(self.member, email="Renamed-User")
+        link = self.service.links()[1]
+        self.assertTrue(link["sync_required"])
+        self.assertEqual(link["email"], "member@example.test")
+        self.assertIn(published, link["urls"][0])
+        self.assertNotIn("Renamed-User", link["urls"][0])
+        self.service.sync_all()
+        link = self.service.links()[1]
+        self.assertFalse(link["sync_required"])
+        self.assertEqual(link["email"], "Renamed-User")
+        self.assertIn("-Renamed-User/", link["urls"][0])
 
     def test_status_reports_last_success_pending_sources_and_sanitized_errors(self):
         self.bootstrap()
@@ -1424,11 +1444,11 @@ class ServiceTests(unittest.TestCase):
             self.assertEqual(client_id, 9)
             self.assertEqual(owner_email, "owner@example.test")
             return RuntimeState(
-                1,
+                2,
                 9,
                 {
                     8: previous.users[8],
-                    9: UserState(9, "owner@example.test", token(b"n", "PQRSTU"), "PQRSTU", True, None),
+                    9: UserState(9, "owner@example.test", token(b"n", "owner@example.test"), None, True, None),
                 },
             )
 
@@ -1451,10 +1471,10 @@ class ServiceTests(unittest.TestCase):
         baseline_state = self.state
         inactive_users = dict(baseline_state.users)
         inactive_users[8] = replace(inactive_users[8], active=False)
-        inactive_state = RuntimeState(1, 7, inactive_users)
+        inactive_state = RuntimeState(2, 7, inactive_users)
         release_less_users = dict(baseline_state.users)
         release_less_users[8] = replace(release_less_users[8], current_release=None)
-        release_less_state = RuntimeState(1, 7, release_less_users)
+        release_less_state = RuntimeState(2, 7, release_less_users)
         cases = (
             ("deleted", (self.owner,), baseline_state),
             ("disabled", (self.owner, replace(self.member, enabled=False)), baseline_state),

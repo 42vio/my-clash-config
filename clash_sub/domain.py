@@ -70,7 +70,7 @@ class UserState:
     client_id: int
     email: str
     token: str
-    readable_code: str
+    readable_code: str | None
     active: bool
     current_release: str | None
 

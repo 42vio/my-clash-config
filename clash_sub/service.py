@@ -16,7 +16,7 @@ from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
 from clash_sub.sources import SourceError, normalize_xui_endpoints
-from clash_sub.state import StateError, airport_only_token
+from clash_sub.state import StateError, airport_only_token, prepare_link_update
 
 _AIRPORT_STORE_CODES = frozenset({"airport_source_missing", "airport_source_invalid", "airport_provider_invalid", "airport_provider_write_failed"})
 
@@ -78,15 +78,25 @@ class ClashSubService:
     def sync_all(self):
         with self._lock():
             self._recover()
-            snapshot,state=self._reconciled(); self._require_airport(); next_state=state; candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in state.users.values())
+            snapshot,state=self._reconciled(); self._require_airport()
+            try: proposed=prepare_link_update(state,snapshot.clients)
+            except StateError: raise ServiceError("invalid_client_email") from None
+            migrating=state.schema_version==1
+            next_state=proposed if migrating else state
+            candidates=[]; updated=[]; errors=[]; tokens=tuple(u.token for u in proposed.users.values())
             for client in snapshot.clients:
-                user=state.users.get(client.client_id); owner=client.client_id==state.owner_client_id
+                user=proposed.users.get(client.client_id); owner=client.client_id==state.owner_client_id
                 if not user or not client.enabled: continue
                 try:
                     release=self._prepare(client,owner,snapshot.source_url(client),user,tokens,candidates=candidates)
+                    users=dict(next_state.users); users[client.client_id]=user
+                    next_state=RuntimeState(2,next_state.owner_client_id,users)
                     if release: next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
                 except Exception:
                     owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
+            if migrating and errors:
+                self._discard(candidates); self._journal(errors=("link_migration_failed",))
+                raise ServiceError("link_migration_failed")
             try: self._activate(snapshot.clients,next_state,candidates)
             except ServiceError as error: self._journal(errors=(error.code,)); self._discard(candidates); raise
             return self._finish(next_state,candidates,updated,errors)
@@ -245,13 +255,20 @@ class ClashSubService:
             identity=state.users.get(client_id); client=_find(snapshot.clients,client_id)
             if not identity or not identity.active or not identity.current_release or not client or not client.enabled: raise ServiceError("rollback_release_invalid")
             try:
-                verified=self._releases.verify_release(client_id,release); _shape(verified.public_paths,client_id==state.owner_client_id); next_state=_with_release(state,client_id,verified.release_id); self._activate(snapshot.clients,next_state,[(client_id,verified)])
+                verified=self._releases.verify_release(client_id,release); _shape(verified.public_paths,client_id==state.owner_client_id)
+                if client_id==state.owner_client_id:
+                    for variant,path in verified.public_paths.items():
+                        expected=_provider_url(self.config,airport_only_token(identity.token, schema_version=state.schema_version) if variant=="airport" else identity.token)
+                        if yaml.safe_load(path.read_text())["proxy-providers"]["AmyTelecom"]["url"] != expected:
+                            raise ValueError("stale provider")
+                next_state=_with_release(state,client_id,verified.release_id); self._activate(snapshot.clients,next_state,[(client_id,verified)])
             except Exception: raise ServiceError("rollback_release_invalid") from None
             self._observe(next_state); return _result(client,verified)
     def rotate_link(self,user):
         with self._lock():
             self._recover()
             client_id=_client_id(user); snapshot,state=self._reconciled(); identity=state.users.get(client_id); client=_find(snapshot.clients,client_id)
+            if state.schema_version==1: raise ServiceError("link_sync_required")
             if not identity or not identity.active or not identity.current_release or not client or not client.enabled: raise ServiceError("rotation_not_allowed")
             candidates=[]
             try:
@@ -268,11 +285,22 @@ class ClashSubService:
     def links(self):
         with self._lock():
             self._recover()
-            snapshot,state=self._reconciled(); clients={c.client_id:c for c in snapshot.clients}; return tuple({"client_id":u.client_id,"email":u.email,"readable_code":u.readable_code,"urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id))} for u in sorted(state.users.values(),key=lambda u:u.client_id) if u.active and u.current_release and clients.get(u.client_id) and clients[u.client_id].enabled)
+            try:
+                snapshot=self._read_snapshot(self.config.xui_database)
+                state=self._load_state(_state_path(self.config))
+            except Exception: raise ServiceError("xui_snapshot_failed") from None
+            if state is None: return ()
+            clients={c.client_id:c for c in snapshot.clients}
+            if state.owner_client_id not in clients: raise ServiceError("owner_reinitialization_required")
+            return tuple({"client_id":u.client_id,"email":u.email,
+                          "sync_required":state.schema_version==1 or u.email!=clients[u.client_id].email,
+                          "urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id,state.schema_version))}
+                         for u in sorted(state.users.values(),key=lambda u:u.client_id)
+                         if u.active and u.current_release and clients.get(u.client_id) and clients[u.client_id].enabled)
     def status(self):
         with self._lock():
             self._recover()
-            snapshot,state=self._reconciled(); journal=self._read_journal(); pending=tuple({"client_id":c.client_id,"email":c.email} for c in sorted(snapshot.clients,key=lambda c:c.client_id) if _pending_source(state.users.get(c.client_id),c))
+            snapshot,state=self._reconciled(); journal=self._read_journal(); pending=tuple({"client_id":c.client_id,"email":c.email} for c in sorted(snapshot.clients,key=lambda c:c.client_id) if _pending_source(state.users.get(c.client_id),c) or (state.schema_version==1 and c.enabled))
             return {"owner_client_id":state.owner_client_id,"last_success":journal["last_success"],"last_errors":journal["last_errors"],"pending":pending,"users":tuple({"client_id":u.client_id,"email":u.email,"active":u.active,"current_release":u.current_release} for u in sorted(state.users.values(),key=lambda u:u.client_id))}
     def history(self,user):
         with self._lock():
@@ -421,11 +449,11 @@ def _find(cs,i):return next((c for c in cs if c.client_id==i),None)
 def _client_id(i):
     if isinstance(i,bool) or not isinstance(i,int) or i<1:raise ServiceError("invalid_client")
     return i
-def _urls(c,t,o):
-    urls=["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
+def _urls(c,t,o,schema_version=2):
+    urls=["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t, schema_version=schema_version) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
     if o: urls.append(_provider_url(c,t))
     return urls
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}
 def _error(c,code):return {"client_id":c.client_id,"code":code}
-def _pending_source(user,client):return bool(user and client.enabled and user.active and not user.current_release)
+def _pending_source(user,client):return bool(user and client.enabled and user.active and (not user.current_release or user.email!=client.email))
 def _state_path(c):return Path(c.private_root)/"state.json"

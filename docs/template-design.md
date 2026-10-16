@@ -44,6 +44,8 @@ proxy-providers:
     interval: 86400
 ```
 
+公开 URL 的 `/s/` 路径保持不变，`<owner-token>` 为 `<22字符随机部分>-<client-email>`。例如占位格式 `https://订阅域名/s/<22字符随机部分>-alice@example.invalid/Clash-Compat.yaml`；不能直接使用占位符访问。Airport 配置使用独立派生的 22 字符随机核心和同一个邮箱后缀，不能凭此推导 owner 主链接。
+
 provider 显示名固定 `AmyTelecom`，三份 owner 主配置引用同一个服务器文件：原有两份使用 owner 令牌 URL，Airport 配置使用独立派生令牌 URL。Clash Verge 可单独手动刷新，自动刷新间隔 24 小时（86400 秒）。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`；派生令牌只能访问 Airport 配置和这个 provider，普通用户令牌没有任何机场路由。`Clash-Airport.yaml` 是按模板生成的完整配置，与 provider 原文件是两条不同链接。
 
 订阅响应头（`Subscription-Userinfo` 流量头、`Profile-Update-Interval: 24`）由部署侧在请求时按需附加：模板、provider 文件与发布物从不携带流量数据，流量数字只保存在服务器私密目录的来源记录与缓存里。

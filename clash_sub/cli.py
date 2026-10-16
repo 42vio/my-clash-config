@@ -793,7 +793,9 @@ def _call(operation, value, stdout, stderr, factory):
 
 def _write_links(stdout, links):
     for user in links:
-        stdout.write("%s [%s]\n" % (user["email"], user["readable_code"]))
+        stdout.write("%s [ID %s]\n" % (user["email"], user["client_id"]))
+        if user.get("sync_required"):
+            stdout.write("待同步：以下是已发布的旧链接，请执行 clash-sub sync 后再分发新链接。\n")
         _write_urls(stdout, user["urls"])
 
 

@@ -31,8 +31,8 @@ from clash_sub.cli import (
 from clash_sub.runtime import build_service
 
 
-TOKEN = "x" * 43 + "-ABC234"
-ROTATED_TOKEN = "y" * 43 + "-XYZ789"
+TOKEN = "x" * 22 + "-Alice"
+ROTATED_TOKEN = "y" * 22 + "-Bob"
 SOURCE_URL = "http://127.0.0.1:2096/clash/private-sub-id"
 AIRPORT_URL = "https://airport.example/temporary-secret"
 ACTIVATION_URL = "https://portal.example/Subscription/index?sid=placeholder&token=placeholder"
@@ -96,7 +96,7 @@ class FakeService:
             {
                 "client_id": 7,
                 "email": "Alice",
-                "readable_code": "ABC234",
+                "sync_required": False,
                 "urls": (
                     "https://sub.example.test:8443/s/%s/Clash-Compat.yaml" % TOKEN,
                     "https://sub.example.test:8443/s/%s/Clash-Balance.yaml" % TOKEN,
@@ -106,7 +106,7 @@ class FakeService:
             {
                 "client_id": 8,
                 "email": "Bob",
-                "readable_code": "XYZ789",
+                "sync_required": False,
                 "urls": ("https://sub.example.test:8443/s/%s/Clash-Compat.yaml" % ROTATED_TOKEN,),
             },
         )
@@ -633,12 +633,21 @@ class LightweightCliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertLess(stdout.index("Alice [ABC234]"), stdout.index("Bob [XYZ789]"))
+        self.assertLess(stdout.index("Alice [ID 7]"), stdout.index("Bob [ID 8]"))
         for item in self.service.links_value:
             for url in item["urls"]:
                 self.assertIn(url, stdout)
         self.assertIn("机场镜像链接：https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % TOKEN, stdout)
         self.assertNotIn("请选择用户", stdout)
+
+    def test_links_pending_sync_warns_without_inventing_urls(self):
+        self.service.links_value[0]["sync_required"] = True
+        code, stdout, stderr = run_cli(["links"], self.service)
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("待同步", stdout)
+        self.assertIn("clash-sub sync", stdout)
+        self.assertIn(self.service.links_value[0]["urls"][0], stdout)
 
     def test_status_and_history_are_readable_deterministic_and_never_expose_secrets(self):
         code, stdout, stderr = run_cli(["status"], self.service)

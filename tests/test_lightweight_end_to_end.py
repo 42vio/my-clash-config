@@ -1,8 +1,10 @@
 """End-to-end acceptance tests for the lightweight static subscription service."""
 
+import base64
 import email.message
 import hashlib
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -366,6 +368,143 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
     def make_harness(self):
         return AcceptanceHarness(self)
 
+    def _install_v1_state(self, harness):
+        current = harness.state()
+        users = []
+        for client_id, code, byte in ((harness.owner_id, "ABCDEF", b"o"), (harness.member_id, "GHJKMN", b"m")):
+            user = current.users[client_id]
+            users.append({"client_id": client_id, "email": user.email,
+                          "token": base64.urlsafe_b64encode(byte * 32).decode("ascii").rstrip("=") + "-" + code,
+                          "readable_code": code, "active": user.active,
+                          "current_release": user.current_release})
+        state_path = harness.private_root / "state.json"
+        state_path.write_text(json.dumps({"schema_version": 1, "owner_client_id": harness.owner_id, "users": users}), encoding="utf-8")
+        os.chmod(state_path, 0o600)
+        return state_path, users
+
+    def test_first_sync_migrates_v1_links_atomically(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        state_path, users = self._install_v1_state(harness)
+        harness.routes_path.write_text("location = /s/%s/Clash-Compat.yaml {\n}\n" % users[0]["token"])
+        before = state_path.read_bytes()
+        legacy_links = harness.service.links()
+        self.assertTrue(all(item["sync_required"] for item in legacy_links))
+        self.assertIn(users[0]["token"], legacy_links[0]["urls"][0])
+        self.assertEqual(state_path.read_bytes(), before)
+
+        result = harness.service.sync_all()
+
+        self.assertFalse(result["errors"])
+        self.assertEqual(load_state(state_path).schema_version, 2)
+        self.assertNotIn(users[0]["token"], harness.route_text())
+        for item in harness.service.links():
+            self.assertFalse(item["sync_required"])
+            for url in item["urls"]:
+                self.assertRegex(url, r"^https://[^/]+/s/[A-Za-z0-9_-]{22}-[^/]+/")
+
+    def test_failed_first_migration_keeps_v1_state_and_routes(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        state_path, users = self._install_v1_state(harness)
+        harness.routes_path.write_text("location = /s/%s/Clash-Compat.yaml {\n}\n" % users[0]["token"])
+        old_state, old_routes = state_path.read_bytes(), harness.routes_path.read_bytes()
+        harness.fail_render = True
+
+        with self.assertRaises(ServiceError) as caught:
+            harness.service.sync_all()
+
+        self.assertEqual(caught.exception.code, "link_migration_failed")
+        self.assertEqual(state_path.read_bytes(), old_state)
+        self.assertEqual(harness.routes_path.read_bytes(), old_routes)
+
+    def _rename(self, harness, client_id, email):
+        connection = sqlite3.connect(harness.database)
+        try:
+            connection.execute("UPDATE clients SET email = ? WHERE id = ?", (email, client_id))
+            connection.execute("UPDATE client_traffics SET email = ? WHERE id = ?", (email, client_id))
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_email_rename_changes_link_on_sync_only(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        old_token = harness.state().users[8].token
+        self._rename(harness, 8, "Alice-Dev@Example.com")
+        self.assertIn(old_token, harness.service.links()[1]["urls"][0])
+        self.assertEqual(harness.state().users[8].token, old_token)
+        harness.service.sync_all()
+        new_token = harness.state().users[8].token
+        self.assertEqual(new_token, old_token[:22] + "-Alice-Dev@Example.com")
+        self.assertNotIn("/s/%s/" % old_token, harness.route_text())
+        self.assertIn("/s/%s/" % new_token, harness.route_text())
+
+    def test_owner_rename_updates_profile_and_airport_provider_urls(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        old_token = harness.state().users[7].token
+        self._rename(harness, 7, "Owner-Dev@Example.com")
+        harness.service.sync_all()
+        new_token = harness.state().users[7].token
+        self.assertEqual(new_token, old_token[:22] + "-Owner-Dev@Example.com")
+        for variant, path in harness.release(7).public_paths.items():
+            url = yaml.safe_load(path.read_text())["proxy-providers"]["AmyTelecom"]["url"]
+            self.assertTrue(url.endswith("-Owner-Dev@Example.com/AmyTelecom.yaml"))
+            self.assertNotIn(old_token, url)
+            if variant == "airport":
+                self.assertNotIn(new_token, url)
+            else:
+                self.assertIn(new_token, url)
+
+    def test_owner_rollback_rejects_old_provider_url(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        old_release = harness.state().users[7].current_release
+        harness.service.rotate_link(7)
+        before = harness.active_view()
+        with self.assertRaises(ServiceError) as caught:
+            harness.service.rollback(7, old_release)
+        self.assertEqual(caught.exception.code, "rollback_release_invalid")
+        self.assertEqual(harness.active_view(), before)
+
+    def test_rejected_email_never_reaches_nginx(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before = harness.active_view()
+        self._rename(harness, 8, "bad/name")
+        with self.assertRaises(ServiceError) as caught:
+            harness.service.sync_all()
+        self.assertEqual(caught.exception.code, "invalid_client_email")
+        self.assertEqual(harness.active_view(), before)
+
+    def test_rotate_v2_keeps_email_and_changes_random_core(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        old = harness.state().users[8].token
+        rotated = harness.service.rotate_link(8)["token"]
+        self.assertNotEqual(rotated[:22], old[:22])
+        self.assertEqual(rotated[22:], "-member@example.test")
+
+    def test_failed_renamed_user_keeps_published_identity(self):
+        harness = self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        old = harness.state().users[8]
+        self._rename(harness, 8, "renamed")
+        harness.xui_bodies[harness.source_urls[8]] = b"not YAML: ["
+        result = harness.service.sync_all()
+        self.assertEqual(result["errors"], ({"client_id": 8, "code": "member_update_failed"},))
+        self.assertEqual(harness.state().users[8], old)
+        self.assertIn("/s/%s/" % old.token, harness.route_text())
+
     def test_owner_and_member_sources_are_isolated(self):
         """A wrong role/source mapping must not reach a rendered release."""
         harness = self.make_harness()
@@ -545,7 +684,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
             harness.provider_path.read_bytes(), harness.airport_body
         )
 
-    def test_links_are_anonymous_full_urls_with_unique_readable_codes(self):
+    def test_links_are_full_urls_with_client_email_suffixes(self):
         harness = self.make_harness()
         harness.import_airport()
         harness.service.sync_all()
@@ -553,7 +692,6 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         links = harness.service.links()
 
         self.assertEqual([item["client_id"] for item in links], [7, 8])
-        self.assertEqual(len({item["readable_code"] for item in links}), 2)
         self.assertEqual([len(item["urls"]) for item in links], [4, 1])
         owner_token = harness.state().users[harness.owner_id].token
         self.assertEqual(
@@ -565,11 +703,10 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         for item in links:
             self.assertNotIn("token", item)
             for url in item["urls"]:
-                self.assertNotIn(item["email"], url)
-                self.assertIn("-%s/" % item["readable_code"], url)
+                self.assertIn("-%s/" % item["email"], url)
                 self.assertRegex(
                     url,
-                    r"^https://sub\.example\.test/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/(?:Clash-(?:Compat|Balance|Airport)|AmyTelecom)\.yaml$",
+                    r"^https://sub\.example\.test/s/[A-Za-z0-9_-]{22}-[A-Za-z0-9._@+-]+/(?:Clash-(?:Compat|Balance|Airport)|AmyTelecom)\.yaml$",
                 )
 
     def test_routes_authorize_only_exact_token_user_and_variant_combinations(self):

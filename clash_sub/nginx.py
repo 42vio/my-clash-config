@@ -20,7 +20,7 @@ from clash_sub.domain import (
     ServiceConfig,
     XuiClient,
 )
-from clash_sub.state import TOKEN_RE, _state_to_payload, airport_only_token
+from clash_sub.state import TOKEN_RE, LEGACY_TOKEN_RE, _state_to_payload, airport_only_token
 
 
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
@@ -118,11 +118,11 @@ def render_routes(config, state, clients):
         if client_id == state.owner_client_id:
             for variant in OWNER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
-                token = airport_only_token(user.token) if variant == "airport" else user.token
+                token = airport_only_token(user.token, schema_version=state.schema_version) if variant == "airport" else user.token
                 blocks.append(_route_block(token, client_id, variant, alias))
             provider_alias = _provider_path(public_root)
             blocks.append(_provider_route_block(user.token, provider_alias))
-            blocks.append(_provider_route_block(airport_only_token(user.token), provider_alias, include_internal=False))
+            blocks.append(_provider_route_block(airport_only_token(user.token, schema_version=state.schema_version), provider_alias, include_internal=False))
         else:
             for variant in MEMBER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
@@ -674,7 +674,7 @@ def _provider_path(public_root):
 
 
 def _provider_route_block(token, alias, *, include_internal=True):
-    if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+    if not isinstance(token, str) or not (TOKEN_RE.fullmatch(token) or LEGACY_TOKEN_RE.fullmatch(token)):
         raise NginxError("invalid subscription token")
     public = (
             "location = /s/%s/%s {" % (token, AIRPORT_FILENAME),
@@ -715,7 +715,7 @@ def _provider_route_block(token, alias, *, include_internal=True):
 
 
 def _route_block(token, client_id, variant, alias):
-    if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
+    if not isinstance(token, str) or not (TOKEN_RE.fullmatch(token) or LEGACY_TOKEN_RE.fullmatch(token)):
         raise NginxError("invalid subscription token")
     if isinstance(client_id, bool) or not isinstance(client_id, int) or client_id < 1:
         raise NginxError("invalid release path")

@@ -13,6 +13,7 @@ from clash_sub.state import (
     airport_only_token,
     generate_token,
     load_state,
+    prepare_link_update,
     reconcile_state,
     reinitialize_owner,
     rotate_user_token,
@@ -35,11 +36,12 @@ def client(client_id, email, sub_id=None, enabled=True):
 
 class LightweightStateTests(unittest.TestCase):
     def test_airport_only_capability_is_distinct_and_has_token_shape(self):
-        owner = "A" * 43 + "-ABCDEF"
+        owner = "A" * 22 + "-42vio"
         airport = airport_only_token(owner)
         self.assertNotEqual(airport, owner)
         self.assertEqual(airport, airport_only_token(owner))
-        self.assertTrue(airport.endswith("-ABCDEF"))
+        self.assertEqual(airport[22], "-")
+        self.assertTrue(airport.endswith("-42vio"))
         with self.assertRaises(StateError):
             airport_only_token("invalid")
 
@@ -61,26 +63,30 @@ class LightweightStateTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_token_has_random_core_and_readable_suffix(self):
-        token, code = generate_token(
-            set(), random_bytes=lambda size: b"x" * size, choose=lambda alphabet: "K"
-        )
+        token = generate_token("42vio", random_bytes=lambda size: b"x" * size)
 
-        core, suffix = token.rsplit("-", 1)
-        self.assertEqual(len(base64.urlsafe_b64decode(core + "=")), 32)
-        self.assertEqual(suffix, "KKKKKK")
-        self.assertEqual(code, suffix)
+        core, suffix = token[:22], token[23:]
+        self.assertEqual(len(core), 22)
+        self.assertEqual(len(base64.urlsafe_b64decode(core + "==")), 16)
+        self.assertEqual(suffix, "42vio")
 
-    def test_token_retries_readable_code_collisions(self):
-        choices = iter("AAAAAABBBBBB")
+    def test_email_suffix_keeps_hyphens_and_case(self):
+        token = generate_token("Alice-Dev@Example.com", random_bytes=lambda size: b"x" * size)
+        self.assertEqual(token[22:], "-Alice-Dev@Example.com")
+        self.assertEqual(airport_only_token(token)[22:], "-Alice-Dev@Example.com")
 
-        token, code = generate_token(
-            {"AAAAAA"},
-            random_bytes=lambda size: b"x" * size,
-            choose=lambda alphabet: next(choices),
-        )
+    def test_airport_token_uses_explicit_version_for_ambiguous_token(self):
+        token = "A" * 22 + "-" + "A" * 20 + "-ABCDEF"
+        current = airport_only_token(token)
+        self.assertEqual(current[22:], "-" + "A" * 20 + "-ABCDEF")
+        legacy = airport_only_token(token, schema_version=1)
+        self.assertEqual(len(legacy), 50)
+        self.assertEqual(legacy[43:], "-ABCDEF")
 
-        self.assertTrue(token.endswith("-BBBBBB"))
-        self.assertEqual(code, "BBBBBB")
+    def test_invalid_email_characters_and_length_fail_before_generation(self):
+        for email in ("", "a b", "a/b", "a%b", "用户", "a\nb", "x" * 255):
+            with self.subTest(email=email), self.assertRaisesRegex(StateError, "invalid client email"):
+                generate_token(email, random_bytes=lambda size: b"x" * size)
 
     def test_load_rejects_a_token_that_is_not_exactly_valid(self):
         token = base64.urlsafe_b64encode(b"z" * 32).decode().rstrip("=")
@@ -107,17 +113,71 @@ class LightweightStateTests(unittest.TestCase):
         self.assertEqual(str(error.exception), "invalid state")
 
     def test_save_round_trip_uses_mode_0600_and_immutable_users(self):
-        save_state(self.path, self.state)
+        current = prepare_link_update(self.state, (client(7, "old-owner"), client(8, "member")))
+        save_state(self.path, current)
 
         loaded = load_state(self.path)
-        self.assertEqual(loaded.schema_version, self.state.schema_version)
-        self.assertEqual(loaded.owner_client_id, self.state.owner_client_id)
-        self.assertEqual(set(loaded.users), set(self.state.users))
-        self.assertTrue(loaded.users[7].token == self.state.users[7].token)
-        self.assertTrue(loaded.users[8].token == self.state.users[8].token)
+        self.assertEqual(loaded.schema_version, 2)
+        self.assertEqual(loaded.owner_client_id, current.owner_client_id)
+        self.assertEqual(set(loaded.users), set(current.users))
+        self.assertEqual(loaded.users[7].token, current.users[7].token)
+        self.assertEqual(loaded.users[8].token, current.users[8].token)
+        self.assertNotIn("readable_code", json.loads(self.path.read_text())["users"][0])
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
         with self.assertRaises(TypeError):
             loaded.users[9] = self.state.users[8]
+
+    def test_v1_state_loads_for_migration_and_v2_round_trips(self):
+        payload = {
+            "schema_version": 1,
+            "owner_client_id": 7,
+            "users": [
+                {"client_id": user.client_id, "email": user.email, "token": user.token,
+                 "readable_code": user.readable_code, "active": user.active,
+                 "current_release": user.current_release}
+                for user in self.state.users.values()
+            ],
+        }
+        self.path.write_text(json.dumps(payload), encoding="utf-8")
+        os.chmod(self.path, 0o600)
+        loaded = load_state(self.path)
+        self.assertEqual(loaded.schema_version, 1)
+        self.assertEqual(loaded.users[7].token, self.state.users[7].token)
+        migrated = prepare_link_update(loaded, (client(7, "old-owner"), client(8, "member")))
+        save_state(self.path, migrated)
+        self.assertEqual(load_state(self.path).schema_version, 2)
+
+    def test_prepare_link_update_reissues_v1_and_renames_v2_without_persisting(self):
+        migrated = prepare_link_update(self.state, (client(7, "old-owner"), client(8, "member")))
+        self.assertEqual(migrated.schema_version, 2)
+        self.assertEqual(migrated.users[7].token[22:], "-old-owner")
+        self.assertNotEqual(migrated.users[7].token, self.state.users[7].token)
+        renamed = prepare_link_update(migrated, (client(7, "New-Owner"), client(8, "member")))
+        self.assertEqual(renamed.users[7].token[:22], migrated.users[7].token[:22])
+        self.assertEqual(renamed.users[7].token[22:], "-New-Owner")
+        self.assertEqual(migrated.users[7].email, "old-owner")
+
+    def test_migration_drops_deleted_legacy_client_with_invalid_new_email(self):
+        member = self.state.users[8]
+        previous = RuntimeState(1, 7, {
+            7: self.state.users[7],
+            8: UserState(8, "old member", member.token, member.readable_code, True, None),
+        })
+        clients = (client(7, "old-owner"),)
+        reconciled = reconcile_state(previous, clients, "old-owner")
+        candidate = prepare_link_update(reconciled, clients)
+        self.assertEqual(candidate.schema_version, 2)
+        self.assertEqual(set(candidate.users), {7})
+        self.assertIn(8, previous.users)
+        save_state(self.path, candidate)
+        self.assertEqual(load_state(self.path), candidate)
+
+    def test_v2_rejects_mismatched_token_email(self):
+        migrated = prepare_link_update(self.state, (client(7, "old-owner"), client(8, "member")))
+        owner = migrated.users[7]
+        broken = RuntimeState(2, 7, {7: UserState(7, "different", owner.token, None, True, None), 8: migrated.users[8]})
+        with self.assertRaisesRegex(StateError, "invalid state"):
+            save_state(self.path, broken)
 
     def test_load_rejects_a_hard_linked_state_file(self):
         save_state(self.path, self.state)
@@ -155,7 +215,7 @@ class LightweightStateTests(unittest.TestCase):
 
         self.assertEqual(updated.owner_client_id, 7)
         self.assertTrue(updated.users[7].token == self.state.users[7].token)
-        self.assertEqual(updated.users[7].email, "renamed")
+        self.assertEqual(updated.users[7].email, "old-owner")
 
     def test_disable_then_reenable_retains_token(self):
         disabled = reconcile_state(
@@ -217,6 +277,14 @@ class LightweightStateTests(unittest.TestCase):
                 "old-owner",
                 9,
             )
+
+    def test_v2_owner_reinitialization_preserves_schema_and_published_member_email(self):
+        previous = prepare_link_update(self.state, (client(7, "old-owner"), client(8, "member")))
+        result = reinitialize_owner(previous, (client(9, "old-owner"), client(8, "renamed")), "old-owner", 9)
+        self.assertEqual(result.schema_version, 2)
+        self.assertEqual(result.users[8].email, "member")
+        save_state(self.path, result)
+        self.assertEqual(load_state(self.path).owner_client_id, 9)
 
     def test_rotate_user_token_changes_only_requested_identity(self):
         rotated = rotate_user_token(self.state, 8)
