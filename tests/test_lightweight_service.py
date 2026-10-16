@@ -1105,7 +1105,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(new_provider_urls), 1)
         self.assertIn(token(b"r", "PQRSTU"), next(iter(new_provider_urls)))
         self.assertIn("AmyTelecom.yaml", next(iter(new_provider_urls)))
-        self.assertEqual(len(rotated["urls"]), 3)
+        self.assertEqual(len(rotated["urls"]), 4)
+        self.assertEqual(rotated["urls"][-1], "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % rotated["token"])
 
     def test_member_rotation_changes_routes_without_touching_provider_bytes(self):
         self.bootstrap()

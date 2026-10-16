@@ -421,7 +421,10 @@ def _find(cs,i):return next((c for c in cs if c.client_id==i),None)
 def _client_id(i):
     if isinstance(i,bool) or not isinstance(i,int) or i<1:raise ServiceError("invalid_client")
     return i
-def _urls(c,t,o):return ["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
+def _urls(c,t,o):
+    urls=["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
+    if o: urls.append(_provider_url(c,t))
+    return urls
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}
 def _error(c,code):return {"client_id":c.client_id,"code":code}
 def _pending_source(user,client):return bool(user and client.enabled and user.active and not user.current_release)

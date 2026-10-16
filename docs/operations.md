@@ -122,7 +122,7 @@ clash-sub status
 clash-sub links
 ```
 
-`sync` 要求当前机场 provider 文件存在、权限安全且非空（内容本身不解析、不校验），然后恢复中断的运行时发布、准备并验证候选、最后激活；机场 provider 缺失或不合规时整体拒绝（`airport_provider_required`）。若输出“同步部分完成”，按其中公开的客户端 ID 与错误代码处理，且以 `status` 的最近错误和 pending 项为准。`links` 输出可用订阅链接（owner 三条，新增 `Clash-Airport.yaml` 仅含机场节点；普通用户一条），屏幕录制或终端转存前先避免泄露。
+`sync` 要求当前机场 provider 文件存在、权限安全且非空（内容本身不解析、不校验），然后恢复中断的运行时发布、准备并验证候选、最后激活；机场 provider 缺失或不合规时整体拒绝（`airport_provider_required`）。若输出“同步部分完成”，按其中公开的客户端 ID 与错误代码处理，且以 `status` 的最近错误和 pending 项为准。`links` 输出可用订阅链接：owner 三条完整配置与“机场镜像链接”（即 `Clash-Compat.yaml` 中 `AmyTelecom` provider 的 URL），普通用户一条；屏幕录制或终端转存前先避免泄露。
 
 升级后先执行一次 `sync` 生成 owner 的第三份配置。升级前只有两份 owner 配置的历史发布仍可读取，但不符合新的完整发布矩阵，不能作为 owner 的回滚目标；需要恢复时重新执行 `sync` 生成三份配置。
 

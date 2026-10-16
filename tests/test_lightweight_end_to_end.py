@@ -554,7 +554,14 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
         self.assertEqual([item["client_id"] for item in links], [7, 8])
         self.assertEqual(len({item["readable_code"] for item in links}), 2)
-        self.assertEqual([len(item["urls"]) for item in links], [3, 1])
+        self.assertEqual([len(item["urls"]) for item in links], [4, 1])
+        owner_token = harness.state().users[harness.owner_id].token
+        self.assertEqual(
+            links[0]["urls"][-1],
+            "https://sub.example.test/s/%s/AmyTelecom.yaml" % owner_token,
+        )
+        owner_compat = yaml.safe_load(harness.release(harness.owner_id).public_paths["compat"].read_text())
+        self.assertEqual(links[0]["urls"][-1], owner_compat["proxy-providers"]["AmyTelecom"]["url"])
         for item in links:
             self.assertNotIn("token", item)
             for url in item["urls"]:
@@ -562,7 +569,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
                 self.assertIn("-%s/" % item["readable_code"], url)
                 self.assertRegex(
                     url,
-                    r"^https://sub\.example\.test/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/Clash-(?:Compat|Balance|Airport)\.yaml$",
+                    r"^https://sub\.example\.test/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/(?:Clash-(?:Compat|Balance|Airport)|AmyTelecom)\.yaml$",
                 )
 
     def test_routes_authorize_only_exact_token_user_and_variant_combinations(self):

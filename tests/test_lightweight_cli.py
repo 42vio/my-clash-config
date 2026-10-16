@@ -100,6 +100,7 @@ class FakeService:
                 "urls": (
                     "https://sub.example.test:8443/s/%s/Clash-Compat.yaml" % TOKEN,
                     "https://sub.example.test:8443/s/%s/Clash-Balance.yaml" % TOKEN,
+                    "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % TOKEN,
                 ),
             },
             {
@@ -162,7 +163,10 @@ class FakeService:
         return {
             "client_id": user,
             "token": ROTATED_TOKEN,
-            "urls": ("https://sub.example.test:8443/s/%s/Clash-Compat.yaml" % ROTATED_TOKEN,),
+            "urls": (
+                "https://sub.example.test:8443/s/%s/Clash-Compat.yaml" % ROTATED_TOKEN,
+                "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % ROTATED_TOKEN,
+            ),
         }
 
     def reinitialize_owner(self, user):
@@ -633,6 +637,7 @@ class LightweightCliTests(unittest.TestCase):
         for item in self.service.links_value:
             for url in item["urls"]:
                 self.assertIn(url, stdout)
+        self.assertIn("机场镜像链接：https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % TOKEN, stdout)
         self.assertNotIn("请选择用户", stdout)
 
     def test_status_and_history_are_readable_deterministic_and_never_expose_secrets(self):
@@ -838,6 +843,7 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIn("订阅链接已轮换", stdout)
         self.assertIn(self.service.rotate_link(7)["urls"][0], stdout)
+        self.assertIn("机场镜像链接：https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % ROTATED_TOKEN, stdout)
         self.assertNotIn("令牌", stdout)
 
     def test_default_factory_uses_private_repo_config_and_injects_subprocess_runner(self):

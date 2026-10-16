@@ -14,6 +14,7 @@ from clash_sub import manage
 from clash_sub import metadata_server
 from clash_sub import template_sync
 from clash_sub.config import load_config
+from clash_sub.domain import AIRPORT_FILENAME
 from clash_sub.installer import Installer, InstallerError
 from clash_sub.metadata import TrafficMetadataStore
 from clash_sub.nginx import recover_runtime
@@ -777,8 +778,7 @@ def _call(operation, value, stdout, stderr, factory):
         elif operation == "rotate":
             result = service.rotate_link(value)
             stdout.write("订阅链接已轮换：\n")
-            for url in result["urls"]:
-                stdout.write("%s\n" % url)
+            _write_urls(stdout, result["urls"])
         elif operation == "reinitialize":
             service.reinitialize_owner(value)
             stdout.write("所有者已重新初始化；请执行 sync。\n")
@@ -794,8 +794,13 @@ def _call(operation, value, stdout, stderr, factory):
 def _write_links(stdout, links):
     for user in links:
         stdout.write("%s [%s]\n" % (user["email"], user["readable_code"]))
-        for url in user["urls"]:
-            stdout.write("%s\n" % url)
+        _write_urls(stdout, user["urls"])
+
+
+def _write_urls(stdout, urls):
+    for url in urls:
+        label = "机场镜像链接：" if url.endswith("/" + AIRPORT_FILENAME) else ""
+        stdout.write("%s%s\n" % (label, url))
 
 
 def _write_status(stdout, status):
