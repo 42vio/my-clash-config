@@ -10,15 +10,16 @@
 | --- | --- | --- | --- |
 | owner | `Clash-Compat.yaml` | `Clash-Compat.yaml` | 有（`AmyTelecom`） |
 | owner | `Clash-Balance.yaml` | `Clash-Balance.yaml` | 有（`AmyTelecom`） |
+| owner | `Clash-Airport.yaml` | `Clash-Airport.yaml` | 有（`AmyTelecom`），无自建节点 |
 | 普通用户 | `Clash-Compat.yaml` | `Clash-Compat.yaml` | 无 |
 
-owner 与普通用户不通过文件名区分，由订阅令牌和服务端授权决定。普通用户不生成 Balance，也不包含或访问任何机场 provider。机场节点由独立文件 `AmyTelecom.yaml` 单独发布，只挂在 owner 的订阅路由下。
+owner 与普通用户不通过文件名区分，由订阅令牌和服务端授权决定。普通用户不生成 Balance，也不包含或访问任何机场 provider。`Clash-Airport.yaml` 使用与 owner 原链接不同的派生令牌；该令牌只能访问 Airport 配置及其 `AmyTelecom.yaml` provider，不能换文件名取得 owner 的自建配置。
 
 本次为不兼容升级：旧订阅文件名与旧 URL 已全部删除，没有重定向或兼容入口，旧客户端必须用 `clash-sub links` 重新获取新链接。
 
 ## 生成关系
 
-`templates/base/Clash-Compat.yaml` 是完整基础模板；生成 Balance 时以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）替换基础模板的 DNS。发布时注入各用户的 3x-ui 节点，owner 额外注入 `AmyTelecom` 机场 provider；普通用户只输出 Compat。服务器不保存任何 Home 配置，Home 只存在于本机 Clash Verge 的全局扩展脚本。
+`templates/base/Clash-Compat.yaml` 是完整基础模板；生成 Balance 时以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）替换基础模板的 DNS。owner 的 Airport 使用 Compat 模板和机场 provider，不注入 3x-ui 节点；原有两份 owner 配置继续注入自建节点与机场 provider，普通用户只输出 Compat。服务器不保存任何 Home 配置，Home 只存在于本机 Clash Verge 的全局扩展脚本。
 
 ## 订阅流量元数据
 

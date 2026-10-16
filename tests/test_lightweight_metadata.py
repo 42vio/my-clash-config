@@ -731,6 +731,22 @@ class ProfileMetadataTests(MetadataServerTestCase):
 
 
 class AirportMetadataTests(MetadataServerTestCase):
+    def test_airport_only_profile_uses_airport_traffic(self):
+        store = FakeMetadataStore(
+            profile_traffic=Traffic(10, 20, 30, 40),
+            airport_traffic=Traffic(1, 2, 3, 4),
+        )
+        self.start_server(store)
+        response, _ = parse_response(
+            self.send("GET", "/profile/7/Clash-Airport.yaml", ("Host: nginx",))
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.getheader("X-Accel-Redirect"),
+            "/accel/7/Clash-Airport.yaml?u=1&d=2&t=3&e=4",
+        )
+        self.assertEqual(store.calls, [("airport",)])
+
     def test_the_airport_file_maps_to_the_provider_location(self):
         traffic = Traffic(upload=1, download=2, total=3, expiry_ms=4)
         store = FakeMetadataStore(airport_traffic=traffic)

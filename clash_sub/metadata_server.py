@@ -64,8 +64,8 @@ def resolve_target(path):
         if _CLIENT_ID.fullmatch(client_id_text) and filename in _PROFILE_FILENAMES:
             return (
                 "/accel/%s/%s" % (client_id_text, filename),
-                "profile",
-                int(client_id_text),
+                "airport" if filename == PROFILE_FILENAMES["airport"] else "profile",
+                None if filename == PROFILE_FILENAMES["airport"] else int(client_id_text),
             )
     return None
 

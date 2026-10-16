@@ -10,6 +10,7 @@ from unittest.mock import patch
 from clash_sub.domain import RuntimeState, UserState, XuiClient
 from clash_sub.state import (
     StateError,
+    airport_only_token,
     generate_token,
     load_state,
     reconcile_state,
@@ -33,6 +34,15 @@ def client(client_id, email, sub_id=None, enabled=True):
 
 
 class LightweightStateTests(unittest.TestCase):
+    def test_airport_only_capability_is_distinct_and_has_token_shape(self):
+        owner = "A" * 43 + "-ABCDEF"
+        airport = airport_only_token(owner)
+        self.assertNotEqual(airport, owner)
+        self.assertEqual(airport, airport_only_token(owner))
+        self.assertTrue(airport.endswith("-ABCDEF"))
+        with self.assertRaises(StateError):
+            airport_only_token("invalid")
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.path = Path(self.tempdir.name) / "state.json"

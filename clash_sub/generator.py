@@ -38,12 +38,20 @@ def render_user_bundle(
     if is_owner and airport is None:
         raise ValueError("owner profiles require the airport provider")
     variants = OWNER_VARIANTS if is_owner else MEMBER_VARIANTS
-    return {variant: _render_variant(template_root, variant, xui, airport) for variant in variants}
+    return {
+        variant: _render_variant(
+            template_root,
+            variant,
+            [] if variant == "airport" else xui,
+            AirportProvider(airport.airport_only_url) if variant == "airport" and airport.airport_only_url else airport,
+        )
+        for variant in variants
+    }
 
 
 def _render_variant(template_root, variant, xui, airport):
     document, injections, positions = _compose_variant(template_root, variant)
-    document["proxies"] = CommentedSeq(merge_proxy_sources((("3x-ui", xui),)))
+    document["proxies"] = CommentedSeq(merge_proxy_sources((("3x-ui", xui),)) if xui else [])
     if airport is not None:
         _with_provider(document, airport)
     _inject_proxy_names(document, injections, airport is not None, positions)
@@ -112,7 +120,7 @@ def _compose_variant(template_root: Path, variant: str) -> tuple[CommentedMap, d
     if document.get("proxies") != []:
         raise ValueError("public template must carry an empty proxies list")
     manifest = _load_manifest(root / "profiles.yaml")
-    if manifest["profiles"][variant]["dns"] == "balance":
+    if manifest["profiles"]["compat" if variant == "airport" else variant]["dns"] == "balance":
         balance = _load_round_trip(root / "dns" / "Clash-Balance.yaml")
         if set(balance) != {"dns"} or not isinstance(balance.get("dns"), Mapping):
             raise ValueError("balance DNS template must contain only dns")
@@ -141,7 +149,7 @@ def _load_manifest(path):
     if not required.issubset(manifest) or set(manifest) - required - {"inject-node-positions"}:
         raise ValueError("profile manifest shape is invalid")
     profiles = manifest.get("profiles")
-    if not isinstance(profiles, Mapping) or set(profiles) != set(OWNER_VARIANTS):
+    if not isinstance(profiles, Mapping) or set(profiles) != set(_PROFILE_RECIPES):
         raise ValueError("profile manifest profiles are invalid")
     for name, expected_dns in _PROFILE_RECIPES.items():
         recipe = profiles[name]

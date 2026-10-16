@@ -612,6 +612,14 @@ class ReleaseStoreTests(unittest.TestCase):
             ("Clash-Compat.yaml", "Clash-Balance.yaml"),
         )
 
+    def test_owner_release_includes_airport_profile_and_keeps_legacy_readable(self):
+        legacy = self.store.prepare(7, self.owner_bundle, {"xui": "a" * 64})
+        expanded = dict(self.owner_bundle, airport="proxies: []\n")
+        current = self.store.prepare(7, expanded, {"xui": "a" * 64})
+        self.assertEqual(tuple(current.public_paths), ("compat", "balance", "airport"))
+        self.assertEqual(current.public_paths["airport"].name, "Clash-Airport.yaml")
+        self.assertEqual(tuple(self.store.verify_release(7, legacy.release_id).public_paths), ("compat", "balance"))
+
     def test_rejects_non_matrix_profile_keys_as_an_invalid_fixed_set(self):
         for bundle in (
             {"unexpected": "unexpected\n"},

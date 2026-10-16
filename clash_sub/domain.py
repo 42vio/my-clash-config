@@ -6,15 +6,17 @@ from urllib.parse import quote
 
 
 VARIANTS = ("compat", "balance")
-OWNER_VARIANTS = VARIANTS
+OWNER_VARIANTS = VARIANTS + ("airport",)
 MEMBER_VARIANTS = ("compat",)
 PROFILE_FILENAMES = MappingProxyType({
     "compat": "Clash-Compat.yaml",
     "balance": "Clash-Balance.yaml",
+    "airport": "Clash-Airport.yaml",
 })
 PROFILE_TITLES = MappingProxyType({
     "compat": "Clash-Compat.yaml",
     "balance": "Clash-Balance.yaml",
+    "airport": "Clash-Airport.yaml",
 })
 AIRPORT_FILENAME = "AmyTelecom.yaml"
 
@@ -104,6 +106,7 @@ class AirportProvider:
     """The owner-only stable airport source rendered into owner profiles."""
 
     url: str
+    airport_only_url: str | None = None
 
 
 @dataclass(frozen=True)

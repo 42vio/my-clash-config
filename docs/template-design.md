@@ -15,7 +15,8 @@
 
 1. 生成 Compat：以 Compat 完整基础模板注入用户 3x-ui 节点；owner 再注入 `AmyTelecom` 机场 provider，输出 `Clash-Compat.yaml`。
 2. 生成 Balance：先取 Compat 完整基础模板，以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）整体替换 DNS，再按 owner 路径注入 3x-ui 节点与机场 provider，输出 `Clash-Balance.yaml`。
-3. 普通用户只生成 Compat，渲染层直接拒绝传入机场 provider。
+3. 生成 Airport：取 Compat 完整基础模板，只注入机场 provider，不注入 3x-ui 节点，输出 `Clash-Airport.yaml`。
+4. 普通用户只生成 Compat，渲染层直接拒绝传入机场 provider。
 
 ## 动态节点的插入顺序
 
@@ -27,7 +28,7 @@
 
 | 身份 | 生成 profile | 机场 provider |
 | --- | --- | --- |
-| owner | `compat`、`balance` | 有，`AmyTelecom` 以固定形态注入 |
+| owner | `compat`、`balance`、`airport` | 有，`AmyTelecom` 以固定形态注入；`airport` 无自建节点 |
 | 普通用户 | 仅 `compat` | 无机场 provider、无机场节点 |
 
 ## 机场引用
@@ -43,7 +44,7 @@ proxy-providers:
     interval: 86400
 ```
 
-provider 显示名固定 `AmyTelecom`，两份 owner 主配置引用同一 URL，Clash Verge 可单独手动刷新，自动刷新间隔 24 小时（86400 秒）。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`，只通过 owner 令牌路由访问；普通用户令牌没有任何机场路由。
+provider 显示名固定 `AmyTelecom`，三份 owner 主配置引用同一个服务器文件：原有两份使用 owner 令牌 URL，Airport 配置使用独立派生令牌 URL。Clash Verge 可单独手动刷新，自动刷新间隔 24 小时（86400 秒）。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`；派生令牌只能访问 Airport 配置和这个 provider，普通用户令牌没有任何机场路由。`Clash-Airport.yaml` 是按模板生成的完整配置，与 provider 原文件是两条不同链接。
 
 订阅响应头（`Subscription-Userinfo` 流量头、`Profile-Update-Interval: 24`）由部署侧在请求时按需附加：模板、provider 文件与发布物从不携带流量数据，流量数字只保存在服务器私密目录的来源记录与缓存里。
 

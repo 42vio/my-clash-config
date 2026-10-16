@@ -93,7 +93,7 @@ class YamlFormatTests(unittest.TestCase):
                         document = load_round_trip(rendered)
                         groups = {g['name']: g for g in document['proxy-groups']}
                         self.assertEqual(list(groups), ['Main', 'Feature', 'Auto', 'Region'] if owner else ['Main', 'Feature'])
-                        self.assertEqual(groups['Main']['proxies'], ['Auto', 'Generated', 'Region'] if owner else ['Generated'])
+                        self.assertEqual(groups['Main']['proxies'], ['Auto', 'Region'] if variant == 'airport' else ['Auto', 'Generated', 'Region'] if owner else ['Generated'])
                         line = next(line for line in rendered.splitlines() if line.startswith('- {name: Main,'))
                         self.assertLess(line.index('<<:'), line.index('proxies:'))
                         self.assertLess(line.index('proxies:'), line.index('icon:'))

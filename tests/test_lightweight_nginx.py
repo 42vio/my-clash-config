@@ -16,8 +16,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from clash_sub import metadata_server
-from clash_sub.domain import RuntimeState, ServiceConfig, Traffic, UserState, XuiClient
-from clash_sub.state import load_state, save_state
+from clash_sub.domain import PROFILE_FILENAMES, RuntimeState, ServiceConfig, Traffic, UserState, XuiClient
+from clash_sub.state import airport_only_token, load_state, save_state
 import clash_sub.nginx as nginx_module
 
 try:
@@ -125,13 +125,11 @@ class LightweightNginxTests(unittest.TestCase):
                 10: UserState(10, "deleted@example.invalid", token(b"x", "VWXYZA"), "VWXYZA", True, release),
             },
         )
-        for client_id, variants in ((7, ("compat", "balance")), (8, ("compat",))):
+        for client_id, variants in ((7, ("compat", "balance", "airport")), (8, ("compat",))):
             directory = self.public_root / "releases" / str(client_id) / release
             directory.mkdir(parents=True)
             for variant in variants:
-                path = directory / (
-                    "Clash-Compat.yaml" if variant == "compat" else "Clash-Balance.yaml"
-                )
+                path = directory / PROFILE_FILENAMES[variant]
                 path.write_text("proxies: []\n", encoding="utf-8")
                 os.chmod(path, 0o640)
         provider_path = self.public_root / "provider" / "AmyTelecom.yaml"
@@ -168,8 +166,10 @@ class LightweightNginxTests(unittest.TestCase):
 
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % self.owner_token, text)
         self.assertIn("location = /s/%s/Clash-Balance.yaml" % self.owner_token, text)
+        self.assertIn("location = /s/%s/Clash-Airport.yaml" % airport_only_token(self.owner_token), text)
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % self.member_token, text)
         self.assertNotIn("location = /s/%s/Clash-Balance.yaml" % self.member_token, text)
+        self.assertNotIn("location = /s/%s/Clash-Airport.yaml" % self.member_token, text)
         self.assertNotIn("location /s/", text)
         self.assertNotIn("/s/ABCDEF/", text)
         self.assertNotIn("deleted@example.invalid", text)
@@ -214,7 +214,7 @@ class LightweightNginxTests(unittest.TestCase):
         self.assertNotIn("$upstream_http", baseline)
         self.assertEqual(
             baseline.count(_ARG_USERINFO_LINE),
-            4,  # owner compat + owner balance + provider + member compat
+            5,  # three owner profiles + one shared provider response + member compat
         )
 
     def test_the_metadata_socket_is_a_patchable_module_constant(self):
@@ -232,6 +232,14 @@ class LightweightNginxTests(unittest.TestCase):
                 "/profile/7/Clash-Balance.yaml",
                 "/accel/7/Clash-Balance.yaml",
             ),
+            "location = /s/%s/Clash-Airport.yaml" % airport_only_token(self.owner_token): (
+                "/profile/7/Clash-Airport.yaml",
+                "/accel/7/Clash-Airport.yaml",
+            ),
+            "location = /s/%s/AmyTelecom.yaml" % airport_only_token(self.owner_token): (
+                "/airport/AmyTelecom.yaml",
+                "/accel/provider/AmyTelecom.yaml",
+            ),
             "location = /s/%s/AmyTelecom.yaml" % self.owner_token: (
                 "/airport/AmyTelecom.yaml",
                 "/accel/provider/AmyTelecom.yaml",
@@ -248,6 +256,7 @@ class LightweightNginxTests(unittest.TestCase):
                 + [
                     "location = /accel/7/Clash-Compat.yaml",
                     "location = /accel/7/Clash-Balance.yaml",
+                    "location = /accel/7/Clash-Airport.yaml",
                     "location = /accel/provider/AmyTelecom.yaml",
                     "location = /accel/8/Clash-Compat.yaml",
                 ]
@@ -297,6 +306,12 @@ class LightweightNginxTests(unittest.TestCase):
                 self.public_root / "releases" / "7" / release / "Clash-Balance.yaml",
                 'add_header Profile-Title "Clash-Balance.yaml";',
                 "add_header Content-Disposition 'attachment; filename=Clash-Balance.yaml';",
+                'add_header Profile-Update-Interval "24";',
+            ),
+            "location = /accel/7/Clash-Airport.yaml": (
+                self.public_root / "releases" / "7" / release / "Clash-Airport.yaml",
+                'add_header Profile-Title "Clash-Airport.yaml";',
+                "add_header Content-Disposition 'attachment; filename=Clash-Airport.yaml';",
                 'add_header Profile-Update-Interval "24";',
             ),
             "location = /accel/8/Clash-Compat.yaml": (

@@ -288,7 +288,7 @@ class ServiceTests(unittest.TestCase):
                     "proxy-groups:\n- name: Airport Select\n  type: select\n  use: [AmyTelecom]\n"
                     "proxies:\n- name: Owner %s\n" % (airport.url, variant)
                 )
-                for variant in ("compat", "balance")
+                for variant in ("compat", "balance", "airport")
             }
         return {"compat": self.member_render_text}
 
@@ -301,7 +301,7 @@ class ServiceTests(unittest.TestCase):
         self.assertIsNotNone(ClashSubService)
         result = self.bootstrap()
         self.assertEqual({item["client_id"] for item in result["updated"]}, {7, 8})
-        self.assertEqual(tuple(self.store.prepared[0][1].public_paths), ("compat", "balance"))
+        self.assertEqual(tuple(self.store.prepared[0][1].public_paths), ("compat", "balance", "airport"))
         self.assertEqual(tuple(self.store.prepared[1][1].public_paths), ("compat",))
         self.assertTrue(all("token" not in repr(item) for item in result["updated"]))
         self.assertEqual(len(self.activator.calls[0][2]), 2)
@@ -358,7 +358,8 @@ class ServiceTests(unittest.TestCase):
         self.assertTrue(owner_calls)
         self.assertTrue(member_calls)
         provider_url = "https://sub.example.test:8443/s/%s/AmyTelecom.yaml" % token(bytes([7]), "ABCDEF")
-        self.assertEqual({call[1] for call in owner_calls}, {provider_url})
+        self.assertEqual(len({call[1] for call in owner_calls}), 2)
+        self.assertIn(provider_url, {call[1] for call in owner_calls})
         seen = set(owner_calls[0][0])
         self.assertIn(token(bytes([8]), "GHJKMN"), seen)
         self.assertIn("sub-7", seen)
@@ -382,7 +383,7 @@ class ServiceTests(unittest.TestCase):
 
         owner = [entry for entry in seen if entry[1] is not None]
         member = [entry for entry in seen if entry[1] is None]
-        self.assertEqual(len(owner), 2)
+        self.assertEqual(len(owner), 3)
         self.assertEqual(len(member), 1)
         for candidate, provider, provider_file, body, candidate_body, provider_use in owner:
             self.assertNotIn("/releases/", str(candidate))
@@ -1104,7 +1105,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(new_provider_urls), 1)
         self.assertIn(token(b"r", "PQRSTU"), next(iter(new_provider_urls)))
         self.assertIn("AmyTelecom.yaml", next(iter(new_provider_urls)))
-        self.assertEqual(len(rotated["urls"]), 2)
+        self.assertEqual(len(rotated["urls"]), 3)
 
     def test_member_rotation_changes_routes_without_touching_provider_bytes(self):
         self.bootstrap()
@@ -1185,7 +1186,7 @@ class ServiceTests(unittest.TestCase):
                 return {"compat": "member changed"}
             return {
                 variant: ("proxy-providers:\n  AmyTelecom:\n    type: http\n    url: %s\nproxies:\n- name: Owner %s changed\n" % (airport.url, variant))
-                for variant in ("compat", "balance")
+                for variant in ("compat", "balance", "airport")
             }
 
         self.service._render = changed_render

@@ -59,7 +59,7 @@ class LightweightConfigTests(unittest.TestCase):
         self.assertEqual(config.owner_email, "owner-example")
         self.assertEqual(config.subscription_authority, "sub.example.com")
         self.assertEqual(VARIANTS, ("compat", "balance"))
-        self.assertEqual(OWNER_VARIANTS, VARIANTS)
+        self.assertEqual(OWNER_VARIANTS, VARIANTS + ("airport",))
         self.assertEqual(MEMBER_VARIANTS, ("compat",))
         self.assertEqual(config.template_root, self.root / "templates")
 

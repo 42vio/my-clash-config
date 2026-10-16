@@ -16,7 +16,7 @@ from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
 from clash_sub.sources import SourceError, normalize_xui_endpoints
-from clash_sub.state import StateError
+from clash_sub.state import StateError, airport_only_token
 
 _AIRPORT_STORE_CODES = frozenset({"airport_source_missing", "airport_source_invalid", "airport_provider_invalid", "airport_provider_write_failed"})
 
@@ -292,9 +292,14 @@ class ClashSubService:
             return {"owner_client_id":client_id}
     def _prepare(self,client,owner,url,identity,tokens,transient=None,candidates=None):
         xui=normalize_xui_endpoints(self._fetch(url,self.config.max_source_bytes),self.config.xui_public_endpoint)
-        provider=AirportProvider(_provider_url(self.config,identity.token)) if owner else None
+        provider=AirportProvider(
+            _provider_url(self.config, identity.token),
+            _provider_url(self.config, airport_only_token(identity.token)),
+        ) if owner else None
         bundle=self._render(owner,xui,provider,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
-        for text in bundle.values(): self._validate(text,forbidden,provider.url if provider else None)
+        for variant,text in bundle.items():
+            allowed = provider.airport_only_url if variant == "airport" else provider.url if provider else None
+            self._validate(text,forbidden,allowed)
         release=self._releases.prepare(client.client_id,bundle,{"xui":_digest(xui)})
         if release:
             if candidates is not None: candidates.append((client.client_id,release))
@@ -416,7 +421,7 @@ def _find(cs,i):return next((c for c in cs if c.client_id==i),None)
 def _client_id(i):
     if isinstance(i,bool) or not isinstance(i,int) or i<1:raise ServiceError("invalid_client")
     return i
-def _urls(c,t,o):return ["https://%s/s/%s/%s"%(c.subscription_authority,t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
+def _urls(c,t,o):return ["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}
 def _error(c,code):return {"client_id":c.client_id,"code":code}
 def _pending_source(user,client):return bool(user and client.enabled and user.active and not user.current_release)

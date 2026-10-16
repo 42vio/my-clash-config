@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import os
 import re
@@ -12,6 +13,15 @@ from clash_sub.domain import RuntimeState, UserState
 
 READABLE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}$")
+
+
+def airport_only_token(owner_token):
+    """Derive a separate, non-reversible capability for the owner's airport profile."""
+    if not isinstance(owner_token, str) or not TOKEN_RE.fullmatch(owner_token):
+        raise StateError("invalid state")
+    digest = hashlib.sha256(b"clash-sub-airport-only-v1:" + owner_token.encode("ascii")).digest()
+    core = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return core + "-" + owner_token.rsplit("-", 1)[1]
 
 
 class StateError(ValueError):

@@ -83,7 +83,7 @@ clash-sub status
 clash-sub links
 ```
 
-确认 `nginx -t` 通过、`clash-sub-metadata.socket` 已启用且监听、`status` 的最近错误为空、`links` 显示 owner 两条（`Clash-Compat.yaml`、`Clash-Balance.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。用其中一条链接请求一次订阅后，`clash-sub-metadata.service` 应被 socket 激活（`systemctl status clash-sub-metadata.service` 显示运行中），响应携带 `Subscription-Userinfo` 流量头。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
+确认 `nginx -t` 通过、`clash-sub-metadata.socket` 已启用且监听、`status` 的最近错误为空、`links` 显示 owner 三条（`Clash-Compat.yaml`、`Clash-Balance.yaml`、仅机场的 `Clash-Airport.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。用其中一条链接请求一次订阅后，`clash-sub-metadata.service` 应被 socket 激活（`systemctl status clash-sub-metadata.service` 显示运行中），响应携带 `Subscription-Userinfo` 流量头。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
 
 ## 升级与卸载
 

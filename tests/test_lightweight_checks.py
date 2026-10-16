@@ -161,7 +161,7 @@ class ProviderMappingTests(unittest.TestCase):
 
 class LightweightChecksTests(unittest.TestCase):
     def test_fixed_profile_authorization_sets_have_no_legacy_aliases(self):
-        self.assertEqual(OWNER_VARIANTS, ("compat", "balance"))
+        self.assertEqual(OWNER_VARIANTS, ("compat", "balance", "airport"))
         self.assertEqual(MEMBER_VARIANTS, ("compat",))
 
     def test_valid_document_is_accepted(self):

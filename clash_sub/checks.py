@@ -61,7 +61,7 @@ def validate_clash(text, forbidden_values, allowed_provider_url=None):
     except RecursionError:
         # A YAML alias cycle expands into a recursive structure.
         raise CheckError("rendered config contains invalid YAML") from None
-    proxy_names = _validate_proxies(document["proxies"])
+    proxy_names = _validate_proxies(document["proxies"], allow_empty=bool(providers))
     group_names = _validate_groups(document["proxy-groups"])
     if proxy_names & group_names:
         raise CheckError("proxy name conflicts with proxy group name")
@@ -150,8 +150,8 @@ def _validate_proxy_providers(providers, allowed_provider_url):
     return set(providers)
 
 
-def _validate_proxies(proxies):
-    if not isinstance(proxies, list) or not proxies:
+def _validate_proxies(proxies, *, allow_empty=False):
+    if not isinstance(proxies, list) or (not proxies and not allow_empty):
         raise CheckError("proxies must be a non-empty list")
     names = set()
     for proxy in proxies:

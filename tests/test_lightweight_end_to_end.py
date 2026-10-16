@@ -30,7 +30,7 @@ from clash_sub.sources import (
     download_airport_document,
     fetch_xui_proxies,
 )
-from clash_sub.state import load_state, reconcile_state, rotate_user_token, save_state
+from clash_sub.state import airport_only_token, load_state, reconcile_state, rotate_user_token, save_state
 from clash_sub.xui import read_xui_snapshot
 
 
@@ -388,6 +388,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         # Airport nodes stay out of every inline proxies list.
         self.assertEqual(owner_names["compat"], ["Owner 3x-ui"])
         self.assertEqual(owner_names["balance"], ["Owner 3x-ui"])
+        self.assertEqual(owner_names["airport"], [])
         self.assertEqual(member_names, ["Member 3x-ui"])
 
         owner_token = harness.state().users[harness.owner_id].token
@@ -395,7 +396,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         for variant, document in owner_documents.items():
             provider = document["proxy-providers"]["AmyTelecom"]
             self.assertEqual(provider["type"], "http", variant)
-            self.assertEqual(provider["url"], expected_url, variant)
+            self.assertEqual(provider["url"], "https://sub.example.test/s/%s/AmyTelecom.yaml" % airport_only_token(owner_token) if variant == "airport" else expected_url, variant)
             self.assertEqual(provider["interval"], 86400, variant)
             self.assertEqual(
                 provider["path"],
@@ -553,7 +554,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
         self.assertEqual([item["client_id"] for item in links], [7, 8])
         self.assertEqual(len({item["readable_code"] for item in links}), 2)
-        self.assertEqual([len(item["urls"]) for item in links], [2, 1])
+        self.assertEqual([len(item["urls"]) for item in links], [3, 1])
         for item in links:
             self.assertNotIn("token", item)
             for url in item["urls"]:
@@ -561,7 +562,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
                 self.assertIn("-%s/" % item["readable_code"], url)
                 self.assertRegex(
                     url,
-                    r"^https://sub\.example\.test/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/Clash-(?:Compat|Balance)\.yaml$",
+                    r"^https://sub\.example\.test/s/[A-Za-z0-9_-]{43}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{6}/Clash-(?:Compat|Balance|Airport)\.yaml$",
                 )
 
     def test_routes_authorize_only_exact_token_user_and_variant_combinations(self):
@@ -575,16 +576,21 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
 
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % member.token, routes)
         self.assertNotIn("location = /s/%s/Clash-Balance.yaml" % member.token, routes)
+        self.assertNotIn("location = /s/%s/Clash-Airport.yaml" % member.token, routes)
         self.assertNotIn(
             "location = /s/%s/AmyTelecom.yaml" % member.token, routes
         )
         self.assertIn("location = /s/%s/Clash-Compat.yaml" % owner.token, routes)
         self.assertIn("location = /s/%s/Clash-Balance.yaml" % owner.token, routes)
+        self.assertIn("location = /s/%s/Clash-Airport.yaml" % airport_only_token(owner.token), routes)
+        self.assertNotIn("location = /s/%s/Clash-Compat.yaml" % airport_only_token(owner.token), routes)
+        self.assertNotIn("location = /s/%s/Clash-Balance.yaml" % airport_only_token(owner.token), routes)
         self.assertIn(
             "location = /s/%s/AmyTelecom.yaml" % owner.token, routes
         )
         self.assertEqual(routes.count("location = /s/%s/" % member.token), 1)
         self.assertEqual(routes.count("location = /s/%s/" % owner.token), 3)
+        self.assertEqual(routes.count("location = /s/%s/" % airport_only_token(owner.token)), 2)
         # Traffic is fetched per request from the metadata service; no
         # client traffic values are baked into the routes at all — only
         # the arg-template line inside each /accel/ if-block re-emits the
@@ -598,7 +604,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
                 'add_header Subscription-Userinfo '
                 '"upload=$arg_u; download=$arg_d; total=$arg_t; expire=$arg_e";'
             ),
-            4,  # owner compat + owner balance + provider + member compat
+            5,  # three owner profiles + one shared provider response + member compat
         )
         # The public airport route proxies to the metadata service and
         # falls back to the internal provider location.

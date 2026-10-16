@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
-from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, PreparedRelease
+from clash_sub.domain import MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, PreparedRelease, VARIANTS
 
 
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
@@ -317,6 +317,8 @@ def _validate_bundle(bundle: Mapping[str, str]) -> tuple[tuple[str, ...], dict[s
         variants = MEMBER_VARIANTS
     elif set(keys) == set(OWNER_VARIANTS):
         variants = OWNER_VARIANTS
+    elif set(keys) == set(VARIANTS):
+        variants = VARIANTS
     else:
         raise ReleaseStoreError("release variants are invalid")
     if any(not isinstance(files[variant], str) or not files[variant] for variant in variants):

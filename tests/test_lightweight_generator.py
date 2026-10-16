@@ -119,8 +119,19 @@ class LightweightGeneratorTests(unittest.TestCase):
     def test_fixed_owner_and_member_profile_sets(self):
         owner = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)
         member = render_user_bundle(False, [reality_proxy("Member")], None, self.templates)
-        self.assertEqual(tuple(owner), ("compat", "balance"))
+        self.assertEqual(tuple(owner), ("compat", "balance", "airport"))
         self.assertEqual(tuple(member), ("compat",))
+        airport = yaml.safe_load(owner["airport"])
+        self.assertEqual(airport["proxies"], [])
+        self.assertEqual(tuple(airport["proxy-providers"]), ("AmyTelecom",))
+
+    def test_airport_profile_uses_its_separate_provider_capability(self):
+        separate = "https://sub.example.test/s/airport-only/AmyTelecom.yaml"
+        rendered = render_user_bundle(
+            True, [reality_proxy("Owner")], AirportProvider(PROVIDER_URL, separate), self.templates
+        )
+        self.assertEqual(yaml.safe_load(rendered["airport"])["proxy-providers"]["AmyTelecom"]["url"], separate)
+        self.assertEqual(yaml.safe_load(rendered["compat"])["proxy-providers"]["AmyTelecom"]["url"], PROVIDER_URL)
 
     def test_balance_replaces_only_dns_and_preserves_comments(self):
         rendered = render_user_bundle(True, [reality_proxy("Owner")], provider(), self.templates)
@@ -211,9 +222,10 @@ class LightweightGeneratorTests(unittest.TestCase):
         self._write("templates/profiles.yaml", PROFILES + "inject-node-positions: {Public: 1}\n")
         nodes = [reality_proxy("First"), reality_proxy("Second")]
         for owner in (True, False):
-            for text in render_user_bundle(owner, nodes, provider() if owner else None, self.templates).values():
+            for variant, text in render_user_bundle(owner, nodes, provider() if owner else None, self.templates).items():
                 group = yaml.safe_load(text)["proxy-groups"][0]
-                self.assertEqual(group["proxies"], ["DIRECT", "First", "Second", "REJECT"])
+                expected = ["DIRECT", "REJECT"] if variant == "airport" else ["DIRECT", "First", "Second", "REJECT"]
+                self.assertEqual(group["proxies"], expected)
 
     def test_legacy_manifest_still_appends_nodes(self):
         text = render_user_bundle(False, [reality_proxy("Node")], None, self.templates)["compat"]

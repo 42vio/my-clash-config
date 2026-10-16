@@ -20,7 +20,7 @@ from clash_sub.domain import (
     ServiceConfig,
     XuiClient,
 )
-from clash_sub.state import TOKEN_RE, _state_to_payload
+from clash_sub.state import TOKEN_RE, _state_to_payload, airport_only_token
 
 
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
@@ -118,9 +118,11 @@ def render_routes(config, state, clients):
         if client_id == state.owner_client_id:
             for variant in OWNER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
-                blocks.append(_route_block(user.token, client_id, variant, alias))
+                token = airport_only_token(user.token) if variant == "airport" else user.token
+                blocks.append(_route_block(token, client_id, variant, alias))
             provider_alias = _provider_path(public_root)
             blocks.append(_provider_route_block(user.token, provider_alias))
+            blocks.append(_provider_route_block(airport_only_token(user.token), provider_alias, include_internal=False))
         else:
             for variant in MEMBER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
@@ -671,11 +673,10 @@ def _provider_path(public_root):
     return path
 
 
-def _provider_route_block(token, alias):
+def _provider_route_block(token, alias, *, include_internal=True):
     if not isinstance(token, str) or not TOKEN_RE.fullmatch(token):
         raise NginxError("invalid subscription token")
-    return "\n".join(
-        (
+    public = (
             "location = /s/%s/%s {" % (token, AIRPORT_FILENAME),
             '    if ($request_method !~ ^(GET|HEAD)$) { return 405; }',
             '    if ($args != "") { return 400; }',
@@ -691,6 +692,8 @@ def _provider_route_block(token, alias):
             "    proxy_intercept_errors on;",
             "    error_page 404 500 502 503 504 =200 /accel/provider/%s;" % AIRPORT_FILENAME,
             "}",
+    )
+    internal = (
             "location = /accel/provider/%s {" % AIRPORT_FILENAME,
             "    internal;",
             "    alias %s;" % alias,
@@ -707,8 +710,8 @@ def _provider_route_block(token, alias):
             '        add_header Subscription-Userinfo "upload=$arg_u; download=$arg_d; total=$arg_t; expire=$arg_e";',
             "    }",
             "}",
-        )
     )
+    return "\n".join(public + internal if include_internal else public)
 
 
 def _route_block(token, client_id, variant, alias):
