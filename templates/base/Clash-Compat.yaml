@@ -19,7 +19,6 @@ geo-auto-update: true
 geo-update-interval: 168
 
 profile:
-  store-selected: true
   store-fake-ip: true
 
 dns:
@@ -90,6 +89,7 @@ sub-select: {type: select, use: [Subscribe]}                  # 手动切换（�
 direct-first: &direct-first {type: select, proxies: [DIRECT, 加速线路]}  # 直连优先 + 加速
 proxy-first: &proxy-first {type: select, proxies: [加速线路, DIRECT]}    # 加速优先
 rule: &rule {type: http, behavior: classical, interval: 86400}                  # classical 规则集基底
+mrs: &mrs {type: http, behavior: domain, format: mrs, interval: 86400}
 
 proxies: []
 icons:
@@ -142,11 +142,12 @@ rule-providers:
   Lan: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Lan/Lan.yaml, path: ./rule/Lan.yaml}
   PT: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/PrivateTracker/PrivateTracker.yaml, path: ./rule/PrivateTracker.yaml}
   AI: {<<: *rule, url: https://gist.githubusercontent.com/ddgksf2013/cb4121e8b5c5d865cc949cb8120320c4/raw/Ai.yaml, path: ./rule/OpenAI.yaml}
+  GameDownload: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Game/GameDownload/GameDownload.yaml, path: ./rule/GameDownload.yaml}
+  GameDownloadCN: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Game/GameDownloadCN/GameDownloadCN.yaml, path: ./rule/GameDownloadCN.yaml}
   SteamCDN: {<<: *rule, url: https://cdn.jsdelivr.net/gh/Aethersailor/Custom_OpenClash_Rules@main/rule/Steam_CDN_Classical.yaml, path: ./rule/Steam_CDN_Classical.yaml}
   SteamCN: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/SteamCN/SteamCN.yaml, path: ./rule/SteamCN.yaml}
   Steam: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Steam/Steam.yaml, path: ./rule/Steam.yaml}
   BiliBili: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/BiliBili/BiliBili.yaml, path: ./rule/BiliBili.yaml}
-  ChinaMedia: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ChinaMedia/ChinaMedia.yaml, path: ./rule/ChinaMedia.yaml}
   GlobalMedia: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/GlobalMedia/GlobalMedia_Classical.yaml, path: ./rule/GlobalMedia_Classical.yaml}
   Apple: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Apple/Apple_Classical.yaml, path: ./rule/Apple_Classical.yaml}
   Google: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Google/Google.yaml, path: ./rule/Google.yaml}
@@ -155,7 +156,8 @@ rule-providers:
   Download: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Download/Download.yaml, path: ./rule/Download.yaml}
   China: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/China/China_Classical.yaml, path: ./rule/China_Classical.yaml}
   Direct: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Direct/Direct.yaml, path: ./rule/Direct.yaml}
-  Advertising: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Advertising/Advertising_Classical.yaml, path: ./rule/Advertising_Classical.yaml}
+  # Advertising:    {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Advertising/Advertising_Classical.yaml,      path: ./rule/Advertising_Classical.yaml}
+  Advertising: {<<: *mrs, url: https://raw.githubusercontent.com/Cats-Team/AdRules/main/adrules-mihomo.mrs, path: ./rule/AdRules.mrs}
   Hijacking: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Hijacking/Hijacking.yaml, path: ./rule/Hijacking.yaml}
   Privacy: {<<: *rule, url: https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Privacy/Privacy_Classical.yaml, path: ./rule/Privacy_Classical.yaml}
 
@@ -163,7 +165,6 @@ rules:
 
   # 自建服务器
 - IP-CIDR,199.19.110.145/32,DIRECT,no-resolve   #BWG服务器
-- DOMAIN-SUFFIX,kfcv50.shop,DIRECT
 - DOMAIN-SUFFIX,42io.cc,DIRECT
 - DOMAIN-SUFFIX,ibigsea.com,DIRECT
 - DOMAIN-SUFFIX,hitrontech.com,DIRECT
@@ -179,16 +180,18 @@ rules:
 - RULE-SET,AI,AI服务,no-resolve
 - GEOSITE,category-ai-!cn,AI服务
 
-  # 游戏直连优先，其余 Steam 流量可选直连或代理
-- RULE-SET,SteamCDN,游戏直连,no-resolve
-- RULE-SET,SteamCN,游戏直连,no-resolve
+  # 游戏下载固定直连 # Steam 国内服务及 CDN 直连
+- RULE-SET,GameDownloadCN,游戏直连,no-resolve
+- RULE-SET,GameDownload,游戏直连,no-resolve
 - GEOSITE,category-games@cn,游戏直连
 - GEOSITE,category-game-platforms-download,游戏直连
+- RULE-SET,SteamCN,游戏直连,no-resolve
+- RULE-SET,SteamCDN,游戏直连,no-resolve
+  # Steam 商店、社区等默认代理
 - RULE-SET,Steam,Steam,no-resolve
 
   # 流媒体
 - RULE-SET,BiliBili,BiliBili,no-resolve
-- RULE-SET,ChinaMedia,国内流媒体,no-resolve
 - RULE-SET,GlobalMedia,国外流媒体,no-resolve
   # - RULE-SET,Adobe,Adobe
 
