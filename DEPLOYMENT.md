@@ -9,6 +9,23 @@
 - 443/TCP 未被占用，3x-ui 已安装，且目标 owner 的 3x-ui client 已启用并可用其 email 识别。
 - 先按下节完成 3x-ui 设置；不要提交订阅 URL、token 或任何私密 YAML。
 
+防火墙设置
+
+```
+# 安装基础工具
+apt update && apt install ufw curl -y
+
+# 按顺序放行端口——这一行最重要，先保住 SSH
+ufw allow 26019/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+
+# 确认规则正确，然后启用
+ufw enable
+```
+
+
+
 ## 3x-ui 关键配置
 
 | 项目 | 固定值 |
