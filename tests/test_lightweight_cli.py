@@ -604,7 +604,8 @@ class LightweightCliTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertTrue(stdout.startswith(MENU if argv is None else ""))
                 self.assertIn("同步部分完成。\n", stdout)
-                self.assertEqual(stderr, "客户端 ID 8（错误代码：member_update_failed）\n")
+                self.assertEqual(stderr, "客户端 ID 8（错误代码：member_update_failed）\n"
+                                 "请检查该用户在 3x-ui 中的 Flow 是否设为 xtls-rprx-vision；未设置或设置不正确会导致 Reality 配置校验失败。保存后重新生成所有配置；若仍失败，请继续排查其他配置问题。\n")
                 self.assertNotIn("member@example.test", stdout + stderr)
 
         code, stdout, stderr = run_cli(["sync"], FakeService())

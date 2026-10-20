@@ -754,6 +754,8 @@ def _call(operation, value, stdout, stderr, factory):
                 stdout.write("同步部分完成。\n")
                 for error in errors:
                     stderr.write("客户端 ID %s（错误代码：%s）\n" % (error["client_id"], error["code"]))
+                    if error["code"] in {"member_update_failed", "owner_update_failed"}:
+                        stderr.write("请检查该用户在 3x-ui 中的 Flow 是否设为 xtls-rprx-vision；未设置或设置不正确会导致 Reality 配置校验失败。保存后重新生成所有配置；若仍失败，请继续排查其他配置问题。\n")
                 return 1
             stdout.write("同步已完成。\n")
         elif operation == "links":
