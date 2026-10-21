@@ -67,6 +67,7 @@ def render_stream_config(config, domain):
 
 def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_include, fullchain, privkey):
     """Render the loopback TLS server for subscriptions and the panel."""
+    favicon_path = Path(config.template_root).parent / "assets" / "favicon.ico"
     if (
         not isinstance(domain, str)
         or not _DOMAIN_RE.fullmatch(domain)
@@ -85,6 +86,8 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
         or not isinstance(privkey, str)
         or not privkey.startswith("/")
         or any(c in _UNSAFE_PATH_CHARACTERS for c in privkey)
+        or not favicon_path.is_absolute()
+        or any(c in _UNSAFE_PATH_CHARACTERS for c in str(favicon_path))
     ):
         raise NginxError("invalid sub server parameters")
     try:
@@ -97,6 +100,7 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
             routes_include=routes_include,
             fullchain=fullchain,
             privkey=privkey,
+            favicon_path=str(favicon_path),
         )
     except NginxError:
         raise

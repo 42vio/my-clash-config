@@ -102,6 +102,8 @@ clash-sub links
 
 确认 `nginx -t` 通过、`clash-sub-metadata.socket` 已启用且监听、`status` 的最近错误为空、`links` 显示 owner 三条（`Clash-Compat.yaml`、`Clash-Balance.yaml`、仅机场的 `Clash-Airport.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。用其中一条链接请求一次订阅后，`clash-sub-metadata.service` 应被 socket 激活（`systemctl status clash-sub-metadata.service` 显示运行中），响应携带 `Subscription-Userinfo` 流量头。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
 
+浏览器标签图标由 Nginx 提供兜底：`/favicon.ico` 先请求 3x-ui，只有其返回 404 时才返回仓库中的 `assets/favicon.ico`。如果日后 3x-ui 在页面里声明自己的图标，面板路径仍由原代理直接转发，浏览器会使用其声明的图标。不要在 3x-ui 安装目录里手工替换文件。
+
 ## 升级与卸载
 
 更新代码后在现有目录重新执行安装：
@@ -111,6 +113,17 @@ cd /opt/my-clash-config
 git pull --ff-only
 bash install.sh
 ```
+
+已运行的服务器只需更新项目代码并重新生成 Nginx 配置，无需重装 3x-ui。项目发布到远端仓库后，以 root 在服务器执行：
+
+```bash
+cd /opt/my-clash-config
+clash-sub update
+nginx -t
+curl -I https://sub.<主域名>/favicon.ico
+```
+
+`clash-sub update` 会拉取代码并用新模板重载 Nginx；`curl -I` 应返回 `200` 和图标的 Content-Type。浏览器可能缓存旧图标，必要时重新打开标签页或强制刷新。
 
 若需要撤销整合安装，执行：
 

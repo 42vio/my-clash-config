@@ -1150,6 +1150,11 @@ class NginxTemplateRenderTests(unittest.TestCase):
         self.assertIn("include /etc/nginx/clash-sub/routes.conf;", rendered)
         self.assertIn("location = /p-1a2b3c4d {", rendered)
         self.assertIn("proxy_pass http://127.0.0.1:2053/p-1a2b3c4d/;", rendered)
+        self.assertIn("location = /favicon.ico {", rendered)
+        self.assertIn("proxy_pass http://127.0.0.1:2053/favicon.ico;", rendered)
+        self.assertIn("error_page 404 = /_clash-sub-favicon.ico;", rendered)
+        self.assertIn("location = /_clash-sub-favicon.ico {\n        internal;", rendered)
+        self.assertIn("alias %s;" % (self.template_root.parent.parent / "assets" / "favicon.ico"), rendered)
         self.assertIn('proxy_set_header X-Forwarded-For "";', rendered)
         self.assertIn("limit_req_zone $binary_remote_addr zone=clash_subscription", rendered)
 
