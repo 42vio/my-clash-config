@@ -17,6 +17,14 @@ owner 与普通用户不通过文件名区分，由订阅令牌和服务端授�
 
 本次为不兼容升级：旧订阅文件名与旧 URL 已全部删除，没有重定向或兼容入口，旧客户端必须用 `clash-sub links` 重新获取新链接。
 
+### 通用纯节点订阅
+
+owner 和普通用户各自额外提供 `Nodes.txt`，地址为 `https://<订阅域名>/s/<该用户令牌>/Nodes.txt`。正文是 Base64 编码的节点分享 URI 列表，只包含该用户的自建节点，不包含机场节点、DNS、策略组或分流规则。Shadowrocket 添加为订阅；Quantumult X 通过资源解析器导入，客户端仍需自己的规则配置。
+
+更新服务器代码后运行 `clash-sub sync`，再用 `clash-sub links` 获取实际链接。旧发布物在同步前继续可用，同步前不会列出尚未生成的纯节点链接。纯节点与 Clash 配置一起发布、回滚，沿用用户令牌、令牌轮换和自建流量头；机场专用令牌无权访问它。
+
+导出支持当前自建 VLESS TCP（含 REALITY / Vision）、Trojan TCP TLS 和无插件 Shadowsocks。遇到无法完整转换的协议或选项会使该用户本次同步失败并保留旧发布物，避免生成缺参数的节点。
+
 ## 生成关系
 
 `templates/base/Clash-Compat.yaml` 是完整基础模板；生成 Balance 时以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）替换基础模板的 DNS。owner 的 Airport 使用 Compat 模板和机场 provider，不注入 3x-ui 节点；原有两份 owner 配置继续注入自建节点与机场 provider，普通用户只输出 Compat。服务器不保存任何 Home 配置，Home 只存在于本机 Clash Verge 的全局扩展脚本。

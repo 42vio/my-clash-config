@@ -8,12 +8,15 @@ from urllib.parse import quote
 VARIANTS = ("compat", "balance")
 OWNER_VARIANTS = VARIANTS + ("airport",)
 MEMBER_VARIANTS = ("compat",)
+NODE_VARIANT = "nodes"
 PROFILE_FILENAMES = MappingProxyType({
+    NODE_VARIANT: "Nodes.txt",
     "compat": "Clash-Compat.yaml",
     "balance": "Clash-Balance.yaml",
     "airport": "Clash-Airport.yaml",
 })
 PROFILE_TITLES = MappingProxyType({
+    NODE_VARIANT: "Nodes.txt",
     "compat": "Clash-Compat.yaml",
     "balance": "Clash-Balance.yaml",
     "airport": "Clash-Airport.yaml",

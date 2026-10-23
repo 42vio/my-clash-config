@@ -131,6 +131,11 @@ def render_routes(config, state, clients):
             for variant in MEMBER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
                 blocks.append(_route_block(user.token, client_id, variant, alias))
+        # Legacy releases remain routable until the next sync creates Nodes.txt.
+        node_path = public_root / "releases" / str(client_id) / release_id / PROFILE_FILENAMES["nodes"]
+        if node_path.exists() or node_path.is_symlink():
+            alias = _release_path(public_root, client_id, release_id, "nodes")
+            blocks.append(_route_block(user.token, client_id, "nodes", alias))
     return "\n".join(blocks) + ("\n" if blocks else "")
 
 
@@ -725,6 +730,7 @@ def _route_block(token, client_id, variant, alias):
         raise NginxError("invalid release path")
     title = PROFILE_TITLES[variant]
     filename = PROFILE_FILENAMES[variant]
+    content_type = "text/plain" if variant == "nodes" else "text/yaml"
     # The public location only guards and proxies; every display header
     # lives in the internal /accel/ location, because Nginx re-evaluates
     # add_header in the final location after the X-Accel-Redirect (or the
@@ -766,7 +772,7 @@ def _route_block(token, client_id, variant, alias):
             "location = /accel/%d/%s {" % (client_id, filename),
             "    internal;",
             "    alias %s;" % alias,
-            '    default_type "text/yaml; charset=utf-8";',
+            '    default_type "%s; charset=utf-8";' % content_type,
             '    add_header Profile-Title "%s";' % title,
             "    add_header Content-Disposition 'attachment; filename=%s';" % filename,
             '    add_header Profile-Update-Interval "24";',

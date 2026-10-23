@@ -13,6 +13,7 @@ from clash_sub.domain import (
     OWNER_VARIANTS,
 )
 from clash_sub.sources import merge_proxy_sources
+from clash_sub.node_subscription import render_node_subscription
 from clash_sub.yaml_rt import (
     RoundTripYamlError,
     clone_round_trip,
@@ -24,6 +25,13 @@ from clash_sub.yaml_rt import (
 
 PROVIDER_NAME = "AmyTelecom"
 _PROFILE_RECIPES = {"compat": "compat", "balance": "balance"}
+
+
+def render_subscription_bundle(is_owner, xui, airport, template_root):
+    """Compose Clash profiles plus the user's portable self-hosted nodes."""
+    bundle = render_user_bundle(is_owner, xui, airport, template_root)
+    bundle["nodes"] = render_node_subscription(merge_proxy_sources((("3x-ui", xui),)))
+    return bundle
 
 
 def render_user_bundle(

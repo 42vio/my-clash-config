@@ -7,7 +7,7 @@ from clash_sub.airport_portal import AirportPortalClient
 from clash_sub.airport_store import AirportStore
 from clash_sub.checks import MihomoValidator, validate_clash
 from clash_sub.config import load_config
-from clash_sub.generator import render_user_bundle
+from clash_sub.generator import render_subscription_bundle
 from clash_sub.nginx import activate_runtime, recover_runtime, render_routes
 from clash_sub.release_store import ReleaseStore
 from clash_sub.service import ClashSubService
@@ -48,7 +48,7 @@ def build_service(root=None, runner=None):
         download_airport_document=download_airport_document,
         airport_store=AirportStore(config.private_root, config.public_root),
         airport_portal=AirportPortalClient(),
-        render_user_bundle=render_user_bundle,
+        render_user_bundle=render_subscription_bundle,
         validate_clash=validate_clash,
         mihomo_validator=MihomoValidator(config.mihomo_binary, runner=runner),
         release_store=ReleaseStore(

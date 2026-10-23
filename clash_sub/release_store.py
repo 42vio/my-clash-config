@@ -313,6 +313,9 @@ def _validate_bundle(bundle: Mapping[str, str]) -> tuple[tuple[str, ...], dict[s
         raise ReleaseStoreError("release variants are invalid")
     files = dict(bundle)
     keys = tuple(files)
+    with_nodes = "nodes" in files
+    if with_nodes:
+        keys = tuple(key for key in keys if key != "nodes")
     if set(keys) == set(MEMBER_VARIANTS):
         variants = MEMBER_VARIANTS
     elif set(keys) == set(OWNER_VARIANTS):
@@ -321,6 +324,8 @@ def _validate_bundle(bundle: Mapping[str, str]) -> tuple[tuple[str, ...], dict[s
         variants = VARIANTS
     else:
         raise ReleaseStoreError("release variants are invalid")
+    if with_nodes:
+        variants = variants + ("nodes",)
     if any(not isinstance(files[variant], str) or not files[variant] for variant in variants):
         raise ReleaseStoreError("release bundle is invalid")
     return variants, files

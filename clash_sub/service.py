@@ -15,7 +15,8 @@ from clash_sub.airport_portal import AirportPortalError
 from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
-from clash_sub.sources import SourceError, normalize_xui_endpoints
+from clash_sub.sources import SourceError, merge_proxy_sources, normalize_xui_endpoints
+from clash_sub.node_subscription import render_node_subscription
 from clash_sub.state import StateError, airport_only_token, prepare_link_update
 
 _AIRPORT_STORE_CODES = frozenset({"airport_source_missing", "airport_source_invalid", "airport_provider_invalid", "airport_provider_write_failed"})
@@ -258,6 +259,7 @@ class ClashSubService:
                 verified=self._releases.verify_release(client_id,release); _shape(verified.public_paths,client_id==state.owner_client_id)
                 if client_id==state.owner_client_id:
                     for variant,path in verified.public_paths.items():
+                        if variant == "nodes": continue
                         expected=_provider_url(self.config,airport_only_token(identity.token, schema_version=state.schema_version) if variant=="airport" else identity.token)
                         if yaml.safe_load(path.read_text())["proxy-providers"]["AmyTelecom"]["url"] != expected:
                             raise ValueError("stale provider")
@@ -281,7 +283,7 @@ class ClashSubService:
                 # Any failure inside the rotation activation transaction keeps
                 # the dedicated code; the prior link and release stay live.
                 self._discard(candidates); raise ServiceError("rotation_activation_failed") from None
-            self._observe(next_state); rotated=next_state.users[client_id]; return {"client_id":client_id,"token":rotated.token,"urls":tuple(_urls(self.config,rotated.token,client_id==next_state.owner_client_id))}
+            self._observe(next_state); rotated=next_state.users[client_id]; return {"client_id":client_id,"token":rotated.token,"urls":tuple(_urls(self.config,rotated.token,client_id==next_state.owner_client_id,nodes=_has_nodes(self.config,rotated)))}
     def links(self):
         with self._lock():
             self._recover()
@@ -294,7 +296,7 @@ class ClashSubService:
             if state.owner_client_id not in clients: raise ServiceError("owner_reinitialization_required")
             return tuple({"client_id":u.client_id,"email":u.email,
                           "sync_required":state.schema_version==1 or u.email!=clients[u.client_id].email,
-                          "urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id,state.schema_version))}
+                          "urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id,state.schema_version,nodes=_has_nodes(self.config,u)))}
                          for u in sorted(state.users.values(),key=lambda u:u.client_id)
                          if u.active and u.current_release and clients.get(u.client_id) and clients[u.client_id].enabled)
     def status(self):
@@ -326,6 +328,10 @@ class ClashSubService:
         ) if owner else None
         bundle=self._render(owner,xui,provider,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
         for variant,text in bundle.items():
+            if variant == "nodes":
+                if text != render_node_subscription(merge_proxy_sources((("3x-ui",xui),))):
+                    raise ValueError("node subscription source mismatch")
+                continue
             allowed = provider.airport_only_url if variant == "airport" else provider.url if provider else None
             self._validate(text,forbidden,allowed)
         release=self._releases.prepare(client.client_id,bundle,{"xui":_digest(xui)})
@@ -334,7 +340,8 @@ class ClashSubService:
             if owner:
                 self._validate_owner_bundle(bundle)
             else:
-                for path in release.public_paths.values(): self._mihomo.validate(path)
+                for variant,path in release.public_paths.items():
+                    if variant != "nodes": self._mihomo.validate(path)
         return release
     def _validate_owner_bundle(self,bundle):
         # Published owner profiles intentionally retain their remote airport
@@ -344,6 +351,7 @@ class ClashSubService:
         with tempfile.TemporaryDirectory(prefix="mihomo-owner-",dir=str(self.config.private_root)) as directory:
             directory=Path(directory); provider_path=directory/"provider.yaml"; provider_path.write_text(provider_body,encoding="utf-8")
             for variant,text in bundle.items():
+                if variant == "nodes": continue
                 document=yaml.safe_load(text)
                 provider=document["proxy-providers"]["AmyTelecom"]
                 provider.clear(); provider.update({"type":"file","path":"./provider.yaml"})
@@ -435,7 +443,8 @@ def _with_release(s,i,r):
     users=dict(s.users); users[i]=replace(users[i],current_release=r); return RuntimeState(s.schema_version,s.owner_client_id,users)
 def _routable(s):return RuntimeState(s.schema_version,s.owner_client_id,{i:replace(u,active=False) if u.active and not u.current_release else u for i,u in s.users.items()})
 def _shape(b,owner):
-    if tuple(b)!=(OWNER_VARIANTS if owner else MEMBER_VARIANTS):raise ValueError
+    base=OWNER_VARIANTS if owner else MEMBER_VARIANTS
+    if tuple(b) not in (base,base+("nodes",)):raise ValueError
 def _digest(v):return hashlib.sha256(json.dumps(v,sort_keys=True,default=str).encode()).hexdigest()
 def _source_host(url):
     # Only the hostname of the saved link is ever public: the path, query
@@ -449,8 +458,11 @@ def _find(cs,i):return next((c for c in cs if c.client_id==i),None)
 def _client_id(i):
     if isinstance(i,bool) or not isinstance(i,int) or i<1:raise ServiceError("invalid_client")
     return i
-def _urls(c,t,o,schema_version=2):
-    urls=["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t, schema_version=schema_version) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in (OWNER_VARIANTS if o else MEMBER_VARIANTS)]
+def _has_nodes(c,u):
+    return bool(u.current_release and (Path(c.public_root)/"releases"/str(u.client_id)/u.current_release/PROFILE_FILENAMES["nodes"]).is_file())
+def _urls(c,t,o,schema_version=2,*,nodes=False):
+    variants=(OWNER_VARIANTS if o else MEMBER_VARIANTS)+(("nodes",) if nodes else ())
+    urls=["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t, schema_version=schema_version) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in variants]
     if o: urls.append(_provider_url(c,t))
     return urls
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}
