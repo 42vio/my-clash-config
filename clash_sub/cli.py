@@ -755,7 +755,9 @@ def _call(operation, value, stdout, stderr, factory):
                 for error in errors:
                     stderr.write("客户端 ID %s（错误代码：%s）\n" % (error["client_id"], error["code"]))
                     if error["code"] in {"member_update_failed", "owner_update_failed"}:
-                        stderr.write("请检查该用户在 3x-ui 中的 Flow 是否设为 xtls-rprx-vision；未设置或设置不正确会导致 Reality 配置校验失败。保存后重新生成所有配置；若仍失败，请继续排查其他配置问题。\n")
+                        stderr.write("该用户配置同步失败，可能发生于节点读取、配置生成、校验或发布阶段；此错误码不能确定是 Flow 问题。本次未替换该用户配置。\n")
+                    elif error["code"] == "node_subscription_export_failed":
+                        stderr.write("纯节点订阅导出失败：存在不支持或无效的节点参数。本次未替换该用户配置，请检查纯节点导出兼容性，无需据此修改 Flow。\n")
                 return 1
             stdout.write("同步已完成。\n")
         elif operation == "links":

@@ -605,7 +605,7 @@ class LightweightCliTests(unittest.TestCase):
                 self.assertTrue(stdout.startswith(MENU if argv is None else ""))
                 self.assertIn("同步部分完成。\n", stdout)
                 self.assertEqual(stderr, "客户端 ID 8（错误代码：member_update_failed）\n"
-                                 "请检查该用户在 3x-ui 中的 Flow 是否设为 xtls-rprx-vision；未设置或设置不正确会导致 Reality 配置校验失败。保存后重新生成所有配置；若仍失败，请继续排查其他配置问题。\n")
+                                 "该用户配置同步失败，可能发生于节点读取、配置生成、校验或发布阶段；此错误码不能确定是 Flow 问题。本次未替换该用户配置。\n")
                 self.assertNotIn("member@example.test", stdout + stderr)
 
         code, stdout, stderr = run_cli(["sync"], FakeService())
@@ -613,6 +613,15 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(stdout, "同步已完成。\n")
         self.assertEqual(stderr, "")
+
+    def test_node_export_failure_has_its_own_sanitized_message(self):
+        service = FakeService()
+        service.sync_result = {"updated": (), "errors": ({"client_id": 8, "code": "node_subscription_export_failed"},)}
+        code, stdout, stderr = run_cli(["sync"], service)
+        self.assertEqual(code, 1)
+        self.assertIn("纯节点订阅导出失败", stderr)
+        self.assertIn("无需据此修改 Flow", stderr)
+        self.assertNotIn("请检查该用户在 3x-ui 中的 Flow", stderr)
 
     def test_home_import_stays_invalid_and_no_menu_offers_a_home_upload(self):
         menus = MENU + MAINTENANCE_MENU + CERT_MENU + BACKUP_MENU + USER_MENU

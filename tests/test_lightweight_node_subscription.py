@@ -42,6 +42,21 @@ class NodeSubscriptionTests(unittest.TestCase):
         self.assertEqual(unquote(urlsplit(trojan).username), password)
         self.assertEqual(parse_qs(urlsplit(trojan).query)["security"], ["tls"])
 
+    def test_reality_mlkem_flag_is_preserved_in_share_uri(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                node = reality_proxy("REALITY with ML-KEM")
+                node["reality-opts"]["support-x25519mlkem768"] = enabled
+                query = parse_qs(urlsplit(self.decode([node])[0]).query)
+                self.assertEqual(query["support-x25519mlkem768"], [str(enabled).lower()])
+                self.assertEqual(query["flow"], ["xtls-rprx-vision"])
+
+    def test_reality_mlkem_flag_requires_a_boolean(self):
+        node = reality_proxy("REALITY")
+        node["reality-opts"]["support-x25519mlkem768"] = "true"
+        with self.assertRaises(ValueError):
+            render_node_subscription([node])
+
     def test_unsupported_options_fail_without_echoing_secrets(self):
         for changes in ({"network": "grpc"}, {"plugin": "secret-plugin"}, {"type": "unknown"}):
             with self.subTest(changes=changes):
@@ -66,6 +81,7 @@ class NodeSubscriptionAcceptanceTests(unittest.TestCase):
         for client_id in (harness.owner_id, harness.member_id):
             node = reality_proxy("Self hosted %d" % client_id)
             node["port"] = 10443
+            node["reality-opts"]["support-x25519mlkem768"] = True
             harness.xui_bodies[harness.source_urls[client_id]] = harness._document([node])
         harness.service.sync_all()
         first = harness.release(harness.owner_id)
@@ -77,6 +93,7 @@ class NodeSubscriptionAcceptanceTests(unittest.TestCase):
             self.assertEqual(urlsplit(nodes[0]).hostname, "example.com")
             self.assertEqual(urlsplit(nodes[0]).port, 443)
             self.assertEqual(parse_qs(urlsplit(nodes[0]).query)["security"], ["reality"])
+            self.assertEqual(parse_qs(urlsplit(nodes[0]).query)["support-x25519mlkem768"], ["true"])
             self.assertNotIn("AmyTelecom", text)
             user = harness.state().users[client_id]
             url = "https://%s/s/%s/Nodes.txt" % (harness.config.subscription_authority, user.token)
@@ -108,5 +125,5 @@ class NodeSubscriptionAcceptanceTests(unittest.TestCase):
         node.update(port=10443, network="grpc")
         harness.xui_bodies[harness.source_urls[harness.member_id]] = harness._document([node])
         result = harness.service.sync_all()
-        self.assertTrue(result["errors"])
+        self.assertEqual(result["errors"], ({"client_id": harness.member_id, "code": "node_subscription_export_failed"},))
         self.assertEqual(harness.active_view(), before)

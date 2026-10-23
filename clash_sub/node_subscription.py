@@ -5,15 +5,19 @@ import ipaddress
 from urllib.parse import quote, urlencode
 
 
+class NodeSubscriptionError(ValueError):
+    """Sanitized failure at the portable node export boundary."""
+
+
 def render_node_subscription(proxies):
     """Export supported nodes without silently losing transport settings."""
     if not proxies:
-        raise ValueError("node subscription requires proxies")
+        raise NodeSubscriptionError("node subscription requires proxies")
     try:
         lines = [_share_uri(proxy) for proxy in proxies]
         return base64.b64encode(("\n".join(lines) + "\n").encode("utf-8")).decode("ascii") + "\n"
     except (KeyError, TypeError, ValueError, AttributeError):
-        raise ValueError("node subscription contains unsupported options") from None
+        raise NodeSubscriptionError("node subscription contains unsupported options") from None
 
 
 def _string(value):
@@ -61,13 +65,20 @@ def _share_uri(proxy):
         raise ValueError
     reality = proxy.get("reality-opts")
     if reality is not None:
-        if not tls or set(reality) - {"public-key", "short-id"}:
+        if not tls or set(reality) - {"public-key", "short-id", "support-x25519mlkem768"}:
             raise ValueError
         query.update(security="reality", pbk=_string(reality["public-key"]))
         short_id = reality.get("short-id", "")
         if not isinstance(short_id, str) or len(short_id) > 16 or len(short_id) % 2 or any(c not in "0123456789abcdefABCDEF" for c in short_id):
             raise ValueError
         query["sid"] = short_id
+        if "support-x25519mlkem768" in reality:
+            # Mihomo's share-URI extension preserves this TLS capability.
+            # Other clients choose key exchange through their own TLS stack.
+            enabled = reality["support-x25519mlkem768"]
+            if type(enabled) is not bool:
+                raise ValueError
+            query["support-x25519mlkem768"] = str(enabled).lower()
     else:
         query["security"] = "tls" if tls else "none"
     if kind == "trojan" and not tls:

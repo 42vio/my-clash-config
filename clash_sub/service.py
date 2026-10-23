@@ -16,7 +16,7 @@ from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
 from clash_sub.sources import SourceError, merge_proxy_sources, normalize_xui_endpoints
-from clash_sub.node_subscription import render_node_subscription
+from clash_sub.node_subscription import NodeSubscriptionError, render_node_subscription
 from clash_sub.state import StateError, airport_only_token, prepare_link_update
 
 _AIRPORT_STORE_CODES = frozenset({"airport_source_missing", "airport_source_invalid", "airport_provider_invalid", "airport_provider_write_failed"})
@@ -93,8 +93,9 @@ class ClashSubService:
                     users=dict(next_state.users); users[client.client_id]=user
                     next_state=RuntimeState(2,next_state.owner_client_id,users)
                     if release: next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
-                except Exception:
-                    owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,"owner_update_failed" if owner else "member_update_failed"))
+                except Exception as error:
+                    code = "node_subscription_export_failed" if isinstance(error,NodeSubscriptionError) else "owner_update_failed" if owner else "member_update_failed"
+                    owned=[item for item in candidates if item[0] == client.client_id]; self._discard(owned); candidates[:]=[item for item in candidates if item[0] != client.client_id]; errors.append(_error(client,code))
             if migrating and errors:
                 self._discard(candidates); self._journal(errors=("link_migration_failed",))
                 raise ServiceError("link_migration_failed")
