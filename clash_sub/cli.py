@@ -33,7 +33,6 @@ _UPDATE_REMINDER = (
 )
 _SYNC_SPAWN_TIMEOUT = 900
 _MENU_BOX_WIDTH = 46
-_RETURN_PROMPT = "按回车键返回当前菜单："
 
 _GREEN = "\033[0;32m"
 _YELLOW = "\033[0;33m"
@@ -238,9 +237,6 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
         code, exit_menu = outcome
         if exit_menu or code != 0:
             raise _MenuExit(code)
-        # 只有主菜单直接操作（2-4）结束后停顿；二级菜单返回时直接重显主菜单。
-        if choice in ("2", "3", "4"):
-            _pause(stdin, stdout, colors)
 
 
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
@@ -286,7 +282,6 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
         code, exit_menu = outcome
         if exit_menu or code != 0:
             return code, True
-        _pause(stdin, stdout, colors)
 
 
 def _airport_dispatch(choice, stdin, stdout, stderr, factory):
@@ -351,15 +346,6 @@ def _read_choice(stdin, stdout, maximum):
     if line == "":
         raise _MenuExit(0)
     return line.strip()
-
-
-def _pause(stdin, stdout, colors):
-    stdout.write(colors.yellow(_RETURN_PROMPT))
-    stdout.flush()
-    try:
-        stdin.readline()
-    except (EOFError, KeyboardInterrupt):
-        pass
 
 
 def _menu_error(stderr, code):
