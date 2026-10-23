@@ -287,7 +287,7 @@ class LightweightCliTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 1)
-        self.assertEqual(stdout.count(AIRPORT_MENU), 2)
+        self.assertEqual(stdout.count(AIRPORT_MENU), 1)
         self.assertEqual(stdout.count(MENU), 2)
 
     def test_airport_portal_explains_the_chain_and_reads_the_page_visibly(self):
@@ -346,7 +346,7 @@ class LightweightCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("尚未设置订阅开关页面，请先使用菜单 1。", stderr)
         self.assertNotIn("airport_activation_missing", stderr)
-        self.assertEqual(stdout.count(AIRPORT_MENU), 2)
+        self.assertEqual(stdout.count(AIRPORT_MENU), 1)
 
     def test_airport_auto_refresh_reports_a_normal_skip(self):
         self.service.airport_auto_result = {"updated": False, "skipped": True}
@@ -953,7 +953,8 @@ class MenuLoopTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(stdout.count(MENU), 4)
+        self.assertEqual(stdout.count(MENU), 1)
+        self.assertEqual(stdout.count("主菜单：输入下一项 [1-8]，回车查看菜单，0 退出："), 3)
         self.assertEqual(
             self.service.calls,
             [("links", ()), ("sync_all", ()), ("status", ())],
@@ -966,16 +967,50 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(self.service.calls, [("airport_status", ()), ("airport_status", ())])
-        self.assertEqual(stdout.count(AIRPORT_MENU), 3)
+        self.assertEqual(stdout.count(AIRPORT_MENU), 1)
+        self.assertEqual(stdout.count("机场订阅：输入下一项 [1-5]，回车查看菜单，0 返回上一级："), 2)
         self.assertNotIn("按回车键返回当前菜单：", stdout)
 
-    def test_main_menu_invalid_or_empty_selection_stays_and_redisplays(self):
+    def test_main_menu_invalid_selection_stays_and_enter_expands_the_menu(self):
         code, stdout, stderr = run_cli(None, self.service, stdin_text="99\n\nabc\n9\n0\n")
 
         self.assertEqual(code, 0)
-        self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 4)
-        self.assertEqual(stdout.count(MENU), 5)
+        self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 3)
+        self.assertEqual(stdout.count(MENU), 2)
         self.assertEqual(self.service.calls, [])
+
+    def test_enter_after_an_action_expands_the_menu_without_repeating_the_action(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="2\n\n3\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout.count(MENU), 2)
+        self.assertEqual(self.service.calls, [("sync_all", ()), ("links", ())])
+        result_end = stdout.index("同步已完成。") + len("同步已完成。")
+        prompt = stdout.index("主菜单：输入下一项", result_end)
+        next_menu = stdout.index(MENU, result_end)
+        self.assertLess(prompt, next_menu)
+
+    def test_enter_in_submenu_expands_only_the_current_menu(self):
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="1\n5\n\n5\n0\n0\n")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(stdout.count(AIRPORT_MENU), 2)
+        self.assertEqual(stdout.count(MENU), 2)
+        self.assertEqual(self.service.calls, [("airport_status", ()), ("airport_status", ())])
+
+    def test_eof_or_ctrl_c_at_compact_prompt_exits_without_repeating_the_action(self):
+        for stdin in (io.StringIO("2\n"), InterruptingAfterFirstLine("2\n")):
+            with self.subTest(stdin=type(stdin).__name__):
+                service = FakeService()
+                stdout, stderr = io.StringIO(), io.StringIO()
+                code = main(None, stdin=stdin, stdout=stdout, stderr=stderr, service_factory=lambda: service)
+
+                self.assertEqual(code, 0)
+                self.assertEqual(stderr.getvalue(), "")
+                self.assertEqual(service.calls, [("sync_all", ())])
+                self.assertEqual(stdout.getvalue().count(MENU), 1)
 
     def test_each_menu_prompt_lists_its_own_range(self):
         cases = (
@@ -1037,7 +1072,7 @@ class MenuLoopTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 1)
-        self.assertEqual(stdout.count(MAINTENANCE_MENU), 2)
+        self.assertEqual(stdout.count(MAINTENANCE_MENU), 1)
         self.assertEqual(stdout.count(MENU), 2)
 
     def test_cert_menu_status_and_backup_menu_dispatch_to_manage_actions(self):
@@ -1371,13 +1406,14 @@ class MenuColorTests(unittest.TestCase):
         self.assertIn(GREEN + "1." + RESET, stdout)
         self.assertIn(GREEN + "（推荐）" + RESET, stdout)
 
-    def test_tty_returns_directly_to_the_menu_after_an_action(self):
+    def test_tty_shows_a_compact_yellow_prompt_after_an_action(self):
         code, stdout, stderr = run_cli(None, self.service, stdin_text="3\n0\n", tty=True)
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(self.service.calls, [("links", ())])
-        self.assertEqual(stdout.count("请输入选项 [0-8]："), 2)
+        self.assertEqual(stdout.count("请输入选项 [0-8]："), 1)
+        self.assertIn(YELLOW + "\n主菜单：输入下一项 [1-8]，回车查看菜单，0 退出：" + RESET, stdout)
         self.assertNotIn("按回车键返回当前菜单：", stdout)
 
     def test_tty_invalid_selection_is_red(self):

@@ -225,9 +225,16 @@ def _menu(stdin, stdout, stderr, factory):
 
 
 def _main_menu(stdin, stdout, stderr, factory, colors):
+    expanded = True
     while True:
-        stdout.write(_render_main_menu(colors))
-        choice = _read_choice(stdin, stdout, 8)
+        if expanded:
+            stdout.write(_render_main_menu(colors))
+        prompt = None if expanded else colors.yellow("\n主菜单：输入下一项 [1-8]，回车查看菜单，0 退出：")
+        choice = _read_choice(stdin, stdout, 8, prompt=prompt)
+        expanded = False
+        if choice == "":
+            expanded = True
+            continue
         if choice == "0":
             return 0
         outcome = _main_dispatch(choice, stdin, stdout, stderr, factory, colors)
@@ -237,12 +244,14 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
         code, exit_menu = outcome
         if exit_menu or code != 0:
             raise _MenuExit(code)
+        # Returning from a submenu changes context; show the parent menu.
+        expanded = choice in {"1", "5", "6", "7", "8"}
 
 
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "1":
         return _run_submenu(
-            _AIRPORT_MENU_ROWS, 5, _airport_dispatch, stdin, stdout, stderr, factory, colors
+            _AIRPORT_MENU_ROWS, 5, _airport_dispatch, stdin, stdout, stderr, factory, colors, name="机场订阅"
         )
     if choice == "2":
         return _call("sync", None, stdout, stderr, factory), False
@@ -252,27 +261,34 @@ def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
         return _call("status", None, stdout, stderr, factory), False
     if choice == "5":
         return _run_submenu(
-            _MAINTENANCE_MENU_ROWS, 3, _maintenance_dispatch, stdin, stdout, stderr, factory, colors
+            _MAINTENANCE_MENU_ROWS, 3, _maintenance_dispatch, stdin, stdout, stderr, factory, colors, name="程序维护"
         )
     if choice == "6":
         return _run_submenu(
-            _CERT_MENU_ROWS, 2, _cert_dispatch, stdin, stdout, stderr, factory, colors
+            _CERT_MENU_ROWS, 2, _cert_dispatch, stdin, stdout, stderr, factory, colors, name="证书管理"
         )
     if choice == "7":
         return _run_submenu(
-            _BACKUP_MENU_ROWS, 3, _backup_dispatch, stdin, stdout, stderr, factory, colors
+            _BACKUP_MENU_ROWS, 3, _backup_dispatch, stdin, stdout, stderr, factory, colors, name="备份与恢复"
         )
     if choice == "8":
         return _run_submenu(
-            _USER_MENU_ROWS, 4, _user_dispatch, stdin, stdout, stderr, factory, colors
+            _USER_MENU_ROWS, 4, _user_dispatch, stdin, stdout, stderr, factory, colors, name="用户与版本"
         )
     return None
 
 
-def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors):
+def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors, *, name):
+    expanded = True
     while True:
-        stdout.write(_render_submenu(rows, colors))
-        choice = _read_choice(stdin, stdout, maximum)
+        if expanded:
+            stdout.write(_render_submenu(rows, colors))
+        prompt = None if expanded else colors.yellow("\n%s：输入下一项 [1-%d]，回车查看菜单，0 返回上一级：" % (name, maximum))
+        choice = _read_choice(stdin, stdout, maximum, prompt=prompt)
+        expanded = False
+        if choice == "":
+            expanded = True
+            continue
         if choice == "0":
             return 0, False
         outcome = dispatch(choice, stdin, stdout, stderr, factory)
@@ -336,8 +352,8 @@ def _user_dispatch(choice, stdin, stdout, stderr, factory):
     return None
 
 
-def _read_choice(stdin, stdout, maximum):
-    stdout.write("请输入选项 [0-%d]：" % maximum)
+def _read_choice(stdin, stdout, maximum, *, prompt=None):
+    stdout.write(prompt if prompt is not None else "请输入选项 [0-%d]：" % maximum)
     stdout.flush()
     try:
         line = stdin.readline()
