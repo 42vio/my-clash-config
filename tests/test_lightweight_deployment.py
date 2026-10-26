@@ -171,7 +171,7 @@ class LightweightDeploymentTests(unittest.TestCase):
     def test_scheduled_traffic_units_are_gone_and_metadata_units_are_the_installed_set(self):
         # The retired scheduled-traffic units must not ship at all; the
         # top-level unit set is exactly the socket-activated metadata pair,
-        # the boot recovery oneshot, and the weekly airport refresh pair
+        # the boot recovery oneshot, and the daily airport refresh pair
         # (drop-ins live in nginx.service.d, the socket's rule in tmpfiles.d/).
         top_level_units = sorted(
             path.name
@@ -285,7 +285,7 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("After=clash-sub-recover.service", drop_in)
         self.assertNotIn("[Install]", service)
 
-    def test_airport_refresh_service_is_a_hardened_weekly_oneshot(self):
+    def test_airport_refresh_service_is_a_hardened_daily_oneshot(self):
         text = AIRPORT_REFRESH_SERVICE.read_text(encoding="utf-8")
         self.assertIn("Wants=network-online.target", text)
         self.assertIn("After=network-online.target", text)
@@ -313,16 +313,16 @@ class LightweightDeploymentTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.assertEqual(_unit_value(text, key), [value])
         # Only the timer carries [Install]; the oneshot itself never starts
-        # at boot and keeps network access for the weekly refresh.
+        # at boot and keeps network access for the daily refresh.
         self.assertNotIn("[Install]", text)
         self.assertNotIn("PrivateNetwork=true", text)
         self.assertNotIn("http", text)
 
-    def test_airport_refresh_timer_runs_weekly_with_random_delay_and_persistence(self):
+    def test_airport_refresh_timer_runs_daily_at_beijing_six_with_random_delay_and_persistence(self):
         text = AIRPORT_REFRESH_TIMER.read_text(encoding="utf-8")
         required = {
-            "OnCalendar": "weekly",
-            "RandomizedDelaySec": "6h",
+            "OnCalendar": "*-*-* 06:00:00 Asia/Shanghai",
+            "RandomizedDelaySec": "2h",
             "Persistent": "true",
             "Unit": "clash-sub-airport-refresh.service",
         }

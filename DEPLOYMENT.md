@@ -55,7 +55,7 @@ cd /opt/my-clash-config
 bash install.sh
 ```
 
-按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录（含机场 provider 目录）、Nginx 配置、`/etc/tmpfiles.d/clash-sub-metadata.conf`（开机建立 `/run/clash-sub` 目录），并启用 `clash-sub-metadata.socket` 与 `clash-sub-airport-refresh.timer`（每 7 天自动刷新一次机场配置，随机延迟 0–6 小时）。订阅流量头由该 socket 按请求按需提供，不存在任何定时流量刷新任务。
+按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录（含机场 provider 目录）、Nginx 配置、`/etc/tmpfiles.d/clash-sub-metadata.conf`（开机建立 `/run/clash-sub` 目录），并启用 `clash-sub-metadata.socket` 与 `clash-sub-airport-refresh.timer`（北京时间每天 06:00 开始自动刷新机场配置，随机延迟 0–2 小时）。订阅流量头由该 socket 按请求按需提供，不存在任何定时流量刷新任务。
 
 安装过程按 12 个步骤显示当前操作和已完成进度；百分比表示完成的步骤比例，不是剩余时间估算。若 Python 安装阶段失败，修正错误后重新执行 `bash install.sh`，安装器会读取安装记录并沿用已经完成的阶段。
 

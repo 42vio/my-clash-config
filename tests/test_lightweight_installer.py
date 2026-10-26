@@ -2251,7 +2251,7 @@ class RollbackPhaseGatingTests(unittest.TestCase):
 
 
 class AirportRefreshTimerTests(unittest.TestCase):
-    """The weekly airport refresh pair joins the systemd install transaction."""
+    """The daily airport refresh pair joins the systemd install transaction."""
 
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()

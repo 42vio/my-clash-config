@@ -172,7 +172,7 @@ class ClashSubService:
             self._journal(self._clock(),())
             return result
     def auto_refresh_airport(self):
-        # Menu 2 and the weekly timer: activate the page once, then prefer
+        # Menu 2 and the daily timer: activate the page once, then prefer
         # the saved link.  A temporarily unavailable page still allows the
         # saved link; only when the saved link also fails does an available
         # page generate a fresh one.  Page down + link down is a normal

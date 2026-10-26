@@ -78,9 +78,9 @@ git diff --check
 
 地址会显示在当前终端，但不要把它作为 shell 参数、写入历史、仓库、重定向文件或工单。成功后可执行 `clash-sub status` 查看整体状态。
 
-服务器还会通过 `clash-sub-airport-refresh.timer` 每 7 天（随机延迟 0–6 小时，错过的周期补跑）自动执行一次与菜单 2 相同的刷新：共用同一把操作锁，锁被占用时按本次跳过处理；未设置开关页面时直接跳过；不做密集重试，也不执行 sync、不读取 3x-ui、不生成主配置、不调用 Mihomo、不重载 Nginx。
+服务器还会通过 `clash-sub-airport-refresh.timer` 北京时间每天 06:00（随机延迟 0–2 小时，正常运行时约 06:00–08:00 执行；错过的周期补跑）自动执行一次与菜单 2 相同的刷新：共用同一把操作锁，锁被占用时按本次跳过处理；未设置开关页面时直接跳过；不做密集重试，也不执行 sync、不读取 3x-ui、不生成主配置、不调用 Mihomo、不重载 Nginx。
 
-三层刷新周期各管一段：服务器更新 `AmyTelecom.yaml` 每 7 天一次（带随机延迟）；owner 配置里 `AmyTelecom` provider 的 `interval: 86400` 让客户端每 24 小时从自有订阅服务器拉一次——服务器更新后最多约 24 小时内客户端取得新内容；主配置响应头 `Profile-Update-Interval: 24` 保持 24 小时不变。日常刷新只访问自有订阅服务器，不增加机场上游的访问频率。
+三层刷新周期各管一段：服务器每天北京时间 06:00 开始更新 `AmyTelecom.yaml`（随机延迟 0–2 小时）；owner 配置里 `AmyTelecom` provider 的 `interval: 86400` 让客户端每 24 小时从自有订阅服务器拉一次——服务器更新后最多约 24 小时内客户端取得新内容；主配置响应头 `Profile-Update-Interval: 24` 保持 24 小时不变。日常刷新只访问自有订阅服务器，不增加机场上游的访问频率。
 
 下载与发布规则：按 HTTPS 下载原始字节（保留 HTTPS、最多三次 HTTPS 重定向、超时与 5 MB 大小限制），拒绝空响应与明显 HTML 错误页（`text/html`/`application/xhtml+xml` 响应类型，或去除 BOM 与空白后以 `<!DOCTYPE html`、`<html`、`<head`、`<body` 开头的正文），其余非空响应原字节、原注释写入随机临时文件，经日志式事务与来源记录同时原子替换 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`（权限 `0640 root:www-data` 不变）。来源记录 `/var/lib/clash-sub/private/airport-source.json` 同时保存订阅开关页面地址、订阅链接与最近一次下载的流量，固定 0600、root:root、非软链且硬链数为 1；崩溃中断的事务在下一次机场操作时恢复到完整的旧状态或完整的新状态。服务器不做 YAML 解析、不校验机场内容结构——上游来的原始字节、注释与顺序原样保留；坏的上游内容需要通过菜单 2 或菜单 4 覆盖。失败时保留当前 provider 与来源记录，只输出隐藏了源 URL、令牌、UUID 和节点敏感字段的稳定错误码。
 

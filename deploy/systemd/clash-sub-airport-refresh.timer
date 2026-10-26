@@ -1,9 +1,9 @@
 [Unit]
-Description=Refresh the saved airport subscription every seven days
+Description=Refresh the saved airport subscription daily at 06:00 Asia/Shanghai
 
 [Timer]
-OnCalendar=weekly
-RandomizedDelaySec=6h
+OnCalendar=*-*-* 06:00:00 Asia/Shanghai
+RandomizedDelaySec=2h
 Persistent=true
 Unit=clash-sub-airport-refresh.service
 
