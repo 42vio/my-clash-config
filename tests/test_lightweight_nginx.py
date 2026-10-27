@@ -88,6 +88,28 @@ def _location_blocks(text):
 
 
 class LightweightNginxTests(unittest.TestCase):
+    def test_identical_runtime_does_not_rewrite_or_reload(self):
+        activate_runtime(self.config,self.state,'same routes\n',FakeRunner())
+        paths=(self.routes,self.private_root/'state.json')
+        before=[(path.stat().st_ino,path.stat().st_mtime_ns) for path in paths]
+        runner=FakeRunner()
+        with patch('clash_sub.nginx._write_candidate',side_effect=AssertionError('unexpected write')):
+            activate_runtime(self.config,self.state,'same routes\n',runner)
+        self.assertEqual(runner.calls,[])
+        self.assertEqual(before,[(path.stat().st_ino,path.stat().st_mtime_ns) for path in paths])
+
+    def test_private_state_change_is_committed_without_reloading_routes(self):
+        activate_runtime(self.config,self.state,'same routes\n',FakeRunner())
+        before=self.routes.stat().st_ino
+        users=dict(self.state.users)
+        users[8]=replace(users[8],active=False)
+        changed=replace(self.state,users=users)
+        runner=FakeRunner()
+        activate_runtime(self.config,changed,'same routes\n',runner)
+        self.assertEqual(load_state(self.private_root/'state.json'),changed)
+        self.assertEqual(self.routes.stat().st_ino,before)
+        self.assertEqual(runner.calls,[])
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name).resolve()
@@ -1190,6 +1212,37 @@ class NginxTemplateRenderTests(unittest.TestCase):
 
 
 class ActivateNginxFilesTests(unittest.TestCase):
+    def test_prepared_recovery_runs_before_unchanged_fast_path(self):
+        files=((self.target,b'# original\n',0o640),)
+        self._activate(files,reload=True)
+        journal=self.root/'.nginx-rerender-journal.json'
+        nginx_module._write_nginx_file_journal(journal,[(self.target,nginx_module._snapshot(self.target))])
+        self.target.write_bytes(b'# interrupted\n')
+        self.runner_calls.clear()
+        self._activate(files,reload=True,journal_path=journal)
+        self.assertEqual(self.target.read_bytes(),b'# original\n')
+        self.assertEqual(self.runner_calls,[['/usr/sbin/nginx','-t'],['/usr/bin/systemctl','reload','nginx']])
+        self.assertFalse(journal.exists())
+
+    def test_identical_files_skip_rewrite_and_reload_but_support_forcing(self):
+        files=((self.target,b'# unchanged\n',0o640),)
+        self._activate(files,reload=True)
+        before=self.target.stat().st_ino,self.target.stat().st_mtime_ns
+        self.runner_calls.clear()
+        self._activate(files,reload=True)
+        self.assertEqual(self.runner_calls,[])
+        self.assertEqual(before,(self.target.stat().st_ino,self.target.stat().st_mtime_ns))
+        activate_nginx_files(files,self._runner,nginx_binary='/usr/sbin/nginx',systemctl_binary='/usr/bin/systemctl',reload=True,force_reload=True)
+        self.assertEqual(self.runner_calls,[['/usr/sbin/nginx','-t'],['/usr/bin/systemctl','reload','nginx']])
+        self.assertEqual(before,(self.target.stat().st_ino,self.target.stat().st_mtime_ns))
+
+    def test_unchanged_contents_with_wrong_mode_are_repaired(self):
+        self.target.write_bytes(b'# same\n')
+        os.chmod(self.target,0o644)
+        self._activate(((self.target,b'# same\n',0o640),),reload=True)
+        self.assertEqual(self.target.stat().st_mode & 0o777,0o640)
+        self.assertEqual(self.runner_calls[-1],['/usr/bin/systemctl','reload','nginx'])
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.root = Path(self.tempdir.name).resolve()

@@ -436,3 +436,11 @@ clash-sub web set-api-token
 - 机场：`http://127.0.0.1:8765/airport.html`
 
 预览页中的 query 参数仅切换虚构数据，不是正式授权机制。不要把真实令牌写入预览文件。
+
+### 减少 Nginx reload 与旧 worker 堆积
+
+发布激活先处理未完成的恢复日志，再比对目标文件内容、权限和安全属性。全部相同则不重写文件、不创建新事务、不执行 `nginx -t` 或 reload。仅私有状态变化时仍按事务持久化状态，不重写相同路由，也不 reload；路由或 Nginx 配置发生变化时继续执行校验、reload 和失败回滚。通用文件激活支持 `force_reload=True`，供配置文字不变但外部证书已更新的调用使用；现有 acme.sh 续期 reload 钩子不受该比对影响。
+
+在 `/etc/nginx/nginx.conf` 的主配置层可设置 `worker_shutdown_timeout 10m;`，不放进 `http`、`stream` 或 `server` 块。它限制后续旧 worker 的优雅退出等待时间，超时会关闭其剩余连接，代理客户端需要重连。项目不覆盖用户已有的全局超时配置；当前服务器已手动设置该值，更新项目保留它。已经按旧配置运行的退出中 worker 需等待原连接结束或单独清理，不会因新增指令立即退出。
+
+清理旧 worker 时只对当前 Nginx master 的、命令行为 `nginx: worker process is shutting down` 的子进程发送 TERM，并在发送前再次核对 PID 启动时间和父进程，避免 PID 复用；不停止 Nginx master、当前 worker、3x-ui 或 Xray。该操作会断开旧 worker 持有的连接，应在允许重连时执行。

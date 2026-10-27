@@ -165,12 +165,17 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
     artifacts.extend(_extra_artifacts(extra_replacements, private_root))
     _validate_artifacts(artifacts)
     snapshots = [(path, _snapshot(path)) for path, _, _ in artifacts]
+    pending = [artifact for artifact, (_, snapshot) in zip(artifacts, snapshots)
+               if snapshot != (True, artifact[1], artifact[2])]
+    if not pending:
+        return
+    routes_changed = any(path == routes_path for path, _, _ in pending)
     journal_path = private_root / _ACTIVATION_JOURNAL
     candidates = []
     changed = False
     journal_written = False
     try:
-        for path, contents, mode in artifacts:
+        for path, contents, mode in pending:
             candidates.append((path, _write_candidate(path, contents, mode)))
         _write_activation_journal(journal_path, checked_config, snapshots, "prepared")
         journal_written = True
@@ -180,12 +185,12 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
             _require_activation_target(path, _artifact_mode(path, artifacts), private_root)
             _fsync_directory(path.parent)
 
-        if not _command_ok(runner, (str(checked_config.nginx_binary), "-t")):
+        if routes_changed and not _command_ok(runner, (str(checked_config.nginx_binary), "-t")):
             if not _recover_after_failed_activation(checked_config, runner):
                 raise NginxError("Nginx activation rollback failed")
             raise NginxError("Nginx validation failed")
 
-        if not _command_ok(runner, (str(checked_config.systemctl_binary), "reload", "nginx")):
+        if routes_changed and not _command_ok(runner, (str(checked_config.systemctl_binary), "reload", "nginx")):
             if not _recover_after_failed_activation(checked_config, runner):
                 raise NginxError("Nginx activation rollback failed")
             raise NginxError("Nginx reload failed")
@@ -211,7 +216,7 @@ def activate_runtime(config, state, routes, runner, extra_replacements=()):
             _remove_candidate(candidate)
 
 
-def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, reload=False, journal_path=None):
+def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, reload=False, journal_path=None, force_reload=False):
     """Install nginx files with rollback and optional durable recovery.
 
     ``files`` is an iterable of ``(path, contents, mode)`` tuples.  Existing
@@ -220,6 +225,8 @@ def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, 
     committed journals only prove successful new files and are removed.
     """
     if isinstance(files, (str, bytes)) or not callable(runner):
+        raise NginxError("invalid nginx file activation")
+    if not isinstance(force_reload, bool) or (force_reload and not reload):
         raise NginxError("invalid nginx file activation")
     if not isinstance(nginx_binary, (str, Path)) or not str(nginx_binary):
         raise NginxError("invalid nginx file activation")
@@ -279,10 +286,20 @@ def activate_nginx_files(files, runner, *, nginx_binary, systemctl_binary=None, 
             raise NginxError("invalid nginx file activation") from None
 
     snapshots = [(path, _snapshot(path)) for path, _, _ in artifacts]
+    pending = [artifact for artifact, (_, snapshot) in zip(artifacts, snapshots)
+               if snapshot != (True, artifact[1], artifact[2])]
+    if not pending:
+        # Certificates may change without changing the configuration text.
+        if force_reload:
+            if not _command_ok(runner, (str(nginx_binary), "-t")):
+                raise NginxError("Nginx validation failed")
+            if not _command_ok(runner, (str(systemctl_binary), "reload", "nginx")):
+                raise NginxError("Nginx reload failed")
+        return True
     candidates = []
     prepared = False
     try:
-        for path, contents, mode in artifacts:
+        for path, contents, mode in pending:
             candidates.append((path, _write_candidate(path, contents, mode)))
         if journal is not None:
             _write_nginx_file_journal(journal, snapshots)
