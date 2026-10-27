@@ -284,6 +284,13 @@ class ClashSubService:
                 # Any failure inside the rotation activation transaction keeps
                 # the dedicated code; the prior link and release stay live.
                 self._discard(candidates); raise ServiceError("rotation_activation_failed") from None
+            # Page capabilities are independent. Failure to rebind fails closed:
+            # an old page cannot reveal a newly rotated subscription.
+            try:
+                from clash_sub.web_settings import rebind_subscription
+                rebind_subscription(self.config.private_root,state,next_state,client_id)
+            except Exception:
+                pass
             self._observe(next_state); rotated=next_state.users[client_id]; return {"client_id":client_id,"token":rotated.token,"urls":tuple(_urls(self.config,rotated.token,client_id==next_state.owner_client_id,nodes=_has_nodes(self.config,rotated)))}
     def links(self):
         with self._lock():

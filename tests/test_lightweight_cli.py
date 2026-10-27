@@ -21,6 +21,7 @@ from clash_sub.cli import (
     MAINTENANCE_MENU,
     MENU,
     USER_MENU,
+    WEB_MENU,
     _call,
     _parser,
     _prompt,
@@ -237,7 +238,7 @@ class LightweightCliTests(unittest.TestCase):
             "│  0. 退出",
             "│  1. 机场订阅",
             "│  2. 重新生成所有配置",
-            "│  3. 查看订阅链接",
+            "│  3. 查看用户链接",
             "│  4. 查看运行状态",
             "│  5. 程序维护",
             "│  6. 证书管理",
@@ -573,11 +574,11 @@ class LightweightCliTests(unittest.TestCase):
         status = FakeService()
 
         self.assertEqual(run_cli(None, sync, stdin_text="2\n")[0], 0)
-        self.assertEqual(run_cli(None, links, stdin_text="3\n")[0], 0)
+        self.assertEqual(run_cli(None, links, stdin_text="3\n7\n0\n")[0], 0)
         code, output, _ = run_cli(None, status, stdin_text="4\n")
 
         self.assertEqual(sync.calls, [("sync_all", ())])
-        self.assertEqual(links.calls, [("links", ())])
+        self.assertEqual(links.calls, [("status", ()), ("links", ())])
         self.assertEqual(code, 0)
         self.assertEqual(status.calls, [("status", ())])
         self.assertIn("状态", output)
@@ -948,16 +949,16 @@ class MenuLoopTests(unittest.TestCase):
 
     def test_main_menu_loops_until_zero_and_dispatches_each_action_once(self):
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="3\n2\n4\n0\n"
+            None, self.service, stdin_text="3\n7\n2\n4\n0\n"
         )
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(stdout.count(MENU), 1)
-        self.assertEqual(stdout.count("主菜单：输入下一项 [1-9]，回车查看菜单，0 退出："), 3)
+        self.assertEqual(stdout.count(MENU), 2)
+        self.assertEqual(stdout.count("主菜单：输入下一项 [1-9]，回车查看菜单，0 退出："), 2)
         self.assertEqual(
             self.service.calls,
-            [("links", ()), ("sync_all", ()), ("status", ())],
+            [("status", ()), ("links", ()), ("sync_all", ()), ("status", ())],
         )
         self.assertNotIn("按回车键返回当前菜单：", stdout)
 
@@ -980,12 +981,12 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(self.service.calls, [])
 
     def test_enter_after_an_action_expands_the_menu_without_repeating_the_action(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="2\n\n3\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="2\n\n4\n0\n")
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(stdout.count(MENU), 2)
-        self.assertEqual(self.service.calls, [("sync_all", ()), ("links", ())])
+        self.assertEqual(self.service.calls, [("sync_all", ()), ("status", ())])
         result_end = stdout.index("同步已完成。") + len("同步已完成。")
         prompt = stdout.index("主菜单：输入下一项", result_end)
         next_menu = stdout.index(MENU, result_end)
@@ -1019,7 +1020,7 @@ class MenuLoopTests(unittest.TestCase):
             ("5\n0\n0\n", MAINTENANCE_MENU, "请输入选项 [0-3]："),
             ("6\n0\n0\n", CERT_MENU, "请输入选项 [0-2]："),
             ("7\n0\n0\n", BACKUP_MENU, "请输入选项 [0-3]："),
-            ("8\n0\n0\n", USER_MENU, "请输入选项 [0-4]："),
+            ("8\n0\n0\n", USER_MENU, "请输入选项 [0-5]："),
         )
         for stdin_text, menu, prompt in cases:
             with self.subTest(prompt=prompt):
@@ -1407,11 +1408,11 @@ class MenuColorTests(unittest.TestCase):
         self.assertIn(GREEN + "（推荐）" + RESET, stdout)
 
     def test_tty_shows_a_compact_yellow_prompt_after_an_action(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="3\n0\n", tty=True)
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="4\n0\n", tty=True)
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(self.service.calls, [("links", ())])
+        self.assertEqual(self.service.calls, [("status", ())])
         self.assertEqual(stdout.count("请输入选项 [0-9]："), 1)
         self.assertIn(YELLOW + "\n主菜单：输入下一项 [1-9]，回车查看菜单，0 退出：" + RESET, stdout)
         self.assertNotIn("按回车键返回当前菜单：", stdout)
@@ -2009,3 +2010,28 @@ class MetadataServeCommandTests(unittest.TestCase):
 
         self.assertEqual(code, 1)
         self.assertEqual(stderr.getvalue(), "操作失败（错误代码：metadata_serve_failed）\n")
+
+
+class WebMenuConsistencyTests(unittest.TestCase):
+    def test_actions_keep_compact_prompt_and_enter_expands_menu(self):
+        with patch('clash_sub.cli._web_command',return_value=0) as command:
+            code,stdout,stderr=run_cli(None,None,stdin_text='9\n2\n5\n\n0\n0\n')
+        self.assertEqual(code,0)
+        self.assertEqual(stderr,'')
+        self.assertEqual(stdout.count(WEB_MENU),2)
+        self.assertEqual(stdout.count('网页与面板：输入下一项 [1-6]，回车查看菜单，0 返回上一级：'),2)
+        self.assertEqual([item.args[:2] for item in command.call_args_list],[('status',None),('tunnel',None)])
+        self.assertEqual(stdout.count(MENU),2)
+
+    def test_invalid_option_stays_and_empty_rotation_cancels(self):
+        with patch('clash_sub.cli._web_command',return_value=0) as command:
+            code,stdout,stderr=run_cli(None,None,stdin_text='9\n99\n2\n0\n0\n')
+        self.assertEqual(code,0)
+        self.assertIn('invalid_menu_selection',stderr)
+        self.assertEqual(stdout.count(WEB_MENU),1)
+        self.assertEqual([item.args[:2] for item in command.call_args_list],[('status',None)])
+
+    def test_failure_and_eof_leave_consistently(self):
+        with patch('clash_sub.cli._web_command',return_value=1):
+            self.assertEqual(run_cli(None,None,stdin_text='9\n4\n')[0],1)
+        self.assertEqual(run_cli(None,None,stdin_text='9\n')[0],0)

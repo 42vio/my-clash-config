@@ -73,7 +73,7 @@ _MAIN_MENU_ROWS = (
     ("divider",),
     ("option", "1", (("机场订阅", None),)),
     ("option", "2", (("重新生成所有配置", None),)),
-    ("option", "3", (("查看订阅链接", None),)),
+    ("option", "3", (("查看用户链接", None),)),
     ("option", "4", (("查看运行状态", None),)),
     ("divider",),
     ("option", "5", (("程序维护", None),)),
@@ -118,6 +118,18 @@ _USER_MENU_ROWS = (
     ("option", "2", (("回退", "red"), ("用户版本", None))),
     ("option", "3", (("轮换", "red"), ("用户订阅链接", None))),
     ("option", "4", (("重新初始化", "red"), (" owner", None))),
+    ("option", "5", (("更换用户网页链接", None),)),
+    ("option", "0", (("返回主菜单", None),)),
+)
+
+_WEB_MENU_ROWS = (
+    ("title", "网页与面板"),
+    ("option", "1", (("初始化网页（关闭公网面板）", None),)),
+    ("option", "2", (("查看访问状态", None),)),
+    ("option", "3", (("开启公网面板", None),)),
+    ("option", "4", (("关闭公网面板", None),)),
+    ("option", "5", (("SSH 隧道使用说明", None),)),
+    ("option", "6", (("重置网页管理员密码", None),)),
     ("option", "0", (("返回主菜单", None),)),
 )
 
@@ -182,7 +194,8 @@ AIRPORT_MENU = _render_submenu(_AIRPORT_MENU_ROWS, _Colors(False)) + "请输入�
 MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
-USER_MENU = _render_submenu(_USER_MENU_ROWS, _Colors(False)) + "请输入选项 [0-4]："
+USER_MENU = _render_submenu(_USER_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
+WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False)) + "请输入选项 [0-6]："
 
 
 class _CommandParser(argparse.ArgumentParser):
@@ -246,12 +259,14 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
         if exit_menu or code != 0:
             raise _MenuExit(code)
         # Returning from a submenu changes context; show the parent menu.
-        expanded = choice in {"1", "5", "6", "7", "8"}
+        expanded = choice in {"1", "3", "5", "6", "7", "8", "9"}
 
 
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "9":
-        return _web_menu(stdin, stdout, stderr), False
+        return _run_submenu(
+            _WEB_MENU_ROWS, 6, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与面板"
+        )
     if choice == "1":
         return _run_submenu(
             _AIRPORT_MENU_ROWS, 5, _airport_dispatch, stdin, stdout, stderr, factory, colors, name="机场订阅"
@@ -259,7 +274,7 @@ def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "2":
         return _call("sync", None, stdout, stderr, factory), False
     if choice == "3":
-        return _call("links", None, stdout, stderr, factory), False
+        return _menu_user_links(stdin,stdout,stderr,factory)
     if choice == "4":
         return _call("status", None, stdout, stderr, factory), False
     if choice == "5":
@@ -276,7 +291,7 @@ def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
         )
     if choice == "8":
         return _run_submenu(
-            _USER_MENU_ROWS, 4, _user_dispatch, stdin, stdout, stderr, factory, colors, name="用户与版本"
+            _USER_MENU_ROWS, 5, _user_dispatch, stdin, stdout, stderr, factory, colors, name="用户与版本"
         )
     return None
 
@@ -344,6 +359,21 @@ def _backup_dispatch(choice, stdin, stdout, stderr, factory):
 
 
 def _user_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == '5':
+        user = _menu_user_id(stdin,stdout,stderr,factory)
+        if user is None:
+            return 0,False
+        target = str(user)
+        if factory().status()['owner_client_id']==user:
+            kind = _prompt(stdin,stdout,'网页类型：1 个人，2 机场专用，3 管理员入口（留空返回）：')
+            if not kind:
+                return 0,False
+            if kind not in {'1','2','3'}:
+                return _error(stderr,'invalid_menu_selection',2),False
+            target = {'1':str(user),'2':'airport','3':'admin'}[kind]
+        if not _confirm(stdin,stdout,'旧网页链接将失效，订阅地址不变。确认更换？(y/N)：'):
+            return 0,False
+        return _web_command('rotate-page',target,stdout,stderr),False
     if choice == "1":
         return _menu_history_view(stdin, stdout, stderr, factory)
     if choice == "2":
@@ -610,6 +640,33 @@ def _prompt(stdin, stdout, message):
     return line.strip() if line else None
 
 
+def _menu_user_links(stdin, stdout, stderr, factory):
+    user = _menu_user_id(stdin,stdout,stderr,factory)
+    if user is None:
+        return 0,False
+    try:
+        service = factory()
+        item = next((u for u in service.links() if u['client_id']==user),None)
+        if item is None:
+            stdout.write('当前用户暂无已发布订阅链接。\n')
+            return 0,False
+        stdout.write('\n用户：%s（ID %d）\n' % (item['email'],user))
+        config = getattr(service,'config',None)
+        if config is not None:
+            from clash_sub.web_settings import read_settings
+            settings = read_settings(config.private_root)
+            if settings['enabled']:
+                from clash_sub.web_manage import execute
+                stdout.write(execute(default_repo_root(),'links',target=str(user))+'\n')
+            else:
+                stdout.write('个人网页：尚未初始化\n')
+        for url in item['urls']:
+            stdout.write('%s：%s\n' % (url.rsplit('/',1)[-1],url))
+        return 0,False
+    except Exception:
+        return _error(stderr,'service_unavailable',1),False
+
+
 def _confirm(stdin, stdout, message):
     answer = _prompt(stdin, stdout, message)
     return answer is not None and answer.lower() == "y"
@@ -632,19 +689,11 @@ def _web_command(action, target, stdout, stderr):
         return _error(stderr, "web_management_failed", 1)
 
 
-def _web_menu(stdin, stdout, stderr):
-    actions = {"1": "setup", "2": "links", "3": "rotate-page", "4": "status", "5": "panel-on", "6": "panel-off", "7": "tunnel", "8": "reset-password"}
-    while True:
-        stdout.write("\n网页与面板\n1 初始化网页（关闭公网面板）\n2 查看页面链接\n3 更换页面链接\n4 查看访问状态\n5 开启公网面板\n6 关闭公网面板\n7 SSH 隧道使用说明\n8 重置网页管理员密码\n0 返回\n")
-        choice = _prompt(stdin, stdout, "选择：")
-        if not choice or choice == "0":
-            return 0
-        if choice not in actions:
-            continue
-        target = _prompt(stdin, stdout, "用户 ID 或 airport：") if choice == "3" else None
-        code = _web_command(actions[choice], target, stdout, stderr)
-        if code:
-            return code
+def _web_dispatch(choice, stdin, stdout, stderr, factory):
+    actions = {"1": "setup", "2": "status", "3": "panel-on", "4": "panel-off", "5": "tunnel", "6": "reset-password"}
+    if choice not in actions:
+        return None
+    return _web_command(actions[choice], None, stdout, stderr), False
 
 
 def _parser():
@@ -668,6 +717,9 @@ def _parser():
     commands.add_parser("metadata-serve", add_help=False)
     commands.add_parser("web-serve", add_help=False)
     commands.add_parser("online-serve", add_help=False)
+    task = commands.add_parser('web-task', add_help=False)
+    task.add_argument('task_id')
+    task.add_argument('--sync-only', action='store_true')
     web = commands.add_parser("web", add_help=False)
     web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel"))
     web.add_argument("target", nargs="?")
@@ -689,6 +741,16 @@ def _parser():
 
 def _run_command(parsed, stdout, stderr, factory):
     command = parsed.command
+    if command == 'web-task':
+        from clash_sub.web_tasks import run
+        if os.geteuid() != 0:
+            return _error(stderr,'not_root',1)
+        try:
+            root = default_repo_root()
+            run(load_config(config_path(root),root),root,parsed.task_id,sync_only=parsed.sync_only)
+            return 0
+        except Exception:
+            return _error(stderr,'web_task_failed',1)
     if command == 'online-serve':
         from clash_sub.online import serve
         try:

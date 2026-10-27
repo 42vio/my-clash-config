@@ -33,7 +33,7 @@ def config_path(root=None):
     return root / "private" / "config" / "service.yaml"
 
 
-def build_service(root=None, runner=None):
+def build_service(root=None, runner=None, *, lock_factory=None):
     root = Path(root) if root else repo_root()
     config = load_config(config_path(root), root)
     runner = runner or subprocess.run
@@ -60,4 +60,5 @@ def build_service(root=None, runner=None):
         activate_runtime=activate_runtime,
         recover_runtime=recover_runtime,
         runner=runner,
+        lock_factory=lock_factory,
     )

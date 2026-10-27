@@ -14,7 +14,7 @@ from unittest.mock import patch
 from clash_sub.domain import RuntimeState, UserState, XuiClient, Traffic
 from clash_sub.state import save_state, airport_only_token
 from clash_sub.web_server import Handler, Portal
-from clash_sub.web_settings import password_hash, provision_pages, read_settings, write_settings
+from clash_sub.web_settings import admin_prefix, page_path, password_hash, provision_pages, read_settings, write_settings
 from clash_sub.online import OnlineCache
 
 
@@ -53,7 +53,9 @@ class PortalTests(unittest.TestCase):
         self.store = SimpleNamespace(traffic_for=lambda key:Traffic(key,2,100,0), airport_traffic=lambda:Traffic(20,30,1000,0))
         self.portal = Portal(self.config, clock=lambda:self.now[0], store=self.store, snapshot_reader=lambda _:SimpleNamespace(clients=self.clients))
 
-    def request(self, path, *, method='GET', fields=None, cookie=None, origin=None):
+    def request(self, path, *, method='GET', fields=None, cookie=None, origin=None, raw=False):
+        if path.startswith('/admin/') and not raw:
+            path = admin_prefix(read_settings(self.root)) + path[len('/admin'):]
         body = urlencode(fields or {}).encode()
         headers = ['%s %s HTTP/1.0' % (method,path), 'Host: sub.example.com']
         if cookie:
@@ -71,6 +73,62 @@ class PortalTests(unittest.TestCase):
         status, headers, _ = self.request('/admin/login',method='POST',fields={'password':'a-strong-test-password'},origin='https://sub.example.com')
         self.assertEqual(status,303)
         return next(line.split(': ',1)[1].split(';')[0] for line in headers.splitlines() if line.startswith('Set-Cookie:'))
+
+    def test_fixed_admin_entry_is_hidden_even_with_valid_session(self):
+        cookie=self.login()
+        for path in ('/admin/','/admin/login','/admin/onlines'):
+            self.assertEqual(self.request(path,cookie=cookie,raw=True)[0],404)
+
+    def test_owner_change_revokes_previous_admin_entry_and_session(self):
+        cookie=self.login()
+        old=admin_prefix(self.settings,self.state)
+        state=RuntimeState(2,2,self.state.users)
+        save_state(self.root/'state.json',state)
+        self.assertEqual(self.request(old+'/',cookie=cookie,raw=True)[0],404)
+        provision_pages(self.settings,state)
+        write_settings(self.root,self.settings)
+        self.assertNotEqual(admin_prefix(self.settings,state),old)
+        self.assertEqual(self.request('/admin/',cookie=cookie)[0],303)
+
+    def test_admin_links_api_returns_only_selected_member_capabilities(self):
+        status,headers,body=self.request('/admin/user/2/links',cookie=self.login())
+        self.assertEqual(status,200)
+        self.assertIn(self.state.users[2].token,body)
+        self.assertNotIn(self.state.users[1].token,body)
+        self.assertNotIn(self.settings['admin']['token'],body)
+        self.assertNotIn('Clash-Airport.yaml',body)
+        self.assertIn("connect-src 'self'",headers)
+
+    def test_tasks_require_session_csrf_and_explicit_confirmation(self):
+        cookie=self.login()
+        csrf=self.portal.session_record(cookie,self.settings,self.state)[3]
+        fields={'action':'refresh-airport','request_id':'request-testing-123456','confirmed':'yes'}
+        self.assertEqual(self.request('/admin/tasks',method='POST',fields=fields,origin='https://sub.example.com')[0],401)
+        self.assertEqual(self.request('/admin/tasks',method='POST',fields=fields,cookie=cookie,origin='https://sub.example.com')[0],403)
+        fields['csrf']=csrf
+        del fields['confirmed']
+        self.assertEqual(self.request('/admin/tasks',method='POST',fields=fields,cookie=cookie,origin='https://sub.example.com')[0],400)
+        fields['confirmed']='yes'
+        with patch('clash_sub.web_tasks.enqueue',return_value='a'*32) as enqueue:
+            status,_,body=self.request('/admin/tasks',method='POST',fields=fields,cookie=cookie,origin='https://sub.example.com')
+        self.assertEqual(status,202)
+        self.assertEqual(json.loads(body)['task_id'],'a'*32)
+        self.assertEqual(enqueue.call_args.args[1:4],('refresh-airport',None,'request-testing-123456'))
+
+    def test_task_submission_rejects_wrong_origin_and_invalid_action(self):
+        cookie=self.login()
+        csrf=self.portal.session_record(cookie,self.settings,self.state)[3]
+        fields={'action':'shell','csrf':csrf,'confirmed':'yes','request_id':'request-testing-123456'}
+        self.assertEqual(self.request('/admin/tasks',method='POST',fields=fields,cookie=cookie,origin='https://evil.example')[0],403)
+        self.assertEqual(self.request('/admin/tasks',method='POST',fields=fields,cookie=cookie,origin='https://sub.example.com')[0],400)
+        self.assertFalse((self.root/'web-tasks.json').exists())
+
+    def test_personal_owner_link_does_not_grant_admin_or_reveal_entry(self):
+        token=self.settings['pages']['1']['token']
+        status,_,body=self.request('/p/'+token+'/')
+        self.assertEqual(status,200)
+        self.assertNotIn(self.settings['admin']['token'],body)
+        self.assertNotIn('csrf-token',body)
 
     def test_admin_requires_login_and_cannot_use_subscription_token(self):
         self.assertEqual(self.request('/admin/')[0],303)
@@ -128,6 +186,45 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request('/p/'+'X'*43+'/')[0],404)
         self.assertEqual(self.request('/admin/user/999/',cookie=self.login())[0],404)
 
+    def test_readable_personal_and_airport_paths_match_existing_capabilities(self):
+        token=self.settings['pages']['2']['token']
+        status,_,body=self.request(page_path(token,'member'))
+        self.assertEqual(status,200)
+        self.assertIn(self.state.users[2].token,body)
+        self.assertEqual(self.request(page_path(token,'owner'))[0],404)
+        airport=self.settings['pages']['airport']['token']
+        status,_,body=self.request(page_path(airport,'owner'))
+        self.assertEqual(status,200)
+        self.assertNotIn('Nodes.txt',body)
+        self.assertEqual(self.request(page_path(airport,'member'))[0],404)
+
+    def test_link_list_adds_email_without_rotating_page_or_subscription_token(self):
+        from clash_sub.web_manage import execute
+        old=self.settings['pages']['2']['token']
+        with patch('clash_sub.web_manage.load_config',return_value=self.config),patch('clash_sub.web_manage._OperationLock'):
+            listing=execute(self.root,'links')
+        self.assertIn('https://sub.example.com'+page_path(old,'member'),listing)
+        self.assertIn('owner（机场专用）',listing)
+        self.assertEqual(read_settings(self.root)['pages']['2']['token'],old)
+
+    def test_readable_path_accepts_valid_email_punctuation(self):
+        users=dict(self.state.users)
+        users[2]=replace(users[2],email='alice-test+tag@example.com',token=('B'*21+'A')+'-alice-test+tag@example.com')
+        state=replace(self.state,users=users)
+        save_state(self.root/'state.json',state)
+        provision_pages(self.settings,state)
+        write_settings(self.root,self.settings)
+        self.portal.snapshot_reader=lambda _:SimpleNamespace(clients=(self.clients[0],replace(self.clients[1],email=users[2].email)))
+        url=page_path(self.settings['pages']['2']['token'],users[2].email)
+        self.assertEqual(self.request(url)[0],200)
+
+    def test_rotating_page_invalidates_both_readable_and_legacy_paths(self):
+        old=self.settings['pages']['2']['token']
+        provision_pages(self.settings,self.state,rotate='2')
+        write_settings(self.root,self.settings)
+        self.assertEqual(self.request(page_path(old,'member'))[0],404)
+        self.assertEqual(self.request('/p/'+old+'/')[0],404)
+
     def test_page_rotation_does_not_change_subscription(self):
         old = self.settings['pages']['2']['token']
         provision_pages(self.settings,self.state,rotate='2')
@@ -167,7 +264,7 @@ class PortalTests(unittest.TestCase):
 
     def test_logout_revokes_cookie(self):
         cookie=self.login()
-        self.assertEqual(self.request('/admin/logout',method='POST',fields={'logout':'1'},cookie=cookie,origin='https://sub.example.com')[0],303)
+        self.assertEqual(self.request('/admin/logout',method='POST',fields={'csrf':self.portal.session_record(cookie,self.settings,self.state)[3]},cookie=cookie,origin='https://sub.example.com')[0],303)
         self.assertEqual(self.request('/admin/',cookie=cookie)[0],303)
 
     def test_no_mock_data_or_user_sum_in_admin_response(self):

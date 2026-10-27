@@ -217,7 +217,19 @@ def _rerender_nginx(repo_root, runner, state, *, paths, config):
     return True
 
 
-def run_update(repo_root, runner):
+def run_update(repo_root, runner, *, authorize=None):
+    private_root = _runtime_private_root(repo_root)
+    if private_root is None:
+        if authorize is not None:
+            raise RuntimeError('service_config_missing')
+        return _run_update(repo_root, runner)
+    with _OperationLock(Path(private_root) / 'operation.lock'):
+        if authorize is not None:
+            authorize()
+        return _run_update(repo_root, runner)
+
+
+def _run_update(repo_root, runner):
     """Pull new code, then delegate post-update work to a fresh process.
 
     This process still runs the pre-pull code objects, so any systemd/nginx
@@ -290,6 +302,14 @@ def run_post_update(repo_root, runner):
     installer = Installer(repo_root, paths=paths, runner=runner)
     installer._prepare_runtime_directories()
     installer.harden_systemd()
+    from clash_sub.web_settings import provision_pages, read_settings, write_settings
+    from clash_sub.state import load_state
+    settings = read_settings(config.private_root)
+    if settings['enabled']:
+        runtime_state = load_state(config.private_root / 'state.json')
+        if runtime_state is not None:
+            provision_pages(settings, runtime_state)
+            write_settings(config.private_root, settings)
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
     installer._run(["systemctl", "try-restart", "clash-sub-web.service"])

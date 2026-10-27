@@ -188,6 +188,7 @@ class LightweightDeploymentTests(unittest.TestCase):
                 "clash-sub-online.service",
                 "clash-sub-online.socket",
                 "clash-sub-recover.service",
+                "clash-sub-task@.service",
                 "clash-sub-web.service",
                 "clash-sub-web.socket",
             ],
