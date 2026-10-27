@@ -239,7 +239,7 @@ class LightweightCliTests(unittest.TestCase):
             "│  1. 机场订阅",
             "│  2. 重新生成所有配置",
             "│  3. 查看用户链接",
-            "│  4. 网页与面板",
+            "│  4. 网页与 3x-ui 面板",
             "│  5. 查看运行状态",
             "│  6. 程序维护",
             "│  7. 证书管理",
@@ -1018,7 +1018,7 @@ class MenuLoopTests(unittest.TestCase):
         cases = (
             ("0\n", MENU, "请输入选项 [0-9]："),
             ("1\n0\n0\n", AIRPORT_MENU, "请输入选项 [0-5]："),
-            ("4\n0\n0\n", WEB_MENU, "请输入选项 [0-7]："),
+            ("4\n0\n0\n", WEB_MENU, "请输入选项 [0-9]："),
             ("6\n0\n0\n", MAINTENANCE_MENU, "请输入选项 [0-3]："),
             ("7\n0\n0\n", CERT_MENU, "请输入选项 [0-2]："),
             ("8\n0\n0\n", BACKUP_MENU, "请输入选项 [0-3]："),
@@ -2015,6 +2015,15 @@ class MetadataServeCommandTests(unittest.TestCase):
 
 
 class WebMenuConsistencyTests(unittest.TestCase):
+    def test_web_switches_are_separate_from_3x_ui_panel_switches(self):
+        with patch('clash_sub.cli._web_command',return_value=0) as command:
+            code,stdout,stderr=run_cli(None,None,stdin_text='4\n8\n9\n3\n4\n0\n0\n')
+        self.assertEqual(code,0)
+        self.assertEqual(stderr,'')
+        self.assertEqual([call.args[:2] for call in command.call_args_list],[('web-on',None),('web-off',None),('panel-on',None),('panel-off',None)])
+        self.assertIn('关闭订阅网页（保留订阅下载）',stdout)
+        self.assertIn('关闭公网 3x-ui 面板',stdout)
+
     def test_api_token_menu_uses_hidden_prompt_without_outputting_secret(self):
         with patch('clash_sub.cli.os.geteuid',return_value=0), patch('getpass.getpass',return_value='synthetic-api-token') as prompt, patch('clash_sub.web_manage.execute',return_value='令牌已保存') as execute:
             code,stdout,stderr=run_cli(None,None,stdin_text='4\n7\n0\n0\n')
@@ -2031,7 +2040,7 @@ class WebMenuConsistencyTests(unittest.TestCase):
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         self.assertEqual(stdout.count(WEB_MENU),2)
-        self.assertEqual(stdout.count('网页与面板：输入下一项 [1-7]，回车查看菜单，0 返回上一级：'),2)
+        self.assertEqual(stdout.count('网页与 3x-ui 面板：输入下一项 [1-9]，回车查看菜单，0 返回上一级：'),2)
         self.assertEqual([item.args[:2] for item in command.call_args_list],[('status',None),('tunnel',None)])
         self.assertEqual(stdout.count(MENU),2)
 

@@ -45,3 +45,30 @@
 :is(.usage-card,.traffic-part) .transfer{gap:12px}
 :is(.usage-card,.traffic-part) .usage-caption .remaining{font-weight:400}
 @media(max-width:760px){.grid{grid-template-columns:minmax(0,1fr)}.grid>.card{min-width:0}:is(.usage-card,.traffic-part) .usage-linear .number{font-size:23px!important}:is(.usage-card,.traffic-part) .usage-linear .number small{font-size:11px}:is(.usage-card,.traffic-part) .usage-linear .bar{height:4px;margin:9px 0 7px}:is(.usage-card,.traffic-part) .usage-caption{font-size:11px}:is(.usage-card,.traffic-part) .transfer{gap:8px}:is(.usage-card,.traffic-part) .reset-hint{font-size:10px}}
+
+/* Give traffic the main share of each desktop member row. */
+@media(min-width:761px){
+.user-table{table-layout:fixed}
+.user-table th:nth-child(1){width:14%}
+.user-table th:nth-child(2){width:9%}
+.user-table th:nth-child(3){width:34%}
+.user-table th:nth-child(4){width:14%}
+.user-table th:nth-child(5){width:9%}
+.user-table th:nth-child(6){width:20%}
+.user-table td:first-child{overflow-wrap:anywhere}
+.user-table td:nth-child(3){padding-right:28px}
+.user-table td:nth-child(3)>.subtle{white-space:nowrap}
+.user-table .mini-bar{width:100%;max-width:none;margin-top:8px;height:4px}
+.user-table td:last-child{padding-right:0}
+}
+@media(min-width:761px) and (max-width:1000px){.user-table .user-actions{flex-direction:column;align-items:flex-end;gap:6px}.user-table td:nth-child(3){padding-right:18px}}
+
+/* Prioritize the usage column on narrow member lists as well. */
+@media(max-width:760px){
+.user-table tr{grid-template-columns:clamp(60px,18vw,76px) minmax(0,1fr) 76px;column-gap:12px}
+.user-table td:nth-child(3){overflow-wrap:anywhere}
+.user-table .user-actions{align-items:stretch;gap:6px}
+.user-table .mini-bar{width:100%;max-width:none;margin:6px 0 0}
+}
+
+.server-tools{display:flex;align-items:center;gap:10px}.server-refresh{padding:4px 9px;font-size:11px;white-space:nowrap;color:var(--green)}.server-refresh:disabled{opacity:.55;cursor:wait}

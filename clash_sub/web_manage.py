@@ -6,11 +6,11 @@ from pathlib import Path
 
 from clash_sub.config import load_config
 from clash_sub.installer import InstallPaths
-from clash_sub.manage import _load_install_state, _rerender_nginx
+from clash_sub.manage import _load_install_state, _rerender_nginx, _stop_web_services
 from clash_sub.runtime import config_path
 from clash_sub.service import _OperationLock
 from clash_sub.state import load_state
-from clash_sub.web_settings import page_path, password_hash, provision_pages, read_settings, write_settings
+from clash_sub.web_settings import admin_prefix, page_path, password_hash, provision_pages, read_settings, write_settings
 
 
 def execute(root, action, *, password=None, api_token=None, target=None, runner=subprocess.run, actor=None, authorize=None):
@@ -19,6 +19,9 @@ def execute(root, action, *, password=None, api_token=None, target=None, runner=
         if action == 'set-api-token':
             from clash_sub.online import TOKEN_FILE, save_token, query_online
             save_token(api_token)
+            if not read_settings(config.private_root)['enabled']:
+                verified = query_online(config.xui_database, credentials=TOKEN_FILE) is not None
+                return '令牌已保存，%s；订阅网页已关闭，在线查询服务保持停止。' % ('在线查询验证成功' if verified else '在线查询未成功，请检查令牌权限与 3x-ui 状态')
             result = runner([str(config.systemctl_binary), 'restart', 'clash-sub-online.service'], capture_output=True, timeout=30, check=False)
             if result.returncode:
                 return '令牌已保存，但在线查询服务重启失败，请检查服务后重试。'
@@ -36,7 +39,7 @@ def execute(root, action, *, password=None, api_token=None, target=None, runner=
             if not secrets.compare_digest(actor,authorization(settings,state)):
                 raise ValueError('owner_authorization_invalid')
         if action == "status":
-            return "面板公网访问：%s；订阅网页：%s" % ("开启" if settings['panel_public'] else "关闭", "开启" if settings['enabled'] else "未初始化")
+            return "3x-ui 面板公网访问：%s；订阅网页：%s" % ("开启" if settings['panel_public'] else "关闭", "开启" if settings['enabled'] else "关闭" if settings['password_hash'] else "未初始化")
         if action == "tunnel":
             installed = _load_install_state(root)
             return "在本机执行（请替换 SSH 别名或地址）：\nssh -N -L 127.0.0.1:14631:127.0.0.1:%d <SSH别名>\n浏览器打开：http://127.0.0.1:14631%s/" % (installed.panel_port, installed.panel_base_path)
@@ -48,27 +51,37 @@ def execute(root, action, *, password=None, api_token=None, target=None, runner=
             provision_pages(settings, state, rotate=target if action == "rotate-page" else None)
         if action in {"setup", "reset-password"}:
             settings['password_hash'] = password_hash(password)
-        if action == "setup":
+        if action == "web-on" and (not state or not settings['password_hash'] or not admin_prefix(settings,state)):
+            raise ValueError("initialize_web_first")
+        if action in {"setup", "web-on"}:
             if not all(Path('/etc/systemd/system/' + name).is_file() for name in ('clash-sub-web.socket', 'clash-sub-online.socket')):
                 raise ValueError("run_clash_sub_update_first")
             settings['enabled'] = True
-            settings['panel_public'] = False
+            if action == 'setup':
+                settings['panel_public'] = False
             result = runner([str(config.systemctl_binary), 'enable', '--now', 'clash-sub-web.socket', 'clash-sub-online.socket'], capture_output=True, timeout=30, check=False)
             if result.returncode:
                 raise ValueError("web_socket_enable_failed")
+        if action == "web-off":
+            settings["enabled"] = False
         if action in {"panel-on", "panel-off"}:
             settings['panel_public'] = action == "panel-on"
         write_settings(config.private_root, settings)
-        if action in {"setup", "panel-on", "panel-off"}:
+        if action in {"setup", "panel-on", "panel-off", "web-on", "web-off"}:
             try:
                 paths = InstallPaths(xui_database=config.xui_database, private_root=config.private_root, public_root=config.public_root, routes_conf=config.nginx_routes, mihomo_binary=config.mihomo_binary)
                 _rerender_nginx(root, runner, _load_install_state(root), paths=paths, config=config)
             except Exception:
                 write_settings(config.private_root, previous)
+                if action in {'setup','web-on'} and not previous['enabled']:
+                    _stop_web_services(config, runner)
                 raise
+        if action == 'web-off':
+            if not _stop_web_services(config, runner):
+                return '订阅网页已关闭，但后台服务或 socket 未完全停止，内存释放未完成；请检查服务后重试关闭。'
+            return '订阅网页已关闭，网页及在线查询服务和 socket 已停止以释放内存；订阅下载、代理和 3x-ui 不受影响。'
         if action in {"setup", "links", "rotate-page", "reset-password"}:
             base = 'https://' + config.subscription_authority
-            from clash_sub.web_settings import admin_prefix
             lines = ['管理员：' + base + admin_prefix(settings,state) + '/'] if target is None or target in {'admin',str(state.owner_client_id)} else []
             for key, record in sorted(settings['pages'].items()):
                 if action == 'rotate-page' and key != target:
@@ -79,4 +92,6 @@ def execute(root, action, *, password=None, api_token=None, target=None, runner=
                 name = email + '（机场专用）' if key == 'airport' else email
                 lines.append('%s：%s%s' % (name, base, page_path(record['token'], email)))
             return '\n'.join(lines)
-        return '面板公网访问已%s；代理与订阅服务继续运行。' % ('开启' if settings['panel_public'] else '关闭')
+        if action in {'web-on','web-off'}:
+            return '订阅网页已%s；个人页、机场页和管理员页统一切换，订阅下载、代理和 3x-ui 面板开关保持不变。' % ('开启' if settings['enabled'] else '关闭')
+        return '3x-ui 面板公网访问已%s；代理与订阅服务继续运行。' % ('开启' if settings['panel_public'] else '关闭')

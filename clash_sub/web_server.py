@@ -254,7 +254,7 @@ class Portal:
         for name, metric in metrics.items():
             bar = '<div class="bar"><i style="width:%.2f%%"></i></div>' % metric['ratio'] if metric['ratio'] is not None else '<div class="metric-sampling">等待采样</div>' if name == 'CPU' else '<div class="metric-spacer"></div>'
             cards.append('<div class="metric"><label>%s</label><strong>%s <small>%s</small></strong>%s<p>%s</p></div>' % (esc(name), esc(metric['value']), esc(metric['unit']), bar, esc(metric['detail'])))
-        return '<section class="card server"><div class="card-head"><div class="server-title"><h2>服务器概况</h2></div><span class="badge"><i class="dot"></i>运行中</span></div><div class="metrics">%s</div><div class="server-footer"><span>已连续运行 %s</span><div class="network">%s</div></div><p class="subtle server-sampling-note">CPU 与网速按两次访问的差值采样；网络配置不代表外部连通。</p></section>' % (''.join(cards), esc(uptime), ''.join('<span><i class="dot"></i>%s</span>' % esc(label) for label in network))
+        return '<section class="card server" id="server-overview"><div class="card-head"><div class="server-title"><h2>服务器概况</h2></div><div class="server-tools"><span class="badge"><i class="dot"></i>运行中</span><button class="button server-refresh" data-action="refresh-server">刷新 ↻</button></div></div><div class="metrics">%s</div><div class="server-footer"><span>已连续运行 %s</span><div class="network">%s</div></div><p class="subtle server-sampling-note">CPU 与网速按两次访问的差值采样；网络配置不代表外部连通。</p></section>' % (''.join(cards), esc(uptime), ''.join('<span><i class="dot"></i>%s</span>' % esc(label) for label in network))
 
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
@@ -381,11 +381,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = '<section class="card login-card"><form method="post" action="%s/login"><label for="password">%s · 管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="12" maxlength="256"><button class="button primary">登录</button></form></section>' % (esc(prefix),esc(state.users[state.owner_client_id].email))
                 return self.respond(200,portal.shell('owner 登录',body))
             if not session:
-                if rest in {'/onlines','/tasks'} or rest.endswith('/links'):
+                if rest in {'/onlines','/tasks','/server'} or rest.endswith('/links'):
                     return self.respond(401,'{}',content_type='application/json')
                 return self.respond(303,headers=(('Location',prefix+'/login'),))
             if rest == '/':
                 return self.respond(200,portal.admin(state,settings,csrf=session[3]))
+            if rest == '/server':
+                return self.respond(200,portal.system_card())
             if rest == '/onlines':
                 return self.respond(200,json.dumps({'states':portal.online_states(state)}),content_type='application/json')
             if rest == '/tasks':

@@ -282,6 +282,21 @@ def _run_update(repo_root, runner):
     return True
 
 
+def _stop_web_services(config, runner):
+    """Remove activation and resident processes without touching proxy services."""
+    success = True
+    for arguments in (
+        ['disable', '--now', 'clash-sub-web.socket', 'clash-sub-online.socket'],
+        ['stop', 'clash-sub-web.service', 'clash-sub-online.service'],
+    ):
+        try:
+            result = runner([str(config.systemctl_binary)] + arguments, capture_output=True, timeout=30, check=False)
+            success = result.returncode == 0 and success
+        except Exception:
+            success = False
+    return success
+
+
 def run_post_update(repo_root, runner):
     """Apply systemd/nginx post-update steps with the newly pulled code.
 
@@ -312,11 +327,12 @@ def run_post_update(repo_root, runner):
             write_settings(config.private_root, settings)
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
-    installer._run(["systemctl", "try-restart", "clash-sub-web.service"])
-    from clash_sub.web_settings import read_settings
-    if read_settings(config.private_root)['enabled']:
-        installer._run(['systemctl', 'enable', '--now', 'clash-sub-online.socket'])
-    installer._run(["systemctl", "try-restart", "clash-sub-online.service"])
+    if settings['enabled']:
+        installer._run(['systemctl', 'enable', '--now', 'clash-sub-web.socket', 'clash-sub-online.socket'])
+        installer._run(["systemctl", "try-restart", "clash-sub-web.service"])
+        installer._run(["systemctl", "try-restart", "clash-sub-online.service"])
+    elif not _stop_web_services(config, runner):
+        raise RuntimeError('web_shutdown_failed')
     return True
 
 

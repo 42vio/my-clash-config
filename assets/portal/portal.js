@@ -10,6 +10,7 @@ function notify(message) {
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
   if (!button) return;
+  if (button.dataset.action === 'refresh-server') { await refreshServer(); return; }
   if (button.dataset.action === 'back') { history.back(); return; }
   const block = button.closest('.subscription-block');
   const code = block.querySelector('code');
@@ -30,6 +31,38 @@ document.addEventListener('click', async (event) => {
 });
 
 const adminBase = document.querySelector('main[data-admin-base]')?.dataset.adminBase || '';
+
+// Manual refresh updates only the administrator's server card.
+let serverPending = false;
+async function refreshServer() {
+  const card = document.querySelector('#server-overview');
+  if (!adminBase || !card || serverPending) return;
+  const button = card.querySelector('[data-action="refresh-server"]');
+  serverPending = true;
+  button.disabled = true;
+  button.textContent = '刷新中…';
+  card.setAttribute('aria-busy', 'true');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(adminBase + '/server', {cache:'no-store', credentials:'same-origin', redirect:'error', signal:controller.signal});
+    if (response.status === 401) throw new Error('login');
+    if (!response.ok) throw new Error('unavailable');
+    const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const replacement = doc.querySelector('#server-overview');
+    if (!replacement) throw new Error('unavailable');
+    card.replaceWith(replacement);
+    notify('服务器概况已刷新');
+  } catch (error) {
+    notify(error.message === 'login' ? '登录已失效，请重新登录。' : '刷新失败，保留原数据，请稍后重试。');
+  } finally {
+    clearTimeout(timeout);
+    serverPending = false;
+    button.disabled = false;
+    button.textContent = '刷新 ↻';
+    card.removeAttribute('aria-busy');
+  }
+}
 
 // Presence is admin-only. Hidden tabs stop polling; failures never imply offline.
 const presenceCells = [...document.querySelectorAll('[data-online-client]')];

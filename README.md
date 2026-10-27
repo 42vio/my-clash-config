@@ -29,9 +29,9 @@ owner 和普通用户各自额外提供 `Nodes.txt`，地址为 `https://<订阅
 
 `templates/base/Clash-Compat.yaml` 是完整基础模板；生成 Balance 时以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）替换基础模板的 DNS。owner 的 Airport 使用 Compat 模板和机场 provider，不注入 3x-ui 节点；原有两份 owner 配置继续注入自建节点与机场 provider，普通用户只输出 Compat。服务器不保存任何 Home 配置，Home 只存在于本机 Clash Verge 的全局扩展脚本。
 
-## 订阅网页与面板开关
+## 订阅网页与 3x-ui 面板开关
 
-终端主菜单 `3` 按用户查看网页与订阅链接；`9` 管理独立链接轮换；`4` 提供网页初始化、3x-ui 公网访问开关、SSH 隧道说明及 API 令牌设置（子菜单 7）。详细步骤见 [网页运维说明](docs/operations.md#订阅网页与面板开关)。
+终端主菜单 `3` 按用户查看网页与订阅链接；`9` 管理独立链接轮换；`4「网页与 3x-ui 面板」` 提供网页初始化、3x-ui 公网访问开关、SSH 隧道说明、API 令牌设置（子菜单 7）和订阅网页开关（8 开启、9 关闭；保留客户端订阅下载）。详细步骤见 [网页运维说明](docs/operations.md#订阅网页与-3x-ui-面板开关)。
 
 网页包含管理员总览、个人用量和机场专用页面。页面令牌独立于订阅令牌，可单独轮换；owner 是唯一管理员，通过独立随机入口和管理员密码登录。更新代码不会自动开放网页，也不会自动关闭原有公网面板；运行 `clash-sub web setup` 才初始化网页并关闭公网面板。代理和订阅下载不随面板开关停止。
 

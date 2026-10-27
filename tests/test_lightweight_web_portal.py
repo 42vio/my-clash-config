@@ -142,6 +142,24 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(json.loads(body),{'states':{'1':'offline','2':'online'}})
         self.assertNotIn('member',body)
 
+    def test_server_refresh_requires_admin_and_returns_only_the_card(self):
+        with patch.object(self.portal,'system_card',return_value='<section id="server-overview">fresh metrics</section>') as metrics:
+            self.assertEqual(self.request('/admin/server')[0],401)
+            metrics.assert_not_called()
+            status,headers,body=self.request('/admin/server',cookie=self.login())
+            self.assertEqual(status,200)
+            self.assertEqual(body,'<section id="server-overview">fresh metrics</section>')
+            self.assertIn('no-store',headers)
+            metrics.assert_called_once()
+        token=self.settings['pages']['2']['token']
+        self.assertEqual(self.request('/p/'+token+'/server')[0],404)
+
+    def test_server_refresh_button_is_only_in_administrator_overview(self):
+        self.assertIn('data-action="refresh-server"',self.request('/admin/',cookie=self.login())[2])
+        for key in ('1','2','airport'):
+            token=self.settings['pages'][key]['token']
+            self.assertNotIn('data-action="refresh-server"',self.request('/p/'+token+'/')[2])
+
     def test_online_failure_is_unknown_and_not_exposed_to_personal_pages(self):
         calls=[]
         def unavailable():
@@ -462,6 +480,54 @@ class PortalTests(unittest.TestCase):
         with patch('clash_sub.web_manage.load_config',return_value=self.config), patch('clash_sub.web_manage._OperationLock'), patch('clash_sub.web_manage._load_install_state'), patch('clash_sub.web_manage._rerender_nginx',side_effect=RuntimeError('failed')):
             with self.assertRaises(RuntimeError):execute(self.root,'panel-off')
         self.assertTrue(read_settings(self.root)['panel_public'])
+
+    def test_web_switch_preserves_links_password_and_panel_setting(self):
+        from clash_sub.web_manage import execute
+        from clash_sub.nginx import render_sub_server
+        self.config.nginx_routes=Path('/etc/nginx/clash-sub/routes.conf')
+        self.config.mihomo_binary=Path('/usr/local/bin/mihomo')
+        self.config.systemctl_binary=Path('/bin/systemctl')
+        self.settings['panel_public']=True
+        write_settings(self.root,self.settings)
+        with patch('clash_sub.web_manage.load_config',return_value=self.config), patch('clash_sub.web_manage._OperationLock'), patch('clash_sub.web_manage._load_install_state'), patch('clash_sub.web_manage._rerender_nginx') as render:
+            message=execute(self.root,'web-off',runner=lambda *a,**kw:SimpleNamespace(returncode=0))
+            closed=read_settings(self.root)
+            self.assertFalse(closed['enabled'])
+            self.assertIn('订阅下载',message)
+            self.assertEqual(self.request('/p/'+self.settings['pages']['2']['token']+'/')[0],404)
+            self.assertEqual(self.request('/admin/login')[0],404)
+            rendered=render_sub_server(self.config,domain='example.com',panel_port=46312,panel_base_path='/secret-panel',routes_include='/etc/nginx/clash-sub/routes.conf',fullchain='/etc/ssl/domain/fullchain.pem',privkey='/etc/ssl/domain/privkey.pem')
+            self.assertNotIn('proxy_pass http://unix:/run/clash-sub/web.sock;',rendered)
+            self.assertIn('include /etc/nginx/clash-sub/routes.conf;',rendered)
+            self.assertIn('proxy_pass http://127.0.0.1:46312',rendered)
+            with patch.object(Path,'is_file',return_value=True):
+                execute(self.root,'web-on',runner=lambda *a,**kw:SimpleNamespace(returncode=0))
+            self.assertEqual(render.call_count,2)
+        self.assertEqual(read_settings(self.root),self.settings)
+        self.assertEqual(self.request('/p/'+self.settings['pages']['2']['token']+'/')[0],200)
+
+    def test_web_switch_failure_restores_flag_and_enable_requires_setup(self):
+        from clash_sub.web_manage import execute
+        self.config.nginx_routes=Path('/etc/nginx/clash-sub/routes.conf')
+        self.config.mihomo_binary=Path('/usr/local/bin/mihomo')
+        with patch('clash_sub.web_manage.load_config',return_value=self.config), patch('clash_sub.web_manage._OperationLock'), patch('clash_sub.web_manage._load_install_state'), patch('clash_sub.web_manage._rerender_nginx',side_effect=RuntimeError('failed')):
+            with self.assertRaises(RuntimeError):execute(self.root,'web-off')
+        self.assertEqual(read_settings(self.root),self.settings)
+        self.settings['enabled']=False
+        self.settings['password_hash']=''
+        write_settings(self.root,self.settings)
+        with patch('clash_sub.web_manage.load_config',return_value=self.config), patch('clash_sub.web_manage._OperationLock'):
+            with self.assertRaisesRegex(ValueError,'initialize_web_first'):execute(self.root,'web-on')
+        self.assertFalse(read_settings(self.root)['enabled'])
+
+    def test_shutdown_failure_keeps_page_closed_and_reports_incomplete_release(self):
+        from clash_sub.web_manage import execute
+        self.config.nginx_routes=Path('/etc/nginx/clash-sub/routes.conf')
+        self.config.mihomo_binary=Path('/usr/local/bin/mihomo')
+        with patch('clash_sub.web_manage.load_config',return_value=self.config),patch('clash_sub.web_manage._OperationLock'),patch('clash_sub.web_manage._load_install_state'),patch('clash_sub.web_manage._rerender_nginx'),patch('clash_sub.web_manage._stop_web_services',return_value=False):
+            message=execute(self.root,'web-off')
+        self.assertFalse(read_settings(self.root)['enabled'])
+        self.assertIn('内存释放未完成',message)
 
 
 if __name__=='__main__':
