@@ -152,7 +152,7 @@ class Portal:
         top = '<a href="%s/">管理总览</a>' % esc(prefix) if admin else "只读订阅中心"
         logout = '<form method="post" action="%s/logout"><input type="hidden" name="csrf" value="%s"><button class="button">退出登录</button></form>' % (esc(prefix),esc(csrf)) if admin else ''
         metadata = '<meta name="csrf-token" content="%s">' % esc(csrf) if admin else ''
-        return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>42 / %s</title>%s<link rel="stylesheet" href="/portal-assets/portal.css"><script src="/portal-assets/portal.js" defer></script></head><body><header><div class="nav"><div class="brand"><div class="logo">42</div> CONNECT</div><div class="subtle">%s</div></div></header><main data-admin-base="%s"><div class="heading"><div><div class="eyebrow">42 CONNECT</div><h1>%s</h1></div>%s</div>%s<footer><span>订阅中心 · 请妥善保管页面与订阅链接</span><span>访问时间 %s 北京时间 · 用量按缓存展示</span></footer></main><div id="toast" role="status" hidden></div></body></html>' % (esc(title),metadata,top,esc(prefix) if admin else '',esc(title),logout,body,datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M'))
+        return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin"><title>42 / %s</title>%s<link rel="stylesheet" href="/portal-assets/portal.css"><script src="/portal-assets/portal.js" defer></script></head><body><header><div class="nav"><div class="brand"><div class="logo">42</div> CONNECT</div><div class="subtle">%s</div></div></header><main data-admin-base="%s"><div class="heading"><div><div class="eyebrow">42 CONNECT</div><h1>%s</h1></div>%s</div>%s<footer><span>订阅中心 · 请妥善保管页面与订阅链接</span><span>访问时间 %s 北京时间 · 用量按缓存展示</span></footer></main><div id="toast" role="status" hidden></div></body></html>' % (esc(title),metadata,top,esc(prefix) if admin else '',esc(title),logout,body,datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M'))
 
     def links(self, state, user, *, airport=False):
         token = airport_only_token(user.token, schema_version=state.schema_version) if airport else user.token
@@ -299,7 +299,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # no-referrer makes native form POSTs send Origin:null, breaking the
+        # strict same-origin check. strict-origin preserves the origin while
+        # still stripping capability paths from every Referer header.
+        self.send_header("Referrer-Policy", "strict-origin")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
         for key, value in headers:

@@ -249,6 +249,15 @@ class PortalTests(unittest.TestCase):
     def test_cross_origin_login_is_rejected(self):
         self.assertEqual(self.request('/admin/login',method='POST',fields={'password':'a-strong-test-password'},origin='https://evil.example')[0],403)
 
+    def test_form_policy_preserves_origin_without_leaking_capability_path(self):
+        status,headers,body=self.request('/admin/login')
+        self.assertEqual(status,200)
+        self.assertIn('Referrer-Policy: strict-origin',headers)
+        self.assertIn('<meta name="referrer" content="strict-origin">',body)
+        self.assertNotIn('content="no-referrer"',body)
+        self.assertEqual(self.request('/admin/login',method='POST',fields={'password':'a-strong-test-password'},origin='null')[0],403)
+        self.assertTrue(self.login())
+
     def test_global_login_rate_limit_applies_after_five_failures(self):
         for _ in range(5):
             self.assertIsNone(self.portal.login('wrong-password-long',self.settings))
