@@ -311,6 +311,8 @@ class Installer:
             self.paths.systemd_dir / "clash-sub-metadata.service",
             self.paths.systemd_dir / "clash-sub-web.socket",
             self.paths.systemd_dir / "clash-sub-web.service",
+            self.paths.systemd_dir / "clash-sub-online.socket",
+            self.paths.systemd_dir / "clash-sub-online.service",
             self.paths.systemd_dir / "clash-sub-recover.service",
             self.paths.systemd_dir / "clash-sub-airport-refresh.service",
             self.paths.systemd_dir / "clash-sub-airport-refresh.timer",
@@ -791,6 +793,8 @@ class Installer:
                 "clash-sub-metadata.service",
                 "clash-sub-web.socket",
                 "clash-sub-web.service",
+                "clash-sub-online.socket",
+                "clash-sub-online.service",
                 "clash-sub-recover.service",
                 "clash-sub-airport-refresh.service",
                 "clash-sub-airport-refresh.timer",
@@ -1110,6 +1114,10 @@ class Installer:
             if web_socket in state.files_written and web_socket not in state.replaced_files:
                 rollback_action(["systemctl", "disable", "--now", "clash-sub-web.socket"])
                 rollback_action(["systemctl", "stop", "clash-sub-web.service"])
+            online_socket = str(self.paths.systemd_dir / 'clash-sub-online.socket')
+            if online_socket in state.files_written and online_socket not in state.replaced_files:
+                rollback_action(['systemctl', 'disable', '--now', 'clash-sub-online.socket'])
+                rollback_action(['systemctl', 'stop', 'clash-sub-online.service'])
         # Crash-window coverage: paths are journaled write-ahead, but a
         # replacement recorded by an even earlier crash window still wins
         # over deletion; restoring the recorded bytes is idempotent.

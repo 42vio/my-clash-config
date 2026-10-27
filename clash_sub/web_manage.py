@@ -33,11 +33,11 @@ def execute(root, action, *, password=None, target=None, runner=subprocess.run):
         if action in {"setup", "reset-password"}:
             settings['password_hash'] = password_hash(password)
         if action == "setup":
-            if not Path('/etc/systemd/system/clash-sub-web.socket').is_file():
+            if not all(Path('/etc/systemd/system/' + name).is_file() for name in ('clash-sub-web.socket', 'clash-sub-online.socket')):
                 raise ValueError("run_clash_sub_update_first")
             settings['enabled'] = True
             settings['panel_public'] = False
-            result = runner([str(config.systemctl_binary), 'enable', '--now', 'clash-sub-web.socket'], capture_output=True, timeout=30, check=False)
+            result = runner([str(config.systemctl_binary), 'enable', '--now', 'clash-sub-web.socket', 'clash-sub-online.socket'], capture_output=True, timeout=30, check=False)
             if result.returncode:
                 raise ValueError("web_socket_enable_failed")
         if action in {"panel-on", "panel-off"}:

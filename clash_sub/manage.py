@@ -293,6 +293,10 @@ def run_post_update(repo_root, runner):
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
     installer._run(["systemctl", "try-restart", "clash-sub-web.service"])
+    from clash_sub.web_settings import read_settings
+    if read_settings(config.private_root)['enabled']:
+        installer._run(['systemctl', 'enable', '--now', 'clash-sub-online.socket'])
+    installer._run(["systemctl", "try-restart", "clash-sub-online.service"])
     return True
 
 

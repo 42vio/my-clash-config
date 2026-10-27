@@ -1,0 +1,25 @@
+[Unit]
+Description=Read 3x-ui online status over loopback
+
+[Service]
+Type=simple
+Sockets=clash-sub-online.socket
+ExecStart=/usr/local/bin/clash-sub online-serve
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+BindReadOnlyPaths=-/root/.claude/settings.json:/run/clash-sub/online-credentials.json
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/etc/x-ui

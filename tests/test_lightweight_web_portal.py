@@ -15,6 +15,7 @@ from clash_sub.domain import RuntimeState, UserState, XuiClient, Traffic
 from clash_sub.state import save_state, airport_only_token
 from clash_sub.web_server import Handler, Portal
 from clash_sub.web_settings import password_hash, provision_pages, read_settings, write_settings
+from clash_sub.online import OnlineCache
 
 
 class Request:
@@ -74,6 +75,34 @@ class PortalTests(unittest.TestCase):
     def test_admin_requires_login_and_cannot_use_subscription_token(self):
         self.assertEqual(self.request('/admin/')[0],303)
         self.assertEqual(self.request('/p/'+self.state.users[1].token+'/')[0],404)
+
+    def test_online_endpoint_requires_admin_and_never_returns_raw_email_list(self):
+        self.portal.online=OnlineCache(lambda:frozenset({'member'}))
+        self.assertEqual(self.request('/admin/onlines')[0],401)
+        status,_,body=self.request('/admin/onlines',cookie=self.login())
+        self.assertEqual(status,200)
+        self.assertEqual(json.loads(body),{'states':{'1':'offline','2':'online'}})
+        self.assertNotIn('member',body)
+
+    def test_online_failure_is_unknown_and_not_exposed_to_personal_pages(self):
+        calls=[]
+        def unavailable():
+            calls.append(1)
+            return None
+        self.portal.online=OnlineCache(unavailable)
+        token=self.settings['pages']['2']['token']
+        self.assertEqual(self.request('/p/'+token+'/')[0],200)
+        self.assertFalse(calls)
+        status,_,body=self.request('/admin/onlines',cookie=self.login())
+        self.assertEqual(status,200)
+        self.assertEqual(set(json.loads(body)['states'].values()),{'unknown'})
+
+    def test_online_column_is_immediately_after_username(self):
+        self.portal.online=OnlineCache(lambda:frozenset({'member'}))
+        _,_,body=self.request('/admin/',cookie=self.login())
+        self.assertIn('<th>用户</th><th>在线状态</th><th>已用 / 额度</th>',body)
+        self.assertIn('presence online',body)
+        self.assertIn('presence offline',body)
 
     def test_member_page_does_not_leak_owner_or_airport_capabilities(self):
         token = self.settings['pages']['2']['token']

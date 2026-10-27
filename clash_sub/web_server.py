@@ -23,6 +23,7 @@ from clash_sub.metadata import TrafficMetadataStore
 from clash_sub.state import airport_only_token, load_state
 from clash_sub.web_settings import read_settings, verify_password
 from clash_sub.xui import read_xui_snapshot, read_inbound_traffic
+from clash_sub.online import OnlineCache, read_online
 
 
 def esc(value):
@@ -57,7 +58,7 @@ def usage_card(title, traffic, note="", *, compact=False):
 
 
 class Portal:
-    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot):
+    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot, online_reader=read_online):
         self.config = config
         self.clock = clock
         self.store = store or TrafficMetadataStore(config)
@@ -72,6 +73,16 @@ class Portal:
         self._net_previous = None
         self._inbound = None
         self._inbound_time = 0
+        self.online = OnlineCache(online_reader)
+
+    def online_states(self, state):
+        names = self.online.get()
+        return {str(client_id): 'unknown' if names is None else 'online' if user.email in names else 'offline' for client_id, user in state.users.items()}
+
+    @staticmethod
+    def presence(status):
+        labels = {'online':'在线','offline':'离线','unknown':'未知'}
+        return '<span class="presence %s" title="来源：3x-ui 在线查询">%s%s</span>' % (status, '<span aria-hidden="true">—</span>' if status == 'unknown' else '<i aria-hidden="true"></i>', labels[status])
 
     def inbound_card(self):
         with self._snapshot_lock:
@@ -207,7 +218,8 @@ class Portal:
 
     def admin(self, state, settings):
         body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.inbound_card() + '<hr class="divider">'
-        body += usage_card("Amy 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True) + '</section></div><section class="card users"><div class="card-head"><h2>成员用量</h2></div><table class="user-table"><thead><tr><th>用户</th><th>已用 / 额度</th><th>到期</th><th>状态</th><th></th></tr></thead><tbody>'
+        body += usage_card("Amy 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True) + '</section></div><section class="card users"><div class="card-head"><h2>成员用量</h2><span class="subtle">在线来源：3x-ui · 每30秒刷新</span></div><table class="user-table has-presence"><thead><tr><th>用户</th><th>在线状态</th><th>已用 / 额度</th><th>到期</th><th>账号状态</th><th></th></tr></thead><tbody>'
+        online = self.online_states(state)
         clients = {c.client_id: c for c in self.snapshot().clients}
         for client_id, user in sorted(state.users.items()):
             client = clients.get(client_id)
@@ -217,7 +229,7 @@ class Portal:
             used = size(traffic.upload + traffic.download) if traffic else "暂无数据"
             total = (size(traffic.total) if traffic.total else "不限额") if traffic else "暂无数据"
             status = "有效" if user.active and client.enabled and (client.expiry_ms <= 0 or client.expiry_ms > self.clock()*1000) else "已停用或到期"
-            body += '<tr><td class="user-name">%s</td><td>%s / %s</td><td>%s</td><td>%s</td><td><a class="detail" href="/admin/user/%d/">查看详情 ↗</a></td></tr>' % (esc(user.email), used, total, expiry(client.expiry_ms // 1000), status, client_id)
+            body += '<tr><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s / %s</td><td>%s</td><td>%s</td><td><a class="detail" href="/admin/user/%d/">查看详情 ↗</a></td></tr>' % (esc(user.email), client_id, self.presence(online[str(client_id)]), used, total, expiry(client.expiry_ms // 1000), status, client_id)
         body += '</tbody></table></section><p style="margin-top:16px"><a class="detail" href="/admin/airport/">机场专用页面 ↗</a> · <a class="detail" href="/clients/">下载客户端 ↗</a></p>' + self.system_card()
         return self.shell("管理总览", body, admin=True)
 
@@ -269,12 +281,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = '<section class="card login-card"><form method="post" action="/admin/login"><label for="password">管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="12" maxlength="256"><button class="button primary">登录</button></form></section>'
             return self.respond(200, portal.shell("管理员登录", body))
         if self.path.startswith("/admin/") and not authenticated:
+            if self.path == '/admin/onlines':
+                return self.respond(401, '{}', content_type='application/json')
             return self.respond(303, headers=(("Location", "/admin/login"),))
         state = load_state(Path(portal.config.private_root) / "state.json")
         if not state:
             return self.respond(503, "尚未初始化订阅。")
         if self.path == "/admin/":
             return self.respond(200, portal.admin(state, settings))
+        if self.path == '/admin/onlines':
+            return self.respond(200, json.dumps({'states':portal.online_states(state)}), content_type='application/json')
         if self.path == "/admin/airport/":
             return self.respond(200, portal.account("airport", state, admin=True))
         match = re.fullmatch(r"/admin/user/([1-9][0-9]{0,18})/", self.path)
