@@ -2013,13 +2013,23 @@ class MetadataServeCommandTests(unittest.TestCase):
 
 
 class WebMenuConsistencyTests(unittest.TestCase):
+    def test_api_token_menu_uses_hidden_prompt_without_outputting_secret(self):
+        with patch('clash_sub.cli.os.geteuid',return_value=0), patch('getpass.getpass',return_value='synthetic-api-token') as prompt, patch('clash_sub.web_manage.execute',return_value='令牌已保存') as execute:
+            code,stdout,stderr=run_cli(None,None,stdin_text='9\n7\n0\n0\n')
+        self.assertEqual(code,0)
+        self.assertEqual(stderr,'')
+        prompt.assert_called_once()
+        self.assertEqual(execute.call_args.kwargs['api_token'],'synthetic-api-token')
+        self.assertIn('令牌已保存',stdout)
+        self.assertNotIn('synthetic-api-token',stdout)
+
     def test_actions_keep_compact_prompt_and_enter_expands_menu(self):
         with patch('clash_sub.cli._web_command',return_value=0) as command:
             code,stdout,stderr=run_cli(None,None,stdin_text='9\n2\n5\n\n0\n0\n')
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         self.assertEqual(stdout.count(WEB_MENU),2)
-        self.assertEqual(stdout.count('网页与面板：输入下一项 [1-6]，回车查看菜单，0 返回上一级：'),2)
+        self.assertEqual(stdout.count('网页与面板：输入下一项 [1-7]，回车查看菜单，0 返回上一级：'),2)
         self.assertEqual([item.args[:2] for item in command.call_args_list],[('status',None),('tunnel',None)])
         self.assertEqual(stdout.count(MENU),2)
 

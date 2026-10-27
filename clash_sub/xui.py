@@ -1,4 +1,5 @@
 import re
+from contextlib import closing
 import sqlite3
 import time
 from pathlib import Path
@@ -64,6 +65,35 @@ def read_inbound_traffic(path: Path):
             connection.close()
     except (OSError, sqlite3.Error, ValueError, TypeError):
         return None
+
+
+def read_traffic_resets(path: Path):
+    """Read reset rules only; renewal intervals are not calendar reset days."""
+    result = {'inbound': '待确认', 'clients': {}}
+    try:
+        with closing(sqlite3.connect('file:%s?mode=ro' % quote(str(path)), uri=True, timeout=1.0)) as connection:
+            connection.execute('PRAGMA query_only=ON')
+            for table in ('inbounds', 'clients'):
+                columns = {row[1] for row in connection.execute('PRAGMA table_info(%s)' % table)}
+                if 'traffic_reset' not in columns:
+                    continue
+                day = 'traffic_reset_day' if 'traffic_reset_day' in columns else 'NULL'
+                rows = connection.execute('SELECT %s, traffic_reset, %s FROM %s' % ('id' if table == 'clients' else '0', day, table)).fetchall()
+                labels = []
+                for client_id, mode, reset_day in rows:
+                    label = {'never': '未设置自动重置', 'hourly': '每小时', 'daily': '每天', 'weekly': '每周'}.get(mode, '待确认')
+                    if mode == 'monthly' and type(reset_day) is int and 1 <= reset_day <= 31:
+                        label = '每月 %d 日' % reset_day
+                        if reset_day > 28:
+                            label += '（不足该日按月末）'
+                    if table == 'clients':
+                        result['clients'][client_id] = label
+                    labels.append(label)
+                if table == 'inbounds' and labels:
+                    result['inbound'] = labels[0] if len(set(labels)) == 1 else '各入站重置时间不同'
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        pass
+    return result
 
 
 def read_xui_snapshot(path: Path, now_ms: int | None = None) -> XuiSnapshot:

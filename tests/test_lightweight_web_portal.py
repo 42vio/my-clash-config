@@ -172,6 +172,68 @@ class PortalTests(unittest.TestCase):
         self.assertNotIn('Clash-Airport.yaml',body)
         self.assertIn('no-store',headers)
         self.assertIn("frame-ancestors 'none'",headers)
+        self.assertNotIn('服务器概况',body)
+        self.assertNotIn('到期时间',body)
+        self.assertIn('流量重置时间',body)
+
+    def test_system_metrics_are_only_read_for_admin_overview(self):
+        with patch.object(self.portal, 'system_card', return_value='SERVER-METRICS') as metrics:
+            for key in ('1', '2', 'airport'):
+                token = self.settings['pages'][key]['token']
+                self.assertNotIn('SERVER-METRICS',self.request('/p/'+token+'/')[2])
+            self.assertNotIn('SERVER-METRICS',self.request('/admin/user/2/',cookie=self.login())[2])
+            metrics.assert_not_called()
+            self.assertIn('SERVER-METRICS',self.request('/admin/',cookie=self.login())[2])
+            metrics.assert_called_once()
+
+    def test_reset_rules_are_independent_cached_and_not_inferred_from_expiry(self):
+        from clash_sub.xui import read_traffic_resets
+        with closing(sqlite3.connect(self.config.xui_database)) as db, db:
+            db.execute('CREATE TABLE inbounds (traffic_reset TEXT, traffic_reset_day INTEGER)')
+            db.execute("INSERT INTO inbounds VALUES ('monthly',17)")
+            db.execute('CREATE TABLE clients (id INTEGER, traffic_reset TEXT, traffic_reset_day INTEGER, reset INTEGER)')
+            db.executemany('INSERT INTO clients VALUES (?,?,?,?)',[(1,'monthly',17,0),(2,'never',1,17)])
+        self.assertEqual(read_traffic_resets(self.config.xui_database),{'inbound':'每月 17 日','clients':{1:'每月 17 日',2:'未设置自动重置'}})
+        self.assertEqual(self.portal.reset_rule(),'每月 17 日')
+        self.assertIn('未设置自动重置', self.portal.account('2',self.state))
+        self.assertIn('每月 19 日', self.portal.account('airport',self.state))
+        self.assertIn('每月 19 日', self.portal.admin(self.state,self.settings))
+        self.assertNotIn('到期时间', self.portal.admin(self.state,self.settings))
+        with closing(sqlite3.connect(self.config.xui_database)) as db, db:
+            db.execute('UPDATE inbounds SET traffic_reset_day=31')
+        self.assertEqual(self.portal.reset_rule(),'每月 17 日')
+        self.now[0]+=301
+        self.assertEqual(self.portal.reset_rule(),'每月 31 日（不足该日按月末）')
+
+    def test_missing_or_different_reset_schedules_are_not_fabricated(self):
+        from clash_sub.xui import read_traffic_resets
+        self.assertEqual(read_traffic_resets(self.config.xui_database)['inbound'],'待确认')
+        with closing(sqlite3.connect(self.config.xui_database)) as db, db:
+            db.execute('CREATE TABLE inbounds (traffic_reset TEXT, traffic_reset_day INTEGER)')
+            db.executemany('INSERT INTO inbounds VALUES (?,?)',[('monthly',17),('monthly',18)])
+        self.assertEqual(read_traffic_resets(self.config.xui_database)['inbound'],'各入站重置时间不同')
+
+    def test_system_card_uses_preview_percentages_bars_and_sampled_speed(self):
+        files = {
+            '/proc/meminfo':'MemTotal: 1000 kB\nMemAvailable: 750 kB\n',
+            '/proc/uptime':'288000 0', '/proc/loadavg':'0.03 0.06 0.02 1/1 1',
+            '/proc/stat':'cpu 100 0 0 900 0 0 0 0',
+            '/proc/1/net/dev':'header\nheader\neth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0',
+            '/proc/1/net/route':'header\neth0 00000000 0100007F',
+            '/proc/1/net/if_inet6':'26070000000000000000000000000002 02 40 00 80 eth0',
+        }
+        with patch.object(Path,'read_text',autospec=True,side_effect=lambda path,**_:files[str(path)]), patch('clash_sub.web_server.shutil.disk_usage',return_value=SimpleNamespace(used=50,total=200)):
+            first = self.portal.system_card()
+            self.assertIn('等待下一次访问采样',first)
+            self.now[0]+=30
+            files['/proc/stat']='cpu 110 0 0 990 0 0 0 0'
+            body = self.portal.system_card()
+        self.assertIn('10.0 <small>%</small>',body)
+        self.assertIn('25.0 <small>%</small>',body)
+        self.assertIn('width:25.00%',body)
+        self.assertIn('负载 0.03 / 0.06 / 0.02',body)
+        self.assertIn('3 天 8 小时',body)
+        self.assertIn('IPv6 已配置',body)
 
     def test_airport_page_only_exposes_airport_capability(self):
         token = self.settings['pages']['airport']['token']
@@ -309,7 +371,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(read_inbound_traffic(self.config.xui_database),{'upload':12,'download':43,'total':200})
         body=self.portal.admin(self.state,self.settings)
         self.assertIn('55.0 B',body)
-        self.assertIn('每月由 3x-ui 重置',body)
+        self.assertIn('流量重置时间：待确认',body)
         self.assertNotIn('9999',body)
         with closing(sqlite3.connect(self.config.xui_database)) as db, db:
             db.execute('UPDATE inbounds SET up=0,down=0')

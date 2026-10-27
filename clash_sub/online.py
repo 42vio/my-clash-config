@@ -7,6 +7,7 @@ import os
 import socket
 import socketserver
 import stat
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -15,6 +16,7 @@ from clash_sub.xui import read_panel_settings
 
 SOCKET = '/run/clash-sub/online.sock'
 CREDENTIALS = '/run/clash-sub/online-credentials.json'
+TOKEN_FILE = '/etc/clash-sub/credentials.json'
 LIMIT = 1024 * 1024
 
 
@@ -30,8 +32,43 @@ def parse_online(payload):
     return frozenset(names)
 
 
+def _valid_token(token):
+    return isinstance(token, str) and 16 <= len(token) <= 2048 and all(33 <= ord(ch) <= 126 for ch in token)
+
+
+def save_token(token, path=TOKEN_FILE):
+    """Atomically store a hidden CLI input in a project-owned private file."""
+    if not _valid_token(token):
+        raise ValueError('online_credentials_invalid')
+    path = Path(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    parent = path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) & 0o077:
+        raise ValueError('online_credentials_invalid')
+    if path.exists() or path.is_symlink():
+        details = path.lstat()
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o600:
+            raise ValueError('online_credentials_invalid')
+    fd, candidate = tempfile.mkstemp(prefix='.credentials-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump({'XUI_API_TOKEN': token}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(candidate, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(candidate):
+            os.unlink(candidate)
+
+
 def read_token(path=CREDENTIALS):
-    """Read the existing unified credential file through a read-only systemd bind."""
+    """Read the project credential file through a read-only systemd bind."""
     path = Path(path)
     with path.open('rb') as handle:
         details = os.fstat(handle.fileno())
@@ -40,8 +77,8 @@ def read_token(path=CREDENTIALS):
         data = handle.read(LIMIT + 1)
     if len(data) > LIMIT:
         raise ValueError('online_credentials_invalid')
-    token = json.loads(data)['env']['XUI_API_TOKEN']
-    if not isinstance(token, str) or not 16 <= len(token) <= 2048 or any(ord(ch) < 33 or ord(ch) > 126 for ch in token):
+    token = json.loads(data)['XUI_API_TOKEN']
+    if not _valid_token(token):
         raise ValueError('online_credentials_invalid')
     return token
 

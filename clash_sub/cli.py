@@ -130,6 +130,7 @@ _WEB_MENU_ROWS = (
     ("option", "4", (("关闭公网面板", None),)),
     ("option", "5", (("SSH 隧道使用说明", None),)),
     ("option", "6", (("重置网页管理员密码", None),)),
+    ("option", "7", (("设置 3x-ui API 令牌", None),)),
     ("option", "0", (("返回主菜单", None),)),
 )
 
@@ -195,7 +196,7 @@ MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "�
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 USER_MENU = _render_submenu(_USER_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
-WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False)) + "请输入选项 [0-6]："
+WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False)) + "请输入选项 [0-7]："
 
 
 class _CommandParser(argparse.ArgumentParser):
@@ -265,7 +266,7 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "9":
         return _run_submenu(
-            _WEB_MENU_ROWS, 6, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与面板"
+            _WEB_MENU_ROWS, 7, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与面板"
         )
     if choice == "1":
         return _run_submenu(
@@ -679,18 +680,29 @@ def _web_command(action, target, stdout, stderr):
         return _error(stderr, "not_root", 1)
     try:
         password = None
+        if action == "set-api-token":
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                token = getpass.getpass("输入 3x-ui API 令牌（隐藏输入，回车取消）：")
+            if not token:
+                return 0
+            stdout.write(execute(default_repo_root(), action, api_token=token) + "\n")
+            return 0
         if action in {"setup", "reset-password"}:
             password = getpass.getpass("设置管理员密码（12—256字符）：")
             if password != getpass.getpass("再次输入密码："):
                 return _error(stderr, "password_mismatch", 1)
         stdout.write(execute(default_repo_root(), action, password=password, target=target) + "\n")
         return 0
+    except (EOFError, KeyboardInterrupt):
+        return 0
     except Exception:
         return _error(stderr, "web_management_failed", 1)
 
 
 def _web_dispatch(choice, stdin, stdout, stderr, factory):
-    actions = {"1": "setup", "2": "status", "3": "panel-on", "4": "panel-off", "5": "tunnel", "6": "reset-password"}
+    actions = {"1": "setup", "2": "status", "3": "panel-on", "4": "panel-off", "5": "tunnel", "6": "reset-password", "7": "set-api-token"}
     if choice not in actions:
         return None
     return _web_command(actions[choice], None, stdout, stderr), False
@@ -721,7 +733,7 @@ def _parser():
     task.add_argument('task_id')
     task.add_argument('--sync-only', action='store_true')
     web = commands.add_parser("web", add_help=False)
-    web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel"))
+    web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel", "set-api-token"))
     web.add_argument("target", nargs="?")
     # Internal systemd entry (clash-sub-airport-refresh.timer); never displayed.
     commands.add_parser("airport-scheduled-refresh", add_help=False)

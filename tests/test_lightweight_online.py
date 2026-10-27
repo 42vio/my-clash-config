@@ -2,13 +2,43 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
-from clash_sub.online import OnlineCache, parse_online, query_online, read_token
+from clash_sub.online import OnlineCache, parse_online, query_online, read_token, save_token
 
 
 class OnlineTests(unittest.TestCase):
+    def test_menu_save_restarts_service_and_checks_query_without_exposing_token(self):
+        from clash_sub.web_manage import execute
+        config=SimpleNamespace(private_root='/private',systemctl_binary='/bin/systemctl',xui_database='/db')
+        for result,query,label in ((0,frozenset(),'验证成功'),(0,None,'查询未成功'),(1,None,'重启失败')):
+            with self.subTest(result=result,query=query), patch('clash_sub.web_manage.load_config',return_value=config), patch('clash_sub.web_manage._OperationLock'), patch('clash_sub.online.save_token') as save, patch('clash_sub.online.query_online',return_value=query), patch('clash_sub.web_manage.read_settings') as settings:
+                runner=unittest.mock.Mock(return_value=SimpleNamespace(returncode=result))
+                message=execute('/repo','set-api-token',api_token='synthetic-private-token',runner=runner)
+                save.assert_called_once_with('synthetic-private-token')
+                self.assertIn(label,message)
+                self.assertNotIn('synthetic-private-token',message)
+                self.assertEqual(runner.call_args.args[0],['/bin/systemctl','restart','clash-sub-online.service'])
+                settings.assert_not_called()
+
+    def test_save_and_replace_token_privately_without_following_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'private'/'credentials.json'
+            save_token('first-synthetic-token',path)
+            self.assertEqual(read_token(path),'first-synthetic-token')
+            self.assertEqual(path.stat().st_mode & 0o777,0o600)
+            self.assertEqual(path.parent.stat().st_mode & 0o777,0o700)
+            save_token('second-synthetic-token',path)
+            self.assertEqual(read_token(path),'second-synthetic-token')
+            alias=path.parent/'alias'
+            alias.symlink_to(path)
+            with self.assertRaises(ValueError):save_token('another-synthetic-token',alias)
+            self.assertEqual(read_token(path),'second-synthetic-token')
+            with self.assertRaises(ValueError):save_token('short',path)
+            self.assertEqual(list(path.parent.glob('.credentials-*')),[])
+
     def test_empty_panel_result_is_offline_but_error_is_unknown(self):
         self.assertEqual(parse_online({'success':True,'obj':None}),frozenset())
         self.assertEqual(parse_online({'success':True,'obj':[]}),frozenset())
@@ -31,10 +61,10 @@ class OnlineTests(unittest.TestCase):
         now[0]=20
         self.assertEqual(cache.get(),frozenset())
 
-    def test_credentials_read_only_from_private_unified_config(self):
+    def test_credentials_read_only_from_private_project_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'settings.json'
-            path.write_text(json.dumps({'env':{'XUI_API_TOKEN':'synthetic-token-for-online-tests'}}))
+            path.write_text(json.dumps({'XUI_API_TOKEN':'synthetic-token-for-online-tests'}))
             os.chmod(path,0o600)
             self.assertEqual(read_token(path),'synthetic-token-for-online-tests')
             os.chmod(path,0o644)

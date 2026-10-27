@@ -21,3 +21,5 @@
 .mobile-member-note{display:none}@media(max-width:760px){.mobile-member-note{display:block}.user-table tr[data-expired] .user-name::after{content:"不可用"}.card-head .subtle{max-width:60%}}
 
 @media(max-width:760px){.traffic-card .provider-usage .remaining{margin-top:4px;font-size:10px}.traffic-card .provider-usage .bar{margin:7px 0;height:4px}.traffic-card .stats{padding-top:7px;gap:6px}.traffic-card .stats label{font-size:9px;margin-bottom:2px}.traffic-card .stats strong{font-size:10px}.traffic-card .card-head .subtle{font-size:9px}.user-actions .manage-link{min-height:32px}}
+
+.server-sampling-note{margin-top:12px;font-size:10px}.metric-sampling{height:24px;font-size:10px;color:var(--muted);padding-top:6px}.metric-spacer{height:24px}.server .metric strong{overflow-wrap:anywhere}

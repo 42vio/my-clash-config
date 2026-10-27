@@ -13,9 +13,18 @@ from clash_sub.state import load_state
 from clash_sub.web_settings import page_path, password_hash, provision_pages, read_settings, write_settings
 
 
-def execute(root, action, *, password=None, target=None, runner=subprocess.run, actor=None, authorize=None):
+def execute(root, action, *, password=None, api_token=None, target=None, runner=subprocess.run, actor=None, authorize=None):
     config = load_config(config_path(root), root)
     with _OperationLock(Path(config.private_root) / "operation.lock"):
+        if action == 'set-api-token':
+            from clash_sub.online import TOKEN_FILE, save_token, query_online
+            save_token(api_token)
+            result = runner([str(config.systemctl_binary), 'restart', 'clash-sub-online.service'], capture_output=True, timeout=30, check=False)
+            if result.returncode:
+                return '令牌已保存，但在线查询服务重启失败，请检查服务后重试。'
+            if query_online(config.xui_database, credentials=TOKEN_FILE) is None:
+                return '令牌已保存，服务已重新加载，但在线查询未成功；请检查令牌权限与 3x-ui 状态。'
+            return '3x-ui API 令牌已保存，在线查询验证成功。'
         settings = read_settings(config.private_root)
         previous = copy.deepcopy(settings)
         state = load_state(Path(config.private_root) / "state.json")
