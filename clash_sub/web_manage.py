@@ -10,10 +10,10 @@ from clash_sub.manage import _load_install_state, _rerender_nginx, _stop_web_ser
 from clash_sub.runtime import config_path
 from clash_sub.service import _OperationLock
 from clash_sub.state import load_state
-from clash_sub.web_settings import admin_prefix, page_path, password_hash, provision_pages, read_settings, write_settings
+from clash_sub.web_settings import admin_username, validate_username, admin_prefix, page_path, password_hash, provision_pages, read_settings, write_settings
 
 
-def execute(root, action, *, password=None, api_token=None, target=None, runner=subprocess.run, actor=None, authorize=None):
+def execute(root, action, *, password=None, username=None, api_token=None, target=None, runner=subprocess.run, actor=None, authorize=None):
     config = load_config(config_path(root), root)
     with _OperationLock(Path(config.private_root) / "operation.lock"):
         if action == 'set-api-token':
@@ -50,6 +50,7 @@ def execute(root, action, *, password=None, api_token=None, target=None, runner=
                 raise ValueError("invalid_page_target")
             provision_pages(settings, state, rotate=target if action == "rotate-page" else None)
         if action in {"setup", "reset-password"}:
+            settings['username'] = validate_username(username if username is not None else admin_username(settings))
             settings['password_hash'] = password_hash(password)
         if action == "web-on" and (not state or not settings['password_hash'] or not admin_prefix(settings,state)):
             raise ValueError("initialize_web_first")
@@ -91,6 +92,8 @@ def execute(root, action, *, password=None, api_token=None, target=None, runner=
                 email = state.users[state.owner_client_id if key == 'airport' else int(key)].email
                 name = email + '（机场专用）' if key == 'airport' else email
                 lines.append('%s：%s%s' % (name, base, page_path(record['token'], email)))
+            if action in {'setup','reset-password'}:
+                lines.insert(0,'网页管理员账号：'+admin_username(settings))
             return '\n'.join(lines)
         if action in {'web-on','web-off'}:
             return '订阅网页已%s；个人页、机场页和管理员页统一切换，订阅下载、代理和 3x-ui 面板开关保持不变。' % ('开启' if settings['enabled'] else '关闭')

@@ -38,6 +38,8 @@ def read_settings(root):
     if not stat.S_ISREG(details.st_mode) or stat.S_IMODE(details.st_mode) != 0o600 or details.st_uid != os.geteuid():
         raise ValueError("web_settings_invalid")
     data = json.loads(path.read_text())
+    if 'username' in data:
+        validate_username(data['username'])
     if data.get("version") != 1 or type(data.get("panel_public")) is not bool or type(data.get("enabled")) is not bool or not isinstance(data.get("pages"), dict):
         raise ValueError("web_settings_invalid")
     for key, record in data["pages"].items():
@@ -73,9 +75,20 @@ def write_settings(root, data):
             os.unlink(name)
 
 
+def validate_username(username):
+    if not isinstance(username,str) or not re.fullmatch(r'[A-Za-z0-9._@+-]{1,254}',username):
+        raise ValueError('invalid_web_username')
+    return username
+
+
+def admin_username(settings):
+    # Existing installations retain their password and use the owner label.
+    return settings.get('username',settings.get('admin',{}).get('email',''))
+
+
 def password_hash(password, salt=None):
-    if not isinstance(password, str) or len(password) < 12 or len(password) > 256:
-        raise ValueError("password_length_12_to_256")
+    if not isinstance(password, str) or len(password) < 8 or len(password) > 256:
+        raise ValueError("password_length_8_to_256")
     salt = salt or secrets.token_hex(16)
     digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
     return salt + ":" + digest

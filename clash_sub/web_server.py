@@ -21,7 +21,7 @@ from urllib.parse import parse_qs, urlsplit
 from clash_sub.domain import PROFILE_FILENAMES, Traffic
 from clash_sub.metadata import TrafficMetadataStore
 from clash_sub.state import airport_only_token, load_state
-from clash_sub.web_settings import admin_prefix, page_path, read_settings, verify_password
+from clash_sub.web_settings import admin_username, admin_prefix, page_path, read_settings, verify_password
 from clash_sub.xui import read_xui_snapshot, read_inbound_traffic, read_traffic_resets
 from clash_sub.online import OnlineCache, read_online
 
@@ -123,28 +123,30 @@ class Portal:
         with self.lock:
             record = self.sessions.get(digest)
         prefix = admin_prefix(settings,state)
-        if record and prefix and record[0] > self.clock() and secrets.compare_digest(record[1], settings.get("password_hash", "")) and record[2] == settings['admin']['binding'] and record[4] == settings['admin']['token']:
+        if record and prefix and record[0] > self.clock() and secrets.compare_digest(record[1], settings.get("password_hash", "")) and record[2] == settings['admin']['binding'] and record[4] == settings['admin']['token'] and len(record) == 6 and record[5] == admin_username(settings):
             return record
         return None
 
     def session(self, cookie, settings, state=None):
         return self.session_record(cookie,settings,state) is not None
 
-    def login(self, password, settings):
+    def login(self, password, settings, *, username=None):
         with self.lock:
             now = self.clock()
             while self.failures and self.failures[0] <= now - 300:
                 self.failures.popleft()
             if len(self.failures) >= 5:
                 return None
-            if not verify_password(password, settings.get("password_hash", "")):
+            password_ok = verify_password(password, settings.get("password_hash", ""))
+            username_ok = secrets.compare_digest((username or "").encode(),admin_username(settings).encode())
+            if not password_ok or not username_ok:
                 self.failures.append(now)
                 return None
             self.sessions = {key: value for key, value in self.sessions.items() if value[0] > now}
             if len(self.sessions) >= 32:
                 self.sessions.clear()
             token = secrets.token_urlsafe(32)
-            self.sessions[hashlib.sha256(token.encode()).hexdigest()] = (now + 8 * 3600, settings["password_hash"], settings["admin"]["binding"], secrets.token_urlsafe(32), settings["admin"]["token"])
+            self.sessions[hashlib.sha256(token.encode()).hexdigest()] = (now + 8 * 3600, settings["password_hash"], settings["admin"]["binding"], secrets.token_urlsafe(32), settings["admin"]["token"], admin_username(settings))
             return token
 
     def resolve_page(self, token, settings, state):
@@ -378,7 +380,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rest == '/login':
                 if session:
                     return self.respond(303,headers=(('Location',prefix+'/'),))
-                body = '<section class="card login-card"><form method="post" action="%s/login"><label for="password">%s · 管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="12" maxlength="256"><button class="button primary">登录</button></form></section>' % (esc(prefix),esc(state.users[state.owner_client_id].email))
+                body = '<section class="card login-card"><form method="post" action="%s/login"><label for="username">管理员账号</label><input id="username" name="username" autocomplete="username" required maxlength="254"><label for="password">管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="8" maxlength="256"><button class="button primary">登录</button></form></section>' % esc(prefix)
                 return self.respond(200,portal.shell('owner 登录',body))
             if not session:
                 if rest in {'/onlines','/tasks','/server'} or rest.endswith('/links'):
@@ -430,7 +432,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             payload = {key:values[0] for key,values in fields.items()}
             rest = self.path[len(prefix):]
             if rest == '/login':
-                token = portal.login(payload.get('password',''),settings)
+                token = portal.login(payload.get('password',''),settings,username=payload.get('username',''))
                 if not token:
                     return self.respond(429,'登录失败或尝试过于频繁，请五分钟后再试。<a href="%s/login">返回</a>'%esc(prefix))
                 return self.respond(303,headers=(('Location',prefix+'/'),('Set-Cookie','portal_session=%s; Path=/admin/; Secure; HttpOnly; SameSite=Strict; Max-Age=28800'%token)))

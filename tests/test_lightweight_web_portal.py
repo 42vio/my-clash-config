@@ -31,6 +31,29 @@ class Request:
 
 
 class PortalTests(unittest.TestCase):
+    def test_account_is_required_and_eight_character_password_is_supported(self):
+        from clash_sub.web_settings import verify_password
+        self.settings['username']='web-admin'
+        self.settings['password_hash']=password_hash('test1234')
+        write_settings(self.root,self.settings)
+        self.assertTrue(verify_password('test1234',self.settings['password_hash']))
+        with self.assertRaises(ValueError):password_hash('1234567')
+        for username in ('','owner','wrong-user'):
+            self.assertEqual(self.request('/admin/login',method='POST',fields={'username':username,'password':'test1234'},origin='https://sub.example.com')[0],429)
+        self.assertEqual(self.request('/admin/login',method='POST',fields={'username':'web-admin','password':'test1234'},origin='https://sub.example.com')[0],303)
+        body=self.request('/admin/login')[2]
+        self.assertIn('autocomplete="username"',body)
+        self.assertIn('minlength="8"',body)
+
+    def test_account_change_revokes_sessions_and_queued_authorization(self):
+        from clash_sub.web_tasks import authorization
+        cookie=self.login()
+        previous=authorization(self.settings,self.state)
+        self.settings['username']='new-admin'
+        write_settings(self.root,self.settings)
+        self.assertEqual(self.request('/admin/',cookie=cookie)[0],303)
+        self.assertNotEqual(authorization(self.settings,self.state),previous)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -70,7 +93,7 @@ class PortalTests(unittest.TestCase):
         return int(head.split()[1]), head.decode(), response.decode()
 
     def login(self):
-        status, headers, _ = self.request('/admin/login',method='POST',fields={'password':'a-strong-test-password'},origin='https://sub.example.com')
+        status, headers, _ = self.request('/admin/login',method='POST',fields={'username':'owner','password':'a-strong-test-password'},origin='https://sub.example.com')
         self.assertEqual(status,303)
         return next(line.split(': ',1)[1].split(';')[0] for line in headers.splitlines() if line.startswith('Set-Cookie:'))
 
@@ -370,7 +393,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request('/admin/',cookie=cookie)[0],303)
 
     def test_cross_origin_login_is_rejected(self):
-        self.assertEqual(self.request('/admin/login',method='POST',fields={'password':'a-strong-test-password'},origin='https://evil.example')[0],403)
+        self.assertEqual(self.request('/admin/login',method='POST',fields={'username':'owner','password':'a-strong-test-password'},origin='https://evil.example')[0],403)
 
     def test_form_policy_preserves_origin_without_leaking_capability_path(self):
         status,headers,body=self.request('/admin/login')
@@ -378,15 +401,15 @@ class PortalTests(unittest.TestCase):
         self.assertIn('Referrer-Policy: strict-origin',headers)
         self.assertIn('<meta name="referrer" content="strict-origin">',body)
         self.assertNotIn('content="no-referrer"',body)
-        self.assertEqual(self.request('/admin/login',method='POST',fields={'password':'a-strong-test-password'},origin='null')[0],403)
+        self.assertEqual(self.request('/admin/login',method='POST',fields={'username':'owner','password':'a-strong-test-password'},origin='null')[0],403)
         self.assertTrue(self.login())
 
     def test_global_login_rate_limit_applies_after_five_failures(self):
         for _ in range(5):
-            self.assertIsNone(self.portal.login('wrong-password-long',self.settings))
-        self.assertIsNone(self.portal.login('a-strong-test-password',self.settings))
+            self.assertIsNone(self.portal.login('wrong-password-long',self.settings,username='owner'))
+        self.assertIsNone(self.portal.login('a-strong-test-password',self.settings,username='owner'))
         self.now[0]+=301
-        self.assertIsNotNone(self.portal.login('a-strong-test-password',self.settings))
+        self.assertIsNotNone(self.portal.login('a-strong-test-password',self.settings,username='owner'))
 
     def test_password_reset_invalidates_existing_session(self):
         cookie=self.login()

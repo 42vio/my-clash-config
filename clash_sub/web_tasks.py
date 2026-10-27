@@ -60,7 +60,8 @@ def authorization(settings, state):
     if not settings.get('enabled') or not admin_prefix(settings,state):
         raise ValueError('owner_authorization_invalid')
     record = settings['admin']
-    return hashlib.sha256((record['token']+record['binding']+settings['password_hash']).encode()).hexdigest()
+    from clash_sub.web_settings import admin_username
+    return hashlib.sha256((record['token']+record['binding']+settings['password_hash']+admin_username(settings)).encode()).hexdigest()
 
 
 def _status(row, now):

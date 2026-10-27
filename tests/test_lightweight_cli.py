@@ -2015,6 +2015,15 @@ class MetadataServeCommandTests(unittest.TestCase):
 
 
 class WebMenuConsistencyTests(unittest.TestCase):
+    def test_account_setup_reads_username_and_hidden_password(self):
+        with patch('clash_sub.cli.os.geteuid',return_value=0),patch('getpass.getpass',side_effect=['test1234','test1234']),patch('clash_sub.web_manage.execute',return_value='账号已设置') as execute:
+            code,stdout,stderr=run_cli(None,None,stdin_text='4\n6\nweb-admin\n0\n0\n')
+        self.assertEqual(code,0)
+        self.assertEqual(stderr,'')
+        self.assertEqual(execute.call_args.kwargs['username'],'web-admin')
+        self.assertEqual(execute.call_args.kwargs['password'],'test1234')
+        self.assertNotIn('test1234',stdout)
+
     def test_web_switches_are_separate_from_3x_ui_panel_switches(self):
         with patch('clash_sub.cli._web_command',return_value=0) as command:
             code,stdout,stderr=run_cli(None,None,stdin_text='4\n8\n9\n3\n4\n0\n0\n')

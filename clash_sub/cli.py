@@ -129,7 +129,7 @@ _WEB_MENU_ROWS = (
     ("option", "3", (("开启公网 3x-ui 面板", None),)),
     ("option", "4", (("关闭公网 3x-ui 面板", None),)),
     ("option", "5", (("SSH 隧道使用说明", None),)),
-    ("option", "6", (("重置网页管理员密码", None),)),
+    ("option", "6", (("设置网页管理员账号与密码", None),)),
     ("option", "7", (("设置 3x-ui API 令牌", None),)),
     ("option", "8", (("开启订阅网页", None),)),
     ("option", "9", (("关闭订阅网页（保留订阅下载）", None),)),
@@ -675,13 +675,14 @@ def _confirm(stdin, stdout, message):
     return answer is not None and answer.lower() == "y"
 
 
-def _web_command(action, target, stdout, stderr):
+def _web_command(action, target, stdout, stderr, stdin=None):
     from clash_sub.web_manage import execute
     import getpass
     if os.geteuid() != 0:
         return _error(stderr, "not_root", 1)
     try:
         password = None
+        username = None
         if action == "set-api-token":
             import warnings
             with warnings.catch_warnings():
@@ -692,10 +693,14 @@ def _web_command(action, target, stdout, stderr):
             stdout.write(execute(default_repo_root(), action, api_token=token) + "\n")
             return 0
         if action in {"setup", "reset-password"}:
-            password = getpass.getpass("设置管理员密码（12—256字符）：")
+            username = _prompt(stdin or sys.stdin, stdout, "设置网页管理员账号（回车保留现有账号，新安装默认 owner 标识）：")
+            if username is None:
+                return 0
+            username = username or None
+            password = getpass.getpass("设置管理员密码（8—256字符）：")
             if password != getpass.getpass("再次输入密码："):
                 return _error(stderr, "password_mismatch", 1)
-        stdout.write(execute(default_repo_root(), action, password=password, target=target) + "\n")
+        stdout.write(execute(default_repo_root(), action, password=password, username=username, target=target) + "\n")
         return 0
     except (EOFError, KeyboardInterrupt):
         return 0
@@ -707,7 +712,7 @@ def _web_dispatch(choice, stdin, stdout, stderr, factory):
     actions = {"1": "setup", "2": "status", "3": "panel-on", "4": "panel-off", "5": "tunnel", "6": "reset-password", "7": "set-api-token", "8": "web-on", "9": "web-off"}
     if choice not in actions:
         return None
-    return _web_command(actions[choice], None, stdout, stderr), False
+    return _web_command(actions[choice], None, stdout, stderr, stdin=stdin), False
 
 
 def _parser():
