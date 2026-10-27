@@ -9,19 +9,13 @@
 - 443/TCP 未被占用，3x-ui 已安装，且目标 owner 的 3x-ui client 已启用并可用其 email 识别。
 - 先按下节完成 3x-ui 设置；不要提交订阅 URL、token 或任何私密 YAML。
 
-防火墙设置
+防火墙 和 BBR设置
 
 ```
-# 安装基础工具
-apt update && apt install ufw curl -y
-
 # 按顺序放行端口——这一行最重要，先保住 SSH
-ufw allow 26019/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-
-# 确认规则正确，然后启用
-ufw enable
+26019/tcp
+80/tcp
+443/tcp
 ```
 
 
@@ -42,6 +36,18 @@ ufw enable
 原始订阅只供本机 `clash-sub` 读取，不直接对公网开放。公网订阅入口为 `443`，由 Nginx 按 SNI 转到内部 `127.0.0.1:30443`；脚本读取 3x-ui 原始订阅时使用 `127.0.0.1:<原始订阅端口>`，这三个端口用途不同。
 
 安装前保持 Reality 入站的公网 listen；安装成功并看到收口提示后，将该入站 listen 改为 `127.0.0.1`，端口仍为 `10443`。回滚安装后需改回 `0.0.0.0`。
+
+## Reality Short ID 约定
+
+本项目直接读取 3x-ui 的本地 Clash 订阅，不经过 VLESS 链接转换。以测试夹具对应的 3x-ui v3.6.0 为准，Clash 生成器将服务端 `realitySettings.shortIds[0]` 写入客户端 `reality-opts.short-id`；本项目只重写公网地址和端口，保留该值。多个服务端 Short ID 输出成一个客户端 Short ID 是正常行为，无需复制成多个节点。
+
+- 新建单节点入站时，使用一个固定、非空的 Short ID，建议为 16 位十六进制字符串（8 字节）；不要在同步或刷新订阅时重新生成。协议也允许更短的偶数位十六进制值，本项目当前完整性校验要求非空。
+- 已有入站保留当前首项及其顺序，确保已发布订阅的 `short-id` 仍包含在服务端 `shortIds` 中。不要为简化数组立即删除其他项：旧 VLESS 链接或 JSON 订阅可能已经使用这些值。待相关客户端迁移并验证后，再考虑收敛为单项。
+- v3.6.0 的原始 VLESS 链接 `sid` 与 JSON 订阅 `shortId` 使用随机选项。未来若增加 QX 或其他转换入口，需要核对转换器是否保留该值；单项服务端数组可消除这些入口的随机选值，不能仅凭当前 Clash 链路推断它们稳定。本仓库目前没有 QX/VLESS 转换器。
+- 本项目尚未将输出 `short-id` 与数据库数组独立交叉校验；当前选值由 3x-ui 自己从该入站数组产生。修改数组、升级 3x-ui 或切换订阅源后，重新生成配置并核对所选值、成员关系与连续两次生成结果，再执行客户端连接验证。配置校验通过不代表远端握手成功。
+- 多设备需要独立停用、流量统计或额度时，在 3x-ui 为每台设备创建独立 client/UUID，并使用各自订阅。Short ID 是入站的可接受值列表，不是 UUID 的设备权限绑定；不同 UUID 可以共用同一个 Short ID。当前无需新增 UUID 哈希选值逻辑。
+
+上游实现：[Clash 生成器](https://github.com/MHSanaei/3x-ui/blob/v3.6.0/internal/sub/clash_service.go)、[VLESS 链接生成器](https://github.com/MHSanaei/3x-ui/blob/v3.6.0/internal/sub/service.go)、[JSON 生成器](https://github.com/MHSanaei/3x-ui/blob/v3.6.0/internal/sub/json_service.go)。服务器实际版本及数据库内容需另行核实，不由测试夹具版本推定。
 
 ## 全新安装
 
