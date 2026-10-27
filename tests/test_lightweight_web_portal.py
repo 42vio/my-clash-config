@@ -31,6 +31,17 @@ class Request:
 
 
 class PortalTests(unittest.TestCase):
+    def test_default_online_reader_uses_same_process_only_for_admin(self):
+        with patch('clash_sub.web_server.query_online',return_value=frozenset({'member'})) as query:
+            self.portal=Portal(self.config,clock=lambda:self.now[0],store=self.store,snapshot_reader=lambda _:SimpleNamespace(clients=self.clients))
+            token=self.settings['pages']['2']['token']
+            self.request('/p/'+token+'/')
+            query.assert_not_called()
+            cookie=self.login()
+            self.assertEqual(self.request('/admin/onlines',cookie=cookie)[0],200)
+            self.request('/admin/onlines',cookie=cookie)
+            query.assert_called_once_with(self.config.xui_database)
+
     def test_account_is_required_and_eight_character_password_is_supported(self):
         from clash_sub.web_settings import verify_password
         self.settings['username']='web-admin'

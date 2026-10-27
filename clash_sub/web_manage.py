@@ -19,15 +19,8 @@ def execute(root, action, *, password=None, username=None, api_token=None, targe
         if action == 'set-api-token':
             from clash_sub.online import TOKEN_FILE, save_token, query_online
             save_token(api_token)
-            if not read_settings(config.private_root)['enabled']:
-                verified = query_online(config.xui_database, credentials=TOKEN_FILE) is not None
-                return '令牌已保存，%s；订阅网页已关闭，在线查询服务保持停止。' % ('在线查询验证成功' if verified else '在线查询未成功，请检查令牌权限与 3x-ui 状态')
-            result = runner([str(config.systemctl_binary), 'restart', 'clash-sub-online.service'], capture_output=True, timeout=30, check=False)
-            if result.returncode:
-                return '令牌已保存，但在线查询服务重启失败，请检查服务后重试。'
-            if query_online(config.xui_database, credentials=TOKEN_FILE) is None:
-                return '令牌已保存，服务已重新加载，但在线查询未成功；请检查令牌权限与 3x-ui 状态。'
-            return '3x-ui API 令牌已保存，在线查询验证成功。'
+            verified = query_online(config.xui_database, credentials=TOKEN_FILE) is not None
+            return '令牌已保存，%s；网页会在下一次查询时读取新令牌，无需重启服务。' % ('在线查询验证成功' if verified else '在线查询未成功，请检查令牌权限与 3x-ui 状态')
         settings = read_settings(config.private_root)
         previous = copy.deepcopy(settings)
         state = load_state(Path(config.private_root) / "state.json")
@@ -55,12 +48,12 @@ def execute(root, action, *, password=None, username=None, api_token=None, targe
         if action == "web-on" and (not state or not settings['password_hash'] or not admin_prefix(settings,state)):
             raise ValueError("initialize_web_first")
         if action in {"setup", "web-on"}:
-            if not all(Path('/etc/systemd/system/' + name).is_file() for name in ('clash-sub-web.socket', 'clash-sub-online.socket')):
+            if not all(Path('/etc/systemd/system/' + name).is_file() for name in ('clash-sub-web.socket',)):
                 raise ValueError("run_clash_sub_update_first")
             settings['enabled'] = True
             if action == 'setup':
                 settings['panel_public'] = False
-            result = runner([str(config.systemctl_binary), 'enable', '--now', 'clash-sub-web.socket', 'clash-sub-online.socket'], capture_output=True, timeout=30, check=False)
+            result = runner([str(config.systemctl_binary), 'enable', '--now', 'clash-sub-web.socket'], capture_output=True, timeout=30, check=False)
             if result.returncode:
                 raise ValueError("web_socket_enable_failed")
         if action == "web-off":
@@ -79,8 +72,8 @@ def execute(root, action, *, password=None, username=None, api_token=None, targe
                 raise
         if action == 'web-off':
             if not _stop_web_services(config, runner):
-                return '订阅网页已关闭，但后台服务或 socket 未完全停止，内存释放未完成；请检查服务后重试关闭。'
-            return '订阅网页已关闭，网页及在线查询服务和 socket 已停止以释放内存；订阅下载、代理和 3x-ui 不受影响。'
+                return '订阅网页已关闭，但网页服务或 socket 未完全停止，内存释放未完成；请检查服务后重试关闭。'
+            return '订阅网页已关闭，网页服务及 socket 已停止以释放内存；订阅下载、代理和 3x-ui 不受影响。'
         if action in {"setup", "links", "rotate-page", "reset-password"}:
             base = 'https://' + config.subscription_authority
             lines = ['管理员：' + base + admin_prefix(settings,state) + '/'] if target is None or target in {'admin',str(state.owner_client_id)} else []

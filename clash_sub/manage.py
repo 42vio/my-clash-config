@@ -286,8 +286,8 @@ def _stop_web_services(config, runner):
     """Remove activation and resident processes without touching proxy services."""
     success = True
     for arguments in (
-        ['disable', '--now', 'clash-sub-web.socket', 'clash-sub-online.socket'],
-        ['stop', 'clash-sub-web.service', 'clash-sub-online.service'],
+        ['disable', '--now', 'clash-sub-web.socket'],
+        ['stop', 'clash-sub-web.service'],
     ):
         try:
             result = runner([str(config.systemctl_binary)] + arguments, capture_output=True, timeout=30, check=False)
@@ -327,10 +327,11 @@ def run_post_update(repo_root, runner):
             write_settings(config.private_root, settings)
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
+    # Existing resident processes retain imports from the old code until restart.
+    installer._run(['systemctl', 'try-restart', 'clash-sub-metadata.service'])
     if settings['enabled']:
-        installer._run(['systemctl', 'enable', '--now', 'clash-sub-web.socket', 'clash-sub-online.socket'])
+        installer._run(['systemctl', 'enable', '--now', 'clash-sub-web.socket'])
         installer._run(["systemctl", "try-restart", "clash-sub-web.service"])
-        installer._run(["systemctl", "try-restart", "clash-sub-online.service"])
     elif not _stop_web_services(config, runner):
         raise RuntimeError('web_shutdown_failed')
     return True

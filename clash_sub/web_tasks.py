@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from clash_sub.service import _OperationLock, ServiceError
+from clash_sub.operation import _OperationLock, ServiceError
 from clash_sub.state import load_state
 from clash_sub.web_settings import admin_prefix, read_settings, write_settings
 

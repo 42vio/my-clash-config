@@ -311,6 +311,7 @@ class Installer:
             self.paths.systemd_dir / "clash-sub-metadata.service",
             self.paths.systemd_dir / "clash-sub-web.socket",
             self.paths.systemd_dir / "clash-sub-web.service",
+            # Keep legacy paths valid while reading old install/rollback journals.
             self.paths.systemd_dir / "clash-sub-online.socket",
             self.paths.systemd_dir / "clash-sub-online.service",
             self.paths.systemd_dir / "clash-sub-task@.service",
@@ -794,8 +795,6 @@ class Installer:
                 "clash-sub-metadata.service",
                 "clash-sub-web.socket",
                 "clash-sub-web.service",
-                "clash-sub-online.socket",
-                "clash-sub-online.service",
                 "clash-sub-task@.service",
                 "clash-sub-recover.service",
                 "clash-sub-airport-refresh.service",
@@ -865,6 +864,7 @@ class Installer:
         state = self.state()
         state.systemd_actions_started = True
         self._save_state(state)
+        self._retire_online_bridge()
         self._run(["systemctl", "daemon-reload"])
         state = self.state()
         state.socket_enable_attempted = True
@@ -878,6 +878,29 @@ class Installer:
         self._save_state(state)
         self._run(["systemctl", "enable", "--now", "clash-sub-airport-refresh.timer"])
         self._phase_done("systemd_harden")
+
+    def _retire_online_bridge(self):
+        # Old installations may still have an active bridge after files in
+        # the repository are removed. Stop activation before its process.
+        old = [self.paths.systemd_dir / ('clash-sub-online.' + kind) for kind in ('socket','service')]
+        existing = [path for path in old if path.exists() or path.is_symlink()]
+        if not existing:
+            return
+        for path in existing:
+            details = path.lstat()
+            if not stat.S_ISREG(details.st_mode) or details.st_uid != os.geteuid():
+                raise InstallerError('online_bridge_retirement_failed')
+        if old[0] in existing:
+            self._run(['systemctl','disable','--now','clash-sub-online.socket'])
+        if old[1] in existing:
+            self._run(['systemctl','stop','clash-sub-online.service'])
+        for path in existing:
+            path.unlink()
+        descriptor = os.open(self.paths.systemd_dir, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def _render_systemd_unit(self, contents):
         paths = (self.paths.private_root, self.paths.public_root, self.paths.routes_conf.parent, Path("/var/log/nginx"), Path("/var/lib/nginx"))
@@ -1117,7 +1140,7 @@ class Installer:
                 rollback_action(["systemctl", "disable", "--now", "clash-sub-web.socket"])
                 rollback_action(["systemctl", "stop", "clash-sub-web.service"])
             online_socket = str(self.paths.systemd_dir / 'clash-sub-online.socket')
-            if online_socket in state.files_written and online_socket not in state.replaced_files:
+            if online_socket in state.files_written and online_socket not in state.replaced_files and Path(online_socket).is_file():
                 rollback_action(['systemctl', 'disable', '--now', 'clash-sub-online.socket'])
                 rollback_action(['systemctl', 'stop', 'clash-sub-online.service'])
         # Crash-window coverage: paths are journaled write-ahead, but a

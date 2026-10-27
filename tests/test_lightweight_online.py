@@ -10,6 +10,45 @@ from clash_sub.online import OnlineCache, parse_online, query_online, read_token
 
 
 class OnlineTests(unittest.TestCase):
+    def test_upgrade_stops_and_removes_old_bridge_units_idempotently(self):
+        from clash_sub.installer import Installer,InstallPaths
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            paths=InstallPaths(systemd_dir=root/'systemd')
+            paths.systemd_dir.mkdir()
+            for kind in ('socket','service'):
+                (paths.systemd_dir/('clash-sub-online.'+kind)).write_text('old unit')
+            installer=Installer(root,paths=paths)
+            with patch.object(installer,'_run') as run:
+                installer._retire_online_bridge()
+                self.assertEqual([call.args[0] for call in run.call_args_list],[['systemctl','disable','--now','clash-sub-online.socket'],['systemctl','stop','clash-sub-online.service']])
+                installer._retire_online_bridge()
+                self.assertEqual(run.call_count,2)
+            self.assertEqual(list(paths.systemd_dir.iterdir()),[])
+
+    def test_web_unit_allows_only_local_ipv4_and_keeps_metadata_isolated(self):
+        root=Path(__file__).resolve().parents[1]/'deploy'/'systemd'
+        web=(root/'clash-sub-web.service').read_text()
+        self.assertNotIn('PrivateNetwork=true',web)
+        self.assertIn('IPAddressDeny=any',web)
+        self.assertIn('IPAddressAllow=127.0.0.1/32',web)
+        self.assertIn('RestrictAddressFamilies=AF_UNIX AF_INET',web)
+        self.assertIn('PrivateNetwork=true',(root/'clash-sub-metadata.service').read_text())
+        self.assertFalse((root/'clash-sub-online.service').exists())
+
+    def test_failed_retirement_does_not_delete_units_needed_for_retry(self):
+        from clash_sub.installer import Installer,InstallPaths,InstallerError
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            paths=InstallPaths(systemd_dir=root/'systemd')
+            paths.systemd_dir.mkdir()
+            socket=paths.systemd_dir/'clash-sub-online.socket'
+            socket.write_text('old unit')
+            installer=Installer(root,paths=paths)
+            with patch.object(installer,'_run',side_effect=InstallerError('failed')):
+                with self.assertRaises(InstallerError):installer._retire_online_bridge()
+            self.assertTrue(socket.is_file())
+
     def test_code_update_preserves_web_shutdown_instead_of_restarting_it(self):
         from clash_sub.manage import run_post_update
         config=SimpleNamespace(xui_database=Path('/db'),private_root=Path('/private'),public_root=Path('/public'),nginx_routes=Path('/routes'),mihomo_binary=Path('/mihomo'),systemctl_binary=Path('/bin/systemctl'))
@@ -22,7 +61,7 @@ class OnlineTests(unittest.TestCase):
                     self.assertEqual(installer.return_value._run.call_count,3)
                 else:
                     stop.assert_called_once_with(config,runner)
-                    installer.return_value._run.assert_not_called()
+                    installer.return_value._run.assert_called_once_with(['systemctl','try-restart','clash-sub-metadata.service'])
 
     def test_shutdown_disables_activation_then_stops_both_processes_even_on_error(self):
         from clash_sub.manage import _stop_web_services
@@ -31,8 +70,8 @@ class OnlineTests(unittest.TestCase):
             result=_stop_web_services(SimpleNamespace(systemctl_binary='/bin/systemctl'),runner)
             self.assertEqual(result,not isinstance(first,Exception) and first.returncode==0)
             self.assertEqual([c.args[0] for c in runner.call_args_list],[
-                ['/bin/systemctl','disable','--now','clash-sub-web.socket','clash-sub-online.socket'],
-                ['/bin/systemctl','stop','clash-sub-web.service','clash-sub-online.service'],
+                ['/bin/systemctl','disable','--now','clash-sub-web.socket'],
+                ['/bin/systemctl','stop','clash-sub-web.service'],
             ])
 
     def test_setting_token_while_closed_does_not_start_any_service(self):
@@ -41,21 +80,20 @@ class OnlineTests(unittest.TestCase):
         runner=unittest.mock.Mock()
         with patch('clash_sub.web_manage.load_config',return_value=config),patch('clash_sub.web_manage._OperationLock'),patch('clash_sub.web_manage.read_settings',return_value={'enabled':False}),patch('clash_sub.online.save_token'),patch('clash_sub.online.query_online',return_value=frozenset()):
             message=execute('/repo','set-api-token',api_token='synthetic-token',runner=runner)
-        self.assertIn('保持停止',message)
+        self.assertIn('无需重启',message)
         runner.assert_not_called()
 
-    def test_menu_save_restarts_service_and_checks_query_without_exposing_token(self):
+    def test_token_save_checks_query_without_restarting_web_or_logging_token(self):
         from clash_sub.web_manage import execute
-        config=SimpleNamespace(private_root='/private',systemctl_binary='/bin/systemctl',xui_database='/db')
-        for result,query,label in ((0,frozenset(),'验证成功'),(0,None,'查询未成功'),(1,None,'重启失败')):
-            with self.subTest(result=result,query=query), patch('clash_sub.web_manage.load_config',return_value=config), patch('clash_sub.web_manage._OperationLock'), patch('clash_sub.online.save_token') as save, patch('clash_sub.online.query_online',return_value=query), patch('clash_sub.web_manage.read_settings',return_value={'enabled':True}) as settings:
-                runner=unittest.mock.Mock(return_value=SimpleNamespace(returncode=result))
+        config=SimpleNamespace(private_root='/private',xui_database='/db')
+        for query,label in ((frozenset(),'验证成功'),(None,'查询未成功')):
+            with self.subTest(query=query),patch('clash_sub.web_manage.load_config',return_value=config),patch('clash_sub.web_manage._OperationLock'),patch('clash_sub.online.save_token') as save,patch('clash_sub.online.query_online',return_value=query):
+                runner=unittest.mock.Mock()
                 message=execute('/repo','set-api-token',api_token='synthetic-private-token',runner=runner)
                 save.assert_called_once_with('synthetic-private-token')
                 self.assertIn(label,message)
                 self.assertNotIn('synthetic-private-token',message)
-                self.assertEqual(runner.call_args.args[0],['/bin/systemctl','restart','clash-sub-online.service'])
-                settings.assert_called_once()
+                runner.assert_not_called()
 
     def test_save_and_replace_token_privately_without_following_aliases(self):
         with tempfile.TemporaryDirectory() as directory:

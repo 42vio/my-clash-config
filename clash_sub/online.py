@@ -1,11 +1,8 @@
 """On-demand bridge to 3x-ui's own online list; never estimates presence from traffic."""
 
 import http.client
-import http.server
 import json
 import os
-import socket
-import socketserver
 import stat
 import tempfile
 import threading
@@ -14,9 +11,8 @@ from pathlib import Path
 
 from clash_sub.xui import read_panel_settings
 
-SOCKET = '/run/clash-sub/online.sock'
-CREDENTIALS = '/run/clash-sub/online-credentials.json'
 TOKEN_FILE = '/etc/clash-sub/credentials.json'
+CREDENTIALS = TOKEN_FILE
 LIMIT = 1024 * 1024
 
 
@@ -68,7 +64,7 @@ def save_token(token, path=TOKEN_FILE):
 
 
 def read_token(path=CREDENTIALS):
-    """Read the project credential file through a read-only systemd bind."""
+    """Read the root-only project credential file on demand."""
     path = Path(path)
     with path.open('rb') as handle:
         details = os.fstat(handle.fileno())
@@ -124,64 +120,3 @@ class OnlineCache:
                     self.value = None
                 self.checked = now
             return self.value
-
-
-class BridgeHandler(http.server.BaseHTTPRequestHandler):
-    timeout = 3
-    def log_message(self, *_):
-        pass
-    def do_GET(self):
-        if self.path != '/onlines':
-            return self.send_error(404)
-        names = self.server.cache.get()
-        body = json.dumps({'success':names is not None, 'obj':sorted(names) if names is not None else None},separators=(',', ':')).encode()
-        self.send_response(200)
-        self.send_header('Content-Type','application/json')
-        self.send_header('Cache-Control','no-store')
-        self.send_header('Content-Length',str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def send_error(self, code, *args):
-        self.send_response(code)
-        self.send_header('Content-Length','0')
-        self.end_headers()
-
-
-class BridgeServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
-    block_on_close = False
-    def handle_error(self, *_):
-        pass
-
-
-def serve(database, listener):
-    server = BridgeServer.__new__(BridgeServer)
-    socketserver.BaseServer.__init__(server, listener.getsockname(), BridgeHandler)
-    server.socket = listener
-    server.cache = OnlineCache(lambda:query_online(database))
-    try:
-        server.serve_forever()
-    finally:
-        server.server_close()
-
-
-class UnixConnection(http.client.HTTPConnection):
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.settimeout(self.timeout)
-        self.sock.connect(SOCKET)
-
-
-def read_online():
-    connection = UnixConnection('localhost', timeout=3)
-    try:
-        connection.request('GET','/onlines')
-        response = connection.getresponse()
-        body = response.read(LIMIT + 1)
-        if response.status != 200 or len(body) > LIMIT:
-            return None
-        return parse_online(json.loads(body))
-    except Exception:
-        return None
-    finally:
-        connection.close()

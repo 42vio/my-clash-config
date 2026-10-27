@@ -735,7 +735,6 @@ def _parser():
     # Internal systemd entry (clash-sub-metadata.service); never in menus.
     commands.add_parser("metadata-serve", add_help=False)
     commands.add_parser("web-serve", add_help=False)
-    commands.add_parser("online-serve", add_help=False)
     task = commands.add_parser('web-task', add_help=False)
     task.add_argument('task_id')
     task.add_argument('--sync-only', action='store_true')
@@ -770,14 +769,6 @@ def _run_command(parsed, stdout, stderr, factory):
             return 0
         except Exception:
             return _error(stderr,'web_task_failed',1)
-    if command == 'online-serve':
-        from clash_sub.online import serve
-        try:
-            root = default_repo_root()
-            serve(load_config(config_path(root), root).xui_database, metadata_server.listener_from_environment())
-            return 0
-        except Exception:
-            return _error(stderr, 'online_serve_failed', 1)
     if command == "web":
         return _web_command(parsed.action, parsed.target, stdout, stderr)
     if command == "web-serve":

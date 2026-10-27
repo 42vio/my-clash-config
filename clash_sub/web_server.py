@@ -23,7 +23,7 @@ from clash_sub.metadata import TrafficMetadataStore
 from clash_sub.state import airport_only_token, load_state
 from clash_sub.web_settings import admin_username, admin_prefix, page_path, read_settings, verify_password
 from clash_sub.xui import read_xui_snapshot, read_inbound_traffic, read_traffic_resets
-from clash_sub.online import OnlineCache, read_online
+from clash_sub.online import OnlineCache, query_online
 
 
 # Confirmed by the owner; subscription headers do not expose the reset day.
@@ -61,7 +61,7 @@ def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unl
 
 
 class Portal:
-    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot, online_reader=read_online):
+    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot, online_reader=None):
         self.config = config
         self.clock = clock
         self.store = store or TrafficMetadataStore(config)
@@ -76,7 +76,7 @@ class Portal:
         self._net_previous = None
         self._inbound = None
         self._inbound_time = 0
-        self.online = OnlineCache(online_reader)
+        self.online = OnlineCache(online_reader if online_reader is not None else lambda:query_online(config.xui_database))
         self._resets = None
         self._resets_time = 0
 
@@ -451,7 +451,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if payload.get('confirmed') != 'yes':
                     return self.respond(400,'必须确认操作')
                 from clash_sub.web_tasks import enqueue, authorization
-                from clash_sub.service import ServiceError
+                from clash_sub.operation import ServiceError
                 try:
                     task_id = enqueue(portal.config,payload.get('action'),payload.get('target') or None,payload.get('request_id'),authorization(settings,state))
                 except ServiceError:

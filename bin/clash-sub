@@ -20,7 +20,9 @@ if VENV_PYTHON.is_file() and Path(sys.prefix).resolve() != VENV_PYTHON.parent.pa
     except OSError:
         pass
 
-from clash_sub.cli import main
-
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] in {"metadata-serve", "web-serve"}:
+        from clash_sub.daemon import main
+        sys.exit(main(sys.argv[1]))
+    from clash_sub.cli import main
     sys.exit(main())

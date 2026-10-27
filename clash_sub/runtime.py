@@ -24,13 +24,7 @@ from clash_sub.state import (
 from clash_sub.xui import read_xui_snapshot
 
 
-def repo_root():
-    return Path(__file__).resolve().parents[1]
-
-
-def config_path(root=None):
-    root = Path(root) if root else repo_root()
-    return root / "private" / "config" / "service.yaml"
+from clash_sub.paths import repo_root, config_path
 
 
 def build_service(root=None, runner=None, *, lock_factory=None):
