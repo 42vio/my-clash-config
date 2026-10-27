@@ -239,11 +239,12 @@ class LightweightCliTests(unittest.TestCase):
             "│  1. 机场订阅",
             "│  2. 重新生成所有配置",
             "│  3. 查看用户链接",
-            "│  4. 查看运行状态",
-            "│  5. 程序维护",
-            "│  6. 证书管理",
-            "│  7. 备份与恢复",
-            "│  8. 用户与版本",
+            "│  4. 网页与面板",
+            "│  5. 查看运行状态",
+            "│  6. 程序维护",
+            "│  7. 证书管理",
+            "│  8. 备份与恢复",
+            "│  9. 用户与版本",
             "╚──────────────────────────────────────────────╝",
             "请输入选项 [0-9]：",
         ):
@@ -568,14 +569,14 @@ class LightweightCliTests(unittest.TestCase):
                 self.assertNotIn("anything", stdout + stderr)
                 self.assertEqual(self.service.calls, [])
 
-    def test_menu_options_two_through_four_call_sync_links_and_status(self):
+    def test_main_menu_sync_links_and_status_use_their_assigned_options(self):
         sync = FakeService()
         links = FakeService()
         status = FakeService()
 
         self.assertEqual(run_cli(None, sync, stdin_text="2\n")[0], 0)
         self.assertEqual(run_cli(None, links, stdin_text="3\n7\n0\n")[0], 0)
-        code, output, _ = run_cli(None, status, stdin_text="4\n")
+        code, output, _ = run_cli(None, status, stdin_text='5\n')
 
         self.assertEqual(sync.calls, [("sync_all", ())])
         self.assertEqual(links.calls, [("status", ()), ("links", ())])
@@ -949,7 +950,7 @@ class MenuLoopTests(unittest.TestCase):
 
     def test_main_menu_loops_until_zero_and_dispatches_each_action_once(self):
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="3\n7\n2\n4\n0\n"
+            None, self.service, stdin_text='3\n7\n2\n5\n0\n'
         )
 
         self.assertEqual(code, 0)
@@ -981,7 +982,7 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(self.service.calls, [])
 
     def test_enter_after_an_action_expands_the_menu_without_repeating_the_action(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="2\n\n4\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='2\n\n5\n0\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
@@ -1017,10 +1018,11 @@ class MenuLoopTests(unittest.TestCase):
         cases = (
             ("0\n", MENU, "请输入选项 [0-9]："),
             ("1\n0\n0\n", AIRPORT_MENU, "请输入选项 [0-5]："),
-            ("5\n0\n0\n", MAINTENANCE_MENU, "请输入选项 [0-3]："),
-            ("6\n0\n0\n", CERT_MENU, "请输入选项 [0-2]："),
-            ("7\n0\n0\n", BACKUP_MENU, "请输入选项 [0-3]："),
-            ("8\n0\n0\n", USER_MENU, "请输入选项 [0-5]："),
+            ("4\n0\n0\n", WEB_MENU, "请输入选项 [0-7]："),
+            ("6\n0\n0\n", MAINTENANCE_MENU, "请输入选项 [0-3]："),
+            ("7\n0\n0\n", CERT_MENU, "请输入选项 [0-2]："),
+            ("8\n0\n0\n", BACKUP_MENU, "请输入选项 [0-3]："),
+            ("9\n0\n0\n", USER_MENU, "请输入选项 [0-5]："),
         )
         for stdin_text, menu, prompt in cases:
             with self.subTest(prompt=prompt):
@@ -1033,10 +1035,10 @@ class MenuLoopTests(unittest.TestCase):
 
     def test_submenus_return_to_the_main_menu_on_zero(self):
         for entry, menu in (
-            ("5", MAINTENANCE_MENU),
-            ("6", CERT_MENU),
-            ("7", BACKUP_MENU),
-            ("8", USER_MENU),
+            ("6", MAINTENANCE_MENU),
+            ("7", CERT_MENU),
+            ("8", BACKUP_MENU),
+            ("9", USER_MENU),
         ):
             with self.subTest(entry=entry):
                 code, stdout, stderr = run_cli(
@@ -1049,7 +1051,7 @@ class MenuLoopTests(unittest.TestCase):
                 self.assertEqual(stdout.count(MENU), 2)
 
     def test_submenu_eof_exits_quietly(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
@@ -1059,7 +1061,7 @@ class MenuLoopTests(unittest.TestCase):
     def test_submenu_ctrl_c_exits_quietly(self):
         code = main(
             None,
-            stdin=InterruptingAfterFirstLine("5\n"),
+            stdin=InterruptingAfterFirstLine("6\n"),
             stdout=io.StringIO(),
             stderr=io.StringIO(),
             service_factory=lambda: self.service,
@@ -1069,7 +1071,7 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(self.service.calls, [])
 
     def test_submenu_invalid_selection_stays_in_the_submenu(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="5\nx\n0\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='6\nx\n0\n0\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 1)
@@ -1085,7 +1087,7 @@ class MenuLoopTests(unittest.TestCase):
             manage, "create_backup", return_value=Path("/backups/x.tar.gz")
         ) as backup:
             code, stdout, stderr = run_cli(
-                None, self.service, stdin_text="6\n1\n0\n7\n1\n0\n0\n"
+                None, self.service, stdin_text='7\n1\n0\n8\n1\n0\n0\n'
             )
 
         self.assertEqual(code, 0)
@@ -1102,8 +1104,8 @@ class MenuLoopTests(unittest.TestCase):
             return_value={"changed": True, "version": "v1.19.28"},
             create=True,
         ) as update:
-            cancelled, _, _ = run_cli(None, self.service, stdin_text="5\n3\nn\n0\n0\n")
-            confirmed, stdout, _ = run_cli(None, self.service, stdin_text="5\n3\ny\n0\n0\n")
+            cancelled, _, _ = run_cli(None, self.service, stdin_text='6\n3\nn\n0\n0\n')
+            confirmed, stdout, _ = run_cli(None, self.service, stdin_text='6\n3\ny\n0\n0\n')
 
         self.assertEqual(cancelled, 0)
         self.assertEqual(confirmed, 0)
@@ -1132,22 +1134,22 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "cert_renew", return_value=True
         ) as renew:
-            cancelled, _, _ = run_cli(None, self.service, stdin_text="6\n2\nn\n0\n0\n")
-            confirmed, _, _ = run_cli(None, self.service, stdin_text="6\n2\ny\n0\n0\n")
+            cancelled, _, _ = run_cli(None, self.service, stdin_text='7\n2\nn\n0\n0\n')
+            confirmed, _, _ = run_cli(None, self.service, stdin_text='7\n2\ny\n0\n0\n')
 
         self.assertEqual(cancelled, 0)
         self.assertEqual(confirmed, 0)
         self.assertEqual(renew.call_count, 1)
 
     def test_history_view_is_a_standalone_entry_without_rollback(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n7\n0\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='9\n1\n7\n0\n0\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("status", ()), ("history", (7,))])
         self.assertIn("用户 7 的历史版本", stdout)
 
     def test_user_menu_lists_current_users_before_asking_for_the_id(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n7\n0\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='9\n1\n7\n0\n0\n')
 
         self.assertEqual(code, 0)
         self.assertIn("当前用户：", stdout)
@@ -1156,20 +1158,20 @@ class MenuLoopTests(unittest.TestCase):
         self.assertIn("请输入用户 ID（0 返回）：", stdout)
 
     def test_user_menu_zero_cancels_without_touching_the_user_flows(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n0\n0\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='9\n1\n0\n0\n0\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("status", ())])
 
     def test_user_menu_rejects_an_unknown_id_and_stays_in_the_menu(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\n99\n0\n0\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='9\n1\n99\n0\n0\n0\n')
 
         self.assertEqual(code, 0)
         self.assertIn("invalid_client", stderr)
         self.assertEqual(self.service.calls, [("status", ())])
 
     def test_user_menu_rejects_a_non_numeric_id_and_stays_in_the_menu(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n1\nabc\n0\n0\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='9\n1\nabc\n0\n0\n0\n')
 
         self.assertEqual(code, 0)
         self.assertIn("invalid_menu_selection", stderr)
@@ -1177,7 +1179,7 @@ class MenuLoopTests(unittest.TestCase):
 
     def test_rollback_entry_prompts_for_each_value(self):
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="8\n2\n7\nrelease-7\ny\n0\n0\n"
+            None, self.service, stdin_text='9\n2\n7\nrelease-7\ny\n0\n0\n'
         )
 
         self.assertEqual(code, 0)
@@ -1188,22 +1190,22 @@ class MenuLoopTests(unittest.TestCase):
         self.assertIn("用户 7 的历史版本", stdout)
 
     def test_rollback_without_release_returns_without_side_effect(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="8\n2\n7\n\n0\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='9\n2\n7\n\n0\n0\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("status", ()), ("history", (7,))])
 
     def test_rollback_confirmation_cancel_keeps_zero_side_effects(self):
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="8\n2\n7\nrelease-7\nn\n0\n0\n"
+            None, self.service, stdin_text='9\n2\n7\nrelease-7\nn\n0\n0\n'
         )
 
         self.assertEqual(code, 0)
         self.assertEqual(self.service.calls, [("status", ()), ("history", (7,))])
 
     def test_menu_rotate_link_requires_confirmation_and_cancel_keeps_tokens(self):
-        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="8\n3\n7\ny\n0\n0\n")
-        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="8\n3\n7\nn\n0\n0\n")
+        confirmed_code, _, _ = run_cli(None, self.service, stdin_text='9\n3\n7\ny\n0\n0\n')
+        cancelled_code, _, _ = run_cli(None, self.service, stdin_text='9\n3\n7\nn\n0\n0\n')
 
         self.assertEqual(confirmed_code, 0)
         self.assertEqual(cancelled_code, 0)
@@ -1213,8 +1215,8 @@ class MenuLoopTests(unittest.TestCase):
         )
 
     def test_menu_reinitialize_owner_requires_confirmation(self):
-        confirmed_code, _, _ = run_cli(None, self.service, stdin_text="8\n4\n7\ny\n0\n0\n")
-        cancelled_code, _, _ = run_cli(None, self.service, stdin_text="8\n4\n7\nn\n0\n0\n")
+        confirmed_code, _, _ = run_cli(None, self.service, stdin_text='9\n4\n7\ny\n0\n0\n')
+        cancelled_code, _, _ = run_cli(None, self.service, stdin_text='9\n4\n7\nn\n0\n0\n')
 
         self.assertEqual(confirmed_code, 0)
         self.assertEqual(cancelled_code, 0)
@@ -1235,8 +1237,8 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch(
             "clash_sub.cli.Installer", FakeInstaller
         ):
-            cancelled_code, _, _ = run_cli(None, self.service, stdin_text="7\n3\nrollback\n0\n0\n")
-            confirmed_code, _, _ = run_cli(None, self.service, stdin_text="7\n3\nROLLBACK\n0\n0\n")
+            cancelled_code, _, _ = run_cli(None, self.service, stdin_text='8\n3\nrollback\n0\n0\n')
+            confirmed_code, _, _ = run_cli(None, self.service, stdin_text='8\n3\nROLLBACK\n0\n0\n')
 
         self.assertEqual(cancelled_code, 0)
         self.assertEqual(confirmed_code, 0)
@@ -1248,7 +1250,7 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", return_value=True
         ):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n2\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n2\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(stdout.count(MENU), 1)
@@ -1263,7 +1265,7 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", side_effect=RuntimeError("git_pull_failed")
         ):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n2\n0\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n2\n0\n')
 
         self.assertEqual(code, 1)
         self.assertEqual(stdout.count(MENU), 1)
@@ -1282,7 +1284,7 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", return_value=True
         ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n1\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n1\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(stdout.count(MENU), 1)
@@ -1304,7 +1306,7 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", side_effect=RuntimeError("git_pull_failed")
         ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n1\n0\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n1\n0\n')
 
         self.assertEqual(spawned, [])
         self.assertEqual(code, 1)
@@ -1319,7 +1321,7 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", return_value=True
         ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n1\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n1\n')
 
         self.assertEqual(code, 1)
         self.assertIn("menu_sync_failed", stderr)
@@ -1333,7 +1335,7 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", return_value=True
         ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n1\n0\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n1\n0\n')
 
         self.assertEqual(code, 1)
         self.assertEqual(stdout.count(MENU), 1)
@@ -1349,7 +1351,7 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", return_value=True
         ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n1\n0\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n1\n0\n')
 
         self.assertEqual(code, 1)
         self.assertEqual(stdout.count(MENU), 1)
@@ -1365,14 +1367,14 @@ class MenuLoopTests(unittest.TestCase):
         with patch("clash_sub.cli.os.geteuid", return_value=0), patch.object(
             manage, "run_update", return_value=True
         ), patch("clash_sub.cli.subprocess.run", side_effect=fake_run):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n1\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n1\n')
 
         self.assertEqual(code, 0)
         self.assertEqual(stdout.count("同步已完成"), 0)
 
     def test_menu_recover_requires_root(self):
         with patch("clash_sub.cli.os.geteuid", return_value=1000):
-            code, stdout, stderr = run_cli(None, self.service, stdin_text="7\n2\n0\n")
+            code, stdout, stderr = run_cli(None, self.service, stdin_text='8\n2\n0\n')
 
         self.assertEqual(code, 1)
         self.assertIn("recovery_not_authorized", stderr)
@@ -1399,7 +1401,7 @@ class MenuColorTests(unittest.TestCase):
         self.assertNotIn("\033[", stdout)
 
     def test_tty_menu_colors_the_title_numbers_and_recommendation_green(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="5\n0\n0\n", tty=True)
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='6\n0\n0\n', tty=True)
 
         self.assertEqual(code, 0)
         self.assertIn(GREEN + "clash-sub 管理脚本" + RESET, stdout)
@@ -1408,7 +1410,7 @@ class MenuColorTests(unittest.TestCase):
         self.assertIn(GREEN + "（推荐）" + RESET, stdout)
 
     def test_tty_shows_a_compact_yellow_prompt_after_an_action(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="4\n0\n", tty=True)
+        code, stdout, stderr = run_cli(None, self.service, stdin_text='5\n0\n', tty=True)
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
@@ -1426,7 +1428,7 @@ class MenuColorTests(unittest.TestCase):
 
     def test_tty_marks_danger_keywords_red(self):
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="6\n0\n7\n0\n8\n0\n0\n", tty=True
+            None, self.service, stdin_text='7\n0\n8\n0\n9\n0\n0\n', tty=True
         )
 
         self.assertEqual(code, 0)
@@ -1438,7 +1440,7 @@ class MenuColorTests(unittest.TestCase):
         rotated_url = "https://sub.example.test:8443/s/%s/Clash-Compat.yaml" % ROTATED_TOKEN
 
         code, stdout, stderr = run_cli(
-            None, self.service, stdin_text="8\n3\n7\ny\n0\n0\n", tty=True
+            None, self.service, stdin_text='9\n3\n7\ny\n0\n0\n', tty=True
         )
 
         self.assertEqual(code, 0)
@@ -2015,7 +2017,7 @@ class MetadataServeCommandTests(unittest.TestCase):
 class WebMenuConsistencyTests(unittest.TestCase):
     def test_api_token_menu_uses_hidden_prompt_without_outputting_secret(self):
         with patch('clash_sub.cli.os.geteuid',return_value=0), patch('getpass.getpass',return_value='synthetic-api-token') as prompt, patch('clash_sub.web_manage.execute',return_value='令牌已保存') as execute:
-            code,stdout,stderr=run_cli(None,None,stdin_text='9\n7\n0\n0\n')
+            code,stdout,stderr=run_cli(None,None,stdin_text='4\n7\n0\n0\n')
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         prompt.assert_called_once()
@@ -2025,7 +2027,7 @@ class WebMenuConsistencyTests(unittest.TestCase):
 
     def test_actions_keep_compact_prompt_and_enter_expands_menu(self):
         with patch('clash_sub.cli._web_command',return_value=0) as command:
-            code,stdout,stderr=run_cli(None,None,stdin_text='9\n2\n5\n\n0\n0\n')
+            code,stdout,stderr=run_cli(None,None,stdin_text='4\n2\n5\n\n0\n0\n')
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         self.assertEqual(stdout.count(WEB_MENU),2)
@@ -2035,7 +2037,7 @@ class WebMenuConsistencyTests(unittest.TestCase):
 
     def test_invalid_option_stays_and_empty_rotation_cancels(self):
         with patch('clash_sub.cli._web_command',return_value=0) as command:
-            code,stdout,stderr=run_cli(None,None,stdin_text='9\n99\n2\n0\n0\n')
+            code,stdout,stderr=run_cli(None,None,stdin_text='4\n99\n2\n0\n0\n')
         self.assertEqual(code,0)
         self.assertIn('invalid_menu_selection',stderr)
         self.assertEqual(stdout.count(WEB_MENU),1)
@@ -2043,5 +2045,5 @@ class WebMenuConsistencyTests(unittest.TestCase):
 
     def test_failure_and_eof_leave_consistently(self):
         with patch('clash_sub.cli._web_command',return_value=1):
-            self.assertEqual(run_cli(None,None,stdin_text='9\n4\n')[0],1)
-        self.assertEqual(run_cli(None,None,stdin_text='9\n')[0],0)
+            self.assertEqual(run_cli(None,None,stdin_text='4\n4\n')[0],1)
+        self.assertEqual(run_cli(None,None,stdin_text='4\n')[0],0)

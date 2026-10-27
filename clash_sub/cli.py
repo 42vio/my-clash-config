@@ -74,13 +74,13 @@ _MAIN_MENU_ROWS = (
     ("option", "1", (("机场订阅", None),)),
     ("option", "2", (("重新生成所有配置", None),)),
     ("option", "3", (("查看用户链接", None),)),
-    ("option", "4", (("查看运行状态", None),)),
+    ("option", "4", (("网页与面板", None),)),
+    ("option", "5", (("查看运行状态", None),)),
     ("divider",),
-    ("option", "5", (("程序维护", None),)),
-    ("option", "6", (("证书管理", None),)),
-    ("option", "7", (("备份与恢复", None),)),
-    ("option", "8", (("用户与版本", None),)),
-    ("option", "9", (("网页与面板", None),)),
+    ("option", "6", (("程序维护", None),)),
+    ("option", "7", (("证书管理", None),)),
+    ("option", "8", (("备份与恢复", None),)),
+    ("option", "9", (("用户与版本", None),)),
 )
 
 _AIRPORT_MENU_ROWS = (
@@ -260,11 +260,11 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
         if exit_menu or code != 0:
             raise _MenuExit(code)
         # Returning from a submenu changes context; show the parent menu.
-        expanded = choice in {"1", "3", "5", "6", "7", "8", "9"}
+        expanded = choice in {"1", "3", "4", "6", "7", "8", "9"}
 
 
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
-    if choice == "9":
+    if choice == "4":
         return _run_submenu(
             _WEB_MENU_ROWS, 7, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与面板"
         )
@@ -276,21 +276,21 @@ def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
         return _call("sync", None, stdout, stderr, factory), False
     if choice == "3":
         return _menu_user_links(stdin,stdout,stderr,factory)
-    if choice == "4":
-        return _call("status", None, stdout, stderr, factory), False
     if choice == "5":
+        return _call("status", None, stdout, stderr, factory), False
+    if choice == "6":
         return _run_submenu(
             _MAINTENANCE_MENU_ROWS, 3, _maintenance_dispatch, stdin, stdout, stderr, factory, colors, name="程序维护"
         )
-    if choice == "6":
+    if choice == "7":
         return _run_submenu(
             _CERT_MENU_ROWS, 2, _cert_dispatch, stdin, stdout, stderr, factory, colors, name="证书管理"
         )
-    if choice == "7":
+    if choice == "8":
         return _run_submenu(
             _BACKUP_MENU_ROWS, 3, _backup_dispatch, stdin, stdout, stderr, factory, colors, name="备份与恢复"
         )
-    if choice == "8":
+    if choice == "9":
         return _run_submenu(
             _USER_MENU_ROWS, 5, _user_dispatch, stdin, stdout, stderr, factory, colors, name="用户与版本"
         )
