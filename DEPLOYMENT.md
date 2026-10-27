@@ -141,7 +141,7 @@ clash-sub rollback --install
 
 ## 备份与恢复
 
-`clash-sub backup` 归档且仅归档五个重建必需文件：
+`clash-sub backup` 归档以下五个重建必需文件；已初始化网页时，额外包含 `private-root/web-settings.json`，用于保留页面链接、管理员密码哈希与面板开关：
 
 ```text
 /etc/x-ui/x-ui.db

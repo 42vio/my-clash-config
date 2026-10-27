@@ -80,6 +80,7 @@ _MAIN_MENU_ROWS = (
     ("option", "6", (("证书管理", None),)),
     ("option", "7", (("备份与恢复", None),)),
     ("option", "8", (("用户与版本", None),)),
+    ("option", "9", (("网页与面板", None),)),
 )
 
 _AIRPORT_MENU_ROWS = (
@@ -176,7 +177,7 @@ def _render_submenu(rows, colors):
     return "".join(lines)
 
 
-MENU = _render_main_menu(_Colors(False)) + "请输入选项 [0-8]："
+MENU = _render_main_menu(_Colors(False)) + "请输入选项 [0-9]："
 AIRPORT_MENU = _render_submenu(_AIRPORT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
 MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
@@ -229,8 +230,8 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
     while True:
         if expanded:
             stdout.write(_render_main_menu(colors))
-        prompt = None if expanded else colors.yellow("\n主菜单：输入下一项 [1-8]，回车查看菜单，0 退出：")
-        choice = _read_choice(stdin, stdout, 8, prompt=prompt)
+        prompt = None if expanded else colors.yellow("\n主菜单：输入下一项 [1-9]，回车查看菜单，0 退出：")
+        choice = _read_choice(stdin, stdout, 9, prompt=prompt)
         expanded = False
         if choice == "":
             expanded = True
@@ -249,6 +250,8 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
 
 
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
+    if choice == "9":
+        return _web_menu(stdin, stdout, stderr), False
     if choice == "1":
         return _run_submenu(
             _AIRPORT_MENU_ROWS, 5, _airport_dispatch, stdin, stdout, stderr, factory, colors, name="机场订阅"
@@ -612,6 +615,38 @@ def _confirm(stdin, stdout, message):
     return answer is not None and answer.lower() == "y"
 
 
+def _web_command(action, target, stdout, stderr):
+    from clash_sub.web_manage import execute
+    import getpass
+    if os.geteuid() != 0:
+        return _error(stderr, "not_root", 1)
+    try:
+        password = None
+        if action in {"setup", "reset-password"}:
+            password = getpass.getpass("设置管理员密码（12—256字符）：")
+            if password != getpass.getpass("再次输入密码："):
+                return _error(stderr, "password_mismatch", 1)
+        stdout.write(execute(default_repo_root(), action, password=password, target=target) + "\n")
+        return 0
+    except Exception:
+        return _error(stderr, "web_management_failed", 1)
+
+
+def _web_menu(stdin, stdout, stderr):
+    actions = {"1": "setup", "2": "links", "3": "rotate-page", "4": "status", "5": "panel-on", "6": "panel-off", "7": "tunnel", "8": "reset-password"}
+    while True:
+        stdout.write("\n网页与面板\n1 初始化网页（关闭公网面板）\n2 查看页面链接\n3 更换页面链接\n4 查看访问状态\n5 开启公网面板\n6 关闭公网面板\n7 SSH 隧道使用说明\n8 重置网页管理员密码\n0 返回\n")
+        choice = _prompt(stdin, stdout, "选择：")
+        if not choice or choice == "0":
+            return 0
+        if choice not in actions:
+            continue
+        target = _prompt(stdin, stdout, "用户 ID 或 airport：") if choice == "3" else None
+        code = _web_command(actions[choice], target, stdout, stderr)
+        if code:
+            return code
+
+
 def _parser():
     parser = _CommandParser(add_help=False)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -631,6 +666,10 @@ def _parser():
     commands.add_parser("recover", add_help=False)
     # Internal systemd entry (clash-sub-metadata.service); never in menus.
     commands.add_parser("metadata-serve", add_help=False)
+    commands.add_parser("web-serve", add_help=False)
+    web = commands.add_parser("web", add_help=False)
+    web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel"))
+    web.add_argument("target", nargs="?")
     # Internal systemd entry (clash-sub-airport-refresh.timer); never displayed.
     commands.add_parser("airport-scheduled-refresh", add_help=False)
     commands.add_parser("install", add_help=False)
@@ -649,6 +688,16 @@ def _parser():
 
 def _run_command(parsed, stdout, stderr, factory):
     command = parsed.command
+    if command == "web":
+        return _web_command(parsed.action, parsed.target, stdout, stderr)
+    if command == "web-serve":
+        from clash_sub.web_server import serve
+        try:
+            root = default_repo_root()
+            serve(load_config(config_path(root), root), metadata_server.listener_from_environment())
+            return 0
+        except Exception:
+            return _error(stderr, "web_serve_failed", 1)
     if command == "metadata-serve":
         return _metadata_serve(stderr)
     if command in {"history", "rollback", "rotate-link", "reinitialize-owner"}:

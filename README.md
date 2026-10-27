@@ -29,6 +29,14 @@ owner 和普通用户各自额外提供 `Nodes.txt`，地址为 `https://<订阅
 
 `templates/base/Clash-Compat.yaml` 是完整基础模板；生成 Balance 时以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）替换基础模板的 DNS。owner 的 Airport 使用 Compat 模板和机场 provider，不注入 3x-ui 节点；原有两份 owner 配置继续注入自建节点与机场 provider，普通用户只输出 Compat。服务器不保存任何 Home 配置，Home 只存在于本机 Clash Verge 的全局扩展脚本。
 
+## 只读订阅网页与面板开关
+
+终端主菜单 `9` 提供网页初始化、页面链接管理、3x-ui 公网访问开关和 SSH 隧道说明。详细步骤见 [网页运维说明](docs/operations.md#只读订阅网页与面板开关)。
+
+网页包含管理员总览、个人用量和机场专用页面。页面令牌独立于订阅令牌，可单独轮换；管理员使用密码登录。更新代码不会自动开放网页，也不会自动关闭原有公网面板；运行 `clash-sub web setup` 才初始化网页并关闭公网面板。代理和订阅下载不随面板开关停止。
+
+本地示例保留在 `previews/account/`，不含真实凭据。自建流量读取 3x-ui 所有入站当前的上传与下载累计（含已停用入站），随入站每月重置；不读取历史累计、不汇总用户用量，也不作为搬瓦工账单统计。
+
 ## 订阅流量元数据
 
 订阅响应里的 `Subscription-Userinfo` 流量头不预写进任何配置文件：客户端请求订阅时，Nginx 把请求转发到 socket 激活的 `clash-sub-metadata.service`，服务按需读取 3x-ui 流量（五分钟缓存）与最近一次机场下载保存的流量，生成响应头；文件正文仍由 Nginx 直接发送。元数据服务不可用或超时的时候，同一份文件照常以 200 返回，只是缺少流量头，订阅本身不受影响。完整链路、缓存与降级行为见部署与运维手册。

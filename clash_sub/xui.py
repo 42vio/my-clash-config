@@ -42,6 +42,30 @@ _PANEL_TLS_SETTINGS = ("webCertFile", "webKeyFile")
 _RAW_BASE_PATH = re.compile(r"^/?[A-Za-z0-9_-]*/?$")
 
 
+def read_inbound_traffic(path: Path):
+    """Current inbound counters, including disabled inbounds; never all_time or client sums.
+
+    Resetting counters in 3x-ui is reflected on the next read. Missing or
+    incompatible traffic columns are unknown, never synthetic zero usage.
+    """
+    try:
+        connection = sqlite3.connect("file:%s?mode=ro" % quote(str(path)), uri=True, timeout=1.0)
+        try:
+            connection.execute("PRAGMA query_only=ON")
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(inbounds)")}
+            if not {'up', 'down'}.issubset(columns):
+                return None
+            rows = connection.execute('SELECT up, down, %s FROM inbounds' % ('total' if 'total' in columns else 'NULL')).fetchall()
+            if not rows or any(type(value) is not int or value < 0 for row in rows for value in row[:2]):
+                return None
+            total = sum(row[2] for row in rows) if all(type(row[2]) is int and row[2] > 0 for row in rows) else None
+            return {'upload':sum(row[0] for row in rows), 'download':sum(row[1] for row in rows), 'total':total}
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError, TypeError):
+        return None
+
+
 def read_xui_snapshot(path: Path, now_ms: int | None = None) -> XuiSnapshot:
     """Read the supported 3x-ui client and Clash subscription snapshot."""
     try:

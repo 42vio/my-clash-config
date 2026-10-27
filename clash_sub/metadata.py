@@ -93,6 +93,19 @@ class TrafficMetadataStore:
             return None
         return source.traffic
 
+    def freshness(self):
+        """Only numeric observation times; no source URL or credential leaves the store."""
+        with self._lock:
+            refreshed_at = self._refreshed_at if self._entries is not None else None
+        try:
+            airport_time = read_source_file(
+                self._private_root / AIRPORT_SOURCE_FILENAME,
+                expected_uid=self._expected_uid,
+            ).last_success
+        except AirportSourceError:
+            airport_time = None
+        return {"users": refreshed_at, "airport": airport_time}
+
     def _fresh(self) -> bool:
         return self._clock() - self._refreshed_at < CACHE_TTL_SECONDS
 

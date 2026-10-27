@@ -67,6 +67,10 @@ def render_stream_config(config, domain):
 
 def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_include, fullchain, privkey):
     """Render the loopback TLS server for subscriptions and the panel."""
+    from clash_sub.web_settings import read_settings
+    web_settings = read_settings(config.private_root)
+    if web_settings["enabled"] and panel_base_path in {"/p", "/admin", "/clients", "/portal-assets"}:
+        raise NginxError("panel path conflicts with portal")
     favicon_path = Path(config.template_root).parent / "assets" / "favicon.ico"
     if (
         not isinstance(domain, str)
@@ -101,6 +105,8 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
             fullchain=fullchain,
             privkey=privkey,
             favicon_path=str(favicon_path),
+            panel_public=web_settings["panel_public"],
+            portal_enabled=web_settings["enabled"],
         )
     except NginxError:
         raise

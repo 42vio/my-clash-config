@@ -77,11 +77,17 @@ def create_backup(repo_root, runner):
         not path.is_file() for path in sources
     ):
         raise RuntimeError("backup_incomplete")
+    archive_names = list(_BACKUP_ARCHIVE_NAMES)
+    if private_root is not None and (private_root / "web-settings.json").exists():
+        from clash_sub.web_settings import read_settings
+        read_settings(private_root)
+        sources.append(private_root / "web-settings.json")
+        archive_names.append("var/lib/clash-sub/private/web-settings.json")
     descriptor, temporary = tempfile.mkstemp(dir=str(_backups_root(repo_root)))
     os.close(descriptor)
     try:
         with tarfile.open(temporary, "w:gz") as archive:
-            for path, archive_name in zip(sources, _BACKUP_ARCHIVE_NAMES):
+            for path, archive_name in zip(sources, archive_names):
                 archive.add(str(path), arcname=archive_name, recursive=False)
         os.chmod(temporary, 0o600)
         os.replace(temporary, destination)
@@ -286,6 +292,7 @@ def run_post_update(repo_root, runner):
     installer.harden_systemd()
     state = _load_install_state(repo_root)
     _rerender_nginx(repo_root, runner, state, paths=paths, config=config)
+    installer._run(["systemctl", "try-restart", "clash-sub-web.service"])
     return True
 
 

@@ -1,0 +1,24 @@
+[Unit]
+Description=Read-only account and administrator portal
+
+[Service]
+Type=simple
+Sockets=clash-sub-web.socket
+ExecStart=/usr/local/bin/clash-sub web-serve
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/etc/x-ui
+ReadWritePaths=/var/lib/clash-sub/private

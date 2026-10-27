@@ -1,0 +1,12 @@
+[Unit]
+Description=Account portal activation socket
+
+[Socket]
+ListenStream=/run/clash-sub/web.sock
+SocketUser=root
+SocketGroup=www-data
+SocketMode=0660
+Accept=no
+
+[Install]
+WantedBy=sockets.target

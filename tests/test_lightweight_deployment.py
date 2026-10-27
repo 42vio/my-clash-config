@@ -186,6 +186,8 @@ class LightweightDeploymentTests(unittest.TestCase):
                 "clash-sub-metadata.service",
                 "clash-sub-metadata.socket",
                 "clash-sub-recover.service",
+                "clash-sub-web.service",
+                "clash-sub-web.socket",
             ],
         )
         self.assertTrue(METADATA_TMPFILES.is_file())

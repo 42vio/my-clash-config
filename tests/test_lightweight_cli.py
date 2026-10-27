@@ -244,7 +244,7 @@ class LightweightCliTests(unittest.TestCase):
             "│  7. 备份与恢复",
             "│  8. 用户与版本",
             "╚──────────────────────────────────────────────╝",
-            "请输入选项 [0-8]：",
+            "请输入选项 [0-9]：",
         ):
             self.assertIn(line, stdout)
         self.assertNotIn("历史版本", MENU)
@@ -954,7 +954,7 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(stdout.count(MENU), 1)
-        self.assertEqual(stdout.count("主菜单：输入下一项 [1-8]，回车查看菜单，0 退出："), 3)
+        self.assertEqual(stdout.count("主菜单：输入下一项 [1-9]，回车查看菜单，0 退出："), 3)
         self.assertEqual(
             self.service.calls,
             [("links", ()), ("sync_all", ()), ("status", ())],
@@ -972,7 +972,7 @@ class MenuLoopTests(unittest.TestCase):
         self.assertNotIn("按回车键返回当前菜单：", stdout)
 
     def test_main_menu_invalid_selection_stays_and_enter_expands_the_menu(self):
-        code, stdout, stderr = run_cli(None, self.service, stdin_text="99\n\nabc\n9\n0\n")
+        code, stdout, stderr = run_cli(None, self.service, stdin_text="99\n\nabc\n10\n0\n")
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr.count("操作失败（错误代码：invalid_menu_selection）\n"), 3)
@@ -1014,7 +1014,7 @@ class MenuLoopTests(unittest.TestCase):
 
     def test_each_menu_prompt_lists_its_own_range(self):
         cases = (
-            ("0\n", MENU, "请输入选项 [0-8]："),
+            ("0\n", MENU, "请输入选项 [0-9]："),
             ("1\n0\n0\n", AIRPORT_MENU, "请输入选项 [0-5]："),
             ("5\n0\n0\n", MAINTENANCE_MENU, "请输入选项 [0-3]："),
             ("6\n0\n0\n", CERT_MENU, "请输入选项 [0-2]："),
@@ -1412,8 +1412,8 @@ class MenuColorTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(self.service.calls, [("links", ())])
-        self.assertEqual(stdout.count("请输入选项 [0-8]："), 1)
-        self.assertIn(YELLOW + "\n主菜单：输入下一项 [1-8]，回车查看菜单，0 退出：" + RESET, stdout)
+        self.assertEqual(stdout.count("请输入选项 [0-9]："), 1)
+        self.assertIn(YELLOW + "\n主菜单：输入下一项 [1-9]，回车查看菜单，0 退出：" + RESET, stdout)
         self.assertNotIn("按回车键返回当前菜单：", stdout)
 
     def test_tty_invalid_selection_is_red(self):

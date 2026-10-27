@@ -160,6 +160,8 @@ DOCUMENTED_CLI_COMMANDS = frozenset(
         "mihomo-update",
         "update",
         "cert",
+        "web",
+        "web-serve",
         # Internal systemd entry: surfaced only to clash-sub-metadata.service,
         # never in the interactive menus or user documentation.
         "metadata-serve",
