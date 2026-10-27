@@ -18,7 +18,7 @@ from collections import deque
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from clash_sub.domain import PROFILE_FILENAMES
+from clash_sub.domain import PROFILE_FILENAMES, Traffic
 from clash_sub.metadata import TrafficMetadataStore
 from clash_sub.state import airport_only_token, load_state
 from clash_sub.web_settings import admin_prefix, page_path, read_settings, verify_password
@@ -41,20 +41,23 @@ def size(value):
         value /= 1024
 
 
-def usage_card(title, traffic, note="", *, compact=False, reset="待确认"):
+def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unlimited_label="不限额"):
+    tag, kind, heading = ('div', 'traffic-part', 'h3') if compact else ('section', 'card usage-card', 'h2')
+    reset_label = reset + '重置' if reset.startswith('每') else '重置时间待确认' if reset == '待确认' else reset
+    header = '<div class="card-head"><%s>%s</%s><span class="subtle reset-hint" title="%s">%s</span></div>' % (heading, esc(title), heading, esc(note), esc(reset_label))
     if traffic is None:
-        return '<section class="card"><h2>%s</h2><p style="margin-top:20px">暂无数据</p></section>' % esc(title)
+        return '<%s class="%s">%s<p>暂无数据</p></%s>' % (tag, kind, header, tag)
     used = traffic.upload + traffic.download
-    ratio = min(100, used / traffic.total * 100) if traffic.total else 0
-    total = size(traffic.total) if traffic.total else "不限额"
-    remaining = size(max(0, traffic.total - used)) if traffic.total else "不限额"
-    if not compact:
-        ratio_label = '%.1f%%' % ratio if traffic.total else '∞'
-        return '''<section class="card"><div class="card-head"><h2>%s</h2><span class="subtle">%s</span></div><div class="usage"><div class="ring" role="img" aria-label="已用 %s" style="background:conic-gradient(var(--green) 0 %.2f%%,#eef2f4 %.2f%% 100%%)"><div class="ring-inner"><strong>%s</strong><span>本期已用</span></div></div><div><p class="subtle">已用流量</p><div class="number" style="font-size:27px">%s</div><p class="subtle">总额度 %s</p><div class="remaining">剩余 %s</div></div></div><div class="stats"><div><label>↑ 上传</label><strong>%s</strong></div><div><label>↓ 下载</label><strong>%s</strong></div><div><label>流量重置时间</label><strong>%s</strong></div></div></section>''' % (esc(title), esc(note), ratio_label, ratio, ratio, ratio_label, size(used), total, remaining, size(traffic.upload), size(traffic.download), esc(reset))
-    return '''<section class="card"><div class="card-head"><h2>%s</h2><span class="subtle">%s</span></div>
-    <div class="provider-usage"><p>已用流量</p><div class="number">%s <small>/ %s</small></div>
-    <div class="bar"><i style="width:%.2f%%"></i></div><p class="remaining">剩余 %s</p></div>
-    <div class="stats"><div><label>↑ 上传</label><strong>%s</strong></div><div><label>↓ 下载</label><strong>%s</strong></div><div><label>流量重置时间</label><strong>%s</strong></div></div></section>''' % (esc(title), esc(note), size(used), total, ratio, remaining, size(traffic.upload), size(traffic.download), esc(reset))
+    total = size(traffic.total) if traffic.total else unlimited_label
+    if traffic.total:
+        ratio = min(100, used / traffic.total * 100)
+        bar = '<div class="bar" role="progressbar" aria-label="流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%.1f"><i style="width:%.2f%%"></i></div>' % (ratio, ratio)
+        remaining = '<span class="remaining">剩余 %s</span>' % size(max(0,traffic.total-used))
+    else:
+        bar = ''
+        remaining = '<span class="remaining">%s</span>' % esc(unlimited_label)
+    caption = '<span class="transfer"><span class="upload" title="上传流量">↑ %s</span><span class="download" title="下载流量">↓ %s</span></span>%s' % (size(traffic.upload),size(traffic.download),remaining)
+    return '<%s class="%s">%s<div class="usage usage-linear"><div class="number">%s <small>/ %s</small></div>%s<div class="usage-caption">%s</div></div></%s>' % (tag, kind, header, size(used), esc(total), bar, caption, tag)
 
 
 class Portal:
@@ -94,11 +97,7 @@ class Portal:
             traffic = self._inbound
         if traffic is None:
             return '<h3>自建流量 · 3x-ui 入站</h3><p>暂无数据 · 入站统计读取失败</p>'
-        used = traffic['upload'] + traffic['download']
-        total = traffic['total']
-        quota = ' / ' + size(total) if total else ''
-        ratio = min(100, used / total * 100) if total else 0
-        return '<h3>自建流量 · 3x-ui 入站</h3><div class="provider-usage"><div class="number">%s<small>%s</small></div>%s<p class="subtle">↑ %s · ↓ %s</p></div><p class="subtle">入站当前累计 · 流量重置时间：%s（3x-ui 规则）%s</p>' % (size(used), quota, '<div class="bar"><i style="width:%.2f%%"></i></div>' % ratio if total else '', size(traffic['upload']), size(traffic['download']), esc(self.reset_rule()), ' · 剩余 '+size(max(0,total-used)) if total else ' · 入站总额度未设置')
+        return usage_card('自建流量 · 3x-ui 入站', Traffic(traffic['upload'], traffic['download'], traffic['total'] or 0, 0), '入站当前累计', compact=True, reset=self.reset_rule(), unlimited_label='入站总额度未设置')
 
     def reset_rule(self, client_id=None):
         with self._snapshot_lock:
@@ -271,7 +270,14 @@ class Portal:
             used = size(traffic.upload + traffic.download) if traffic else "暂无数据"
             total = (size(traffic.total) if traffic.total else "不限额") if traffic else "暂无数据"
             status = "有效" if user.active and client.enabled and (client.expiry_ms <= 0 or client.expiry_ms > self.clock()*1000) else "已停用或到期"
-            body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span></td><td>%s</td><td>%s</td><td><div class="user-actions"><a class="detail" href="%s/user/%d/">查看详情 ↗</a><button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email),client_id,self.presence(online[str(client_id)]),used,total,esc(self.reset_rule(client_id)),status,esc(prefix),client_id,client_id,esc(user.email))
+            ratio = min(100,(traffic.upload+traffic.download)/traffic.total*100) if traffic and traffic.total else None
+            progress = '<div class="mini-bar" role="progressbar" aria-label="%s 流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%.1f"><i style="width:%.2f%%"></i></div>' % (esc(user.email),ratio,ratio) if ratio is not None else ''
+            record = settings['pages'].get(str(client_id))
+            detail = '<span class="subtle">网页未启用</span>'
+            if record and self.resolve_page(record['token'],settings,state) == str(client_id):
+                detail = '<a class="detail" href="%s">查看详情 ↗</a>' % esc(page_path(record['token'],user.email))
+            body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span>%s</td><td>%s</td><td>%s</td><td><div class="user-actions">%s<button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email),client_id,self.presence(online[str(client_id)]),used,total,progress,esc(self.reset_rule(client_id)),status,detail,client_id,esc(user.email))
+
         body += '</tbody></table></section>' + self.task_history() + self.system_card() + self.management_dialogs()
         return self.shell(state.users[state.owner_client_id].email + " · 管理总览", body, admin=True,prefix=prefix,csrf=csrf)
 

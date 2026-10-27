@@ -162,6 +162,49 @@ class PortalTests(unittest.TestCase):
         self.assertIn('presence online',body)
         self.assertIn('presence offline',body)
 
+    def test_admin_detail_links_open_the_actual_personal_page(self):
+        _,_,body=self.request('/admin/',cookie=self.login())
+        for key in ('1','2'):
+            path=page_path(self.settings['pages'][key]['token'],self.state.users[int(key)].email)
+            self.assertIn('class="detail" href="'+path+'"',body)
+            status,_,personal=self.request(path)
+            self.assertEqual(status,200)
+            self.assertNotIn('data-admin-base="/admin/',personal)
+        self.assertNotIn('/user/2/">查看详情',body)
+        del self.settings['pages']['2']
+        write_settings(self.root,self.settings)
+        self.assertIn('网页未启用',self.request('/admin/',cookie=self.login())[2])
+
+    def test_member_usage_has_accessible_bar_but_unlimited_is_not_zero_percent(self):
+        self.store.traffic_for=lambda key:Traffic(10,40,100 if key==2 else 0,0)
+        body=self.portal.admin(self.state,self.settings)
+        self.assertIn('class="mini-bar" role="progressbar" aria-label="member 流量使用比例"',body)
+        self.assertIn('aria-valuenow="50.0"',body)
+        self.assertNotIn('aria-label="owner 流量使用比例"',body)
+        self.assertNotIn('class="ring"',self.portal.account('2',self.state))
+        unlimited=self.portal.account('1',self.state)
+        self.assertIn('不限额',unlimited)
+        self.assertNotIn('role="progressbar"',unlimited)
+
+    def test_provider_cards_share_linear_layout_and_remaining_caption(self):
+        with patch('clash_sub.web_server.read_inbound_traffic',return_value={'upload':20,'download':30,'total':1000}):
+            body=self.portal.admin(self.state,self.settings)
+        self.assertEqual(body.count('class="traffic-part"'),2)
+        self.assertEqual(body.count('class="usage usage-linear"'),2)
+        self.assertEqual(body.count('class="remaining">剩余 950.0 B'),2)
+        self.assertNotIn('class="ring"',body)
+
+    def test_public_download_page_contains_no_account_capabilities(self):
+        status,_,body=self.request('/clients/')
+        self.assertEqual(status,200)
+        for record in self.settings['pages'].values():
+            self.assertNotIn(record['token'],body)
+        self.assertNotIn(self.settings['admin']['token'],body)
+        self.assertEqual(body.count('class="recommended"'),3)
+        self.assertIn('.recommended{',self.request('/portal-assets/portal.css')[2])
+        self.assertEqual(self.request('/clients/',method='POST',origin='https://sub.example.com')[0],404)
+        self.assertEqual(self.request('/portal-assets/../../private/state.json')[0],404)
+
     def test_member_page_does_not_leak_owner_or_airport_capabilities(self):
         token = self.settings['pages']['2']['token']
         status, headers, body = self.request('/p/'+token+'/')
@@ -174,7 +217,7 @@ class PortalTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'",headers)
         self.assertNotIn('服务器概况',body)
         self.assertNotIn('到期时间',body)
-        self.assertIn('流量重置时间',body)
+        self.assertIn('重置时间待确认',body)
 
     def test_system_metrics_are_only_read_for_admin_overview(self):
         with patch.object(self.portal, 'system_card', return_value='SERVER-METRICS') as metrics:
@@ -371,7 +414,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(read_inbound_traffic(self.config.xui_database),{'upload':12,'download':43,'total':200})
         body=self.portal.admin(self.state,self.settings)
         self.assertIn('55.0 B',body)
-        self.assertIn('流量重置时间：待确认',body)
+        self.assertIn('重置时间待确认',body)
         self.assertNotIn('9999',body)
         with closing(sqlite3.connect(self.config.xui_database)) as db, db:
             db.execute('UPDATE inbounds SET up=0,down=0')

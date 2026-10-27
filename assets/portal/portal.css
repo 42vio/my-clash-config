@@ -23,3 +23,25 @@
 @media(max-width:760px){.traffic-card .provider-usage .remaining{margin-top:4px;font-size:10px}.traffic-card .provider-usage .bar{margin:7px 0;height:4px}.traffic-card .stats{padding-top:7px;gap:6px}.traffic-card .stats label{font-size:9px;margin-bottom:2px}.traffic-card .stats strong{font-size:10px}.traffic-card .card-head .subtle{font-size:9px}.user-actions .manage-link{min-height:32px}}
 
 .server-sampling-note{margin-top:12px;font-size:10px}.metric-sampling{height:24px;font-size:10px;color:var(--muted);padding-top:6px}.metric-spacer{height:24px}.server .metric strong{overflow-wrap:anywhere}
+
+/* Shared traffic layout for account pages and both administrator sources. */
+.usage-linear{display:block;padding:4px 0 18px}.usage-linear .number{font-size:32px;margin:5px 0}.usage-linear .number small{font-size:13px}.usage-linear .bar{height:6px;margin:12px 0 8px}.usage-caption{display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:12px;flex-wrap:wrap}.usage-caption .remaining{margin:0;color:var(--green);font-size:inherit}.traffic-part .usage-linear{padding:0 0 10px}.traffic-card .usage-linear .number{font-size:25px}.traffic-part .stats{padding-top:10px}.traffic-part .stats strong{font-size:12px}.usage-card>.card-head{align-items:flex-start}.usage-card>.card-head .subtle{max-width:55%}.recommended{font-size:10px;font-style:normal;font-weight:500;color:var(--green);background:var(--soft);border-radius:4px;padding:1px 6px;margin-right:auto;white-space:nowrap}.client-group a{flex-wrap:wrap;gap:7px}.client-group a>span{margin-left:auto}
+@media(max-width:760px){.usage-linear{padding-bottom:14px}.usage-linear .number{font-size:27px}.usage-linear .number small{font-size:11px}.usage-caption{font-size:11px;gap:5px}.traffic-card .usage-linear .number{font-size:23px}.traffic-part .stats strong{font-size:10px}.traffic-part .stats label{font-size:9px}.user-table .mini-bar{display:block!important;margin-top:5px;width:100%;max-width:120px}}
+
+.transfer{display:inline-flex;gap:12px;flex-wrap:wrap}.reset-line{display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding-top:10px;font-size:11px;color:var(--muted)}.reset-line strong{font-weight:500;color:var(--ink)}@media(max-width:760px){.transfer{gap:8px}.reset-line{font-size:10px;padding-top:8px}}
+
+.reset-hint{font-size:11px;font-weight:400;white-space:normal}.usage-card>.card-head,.traffic-part>.card-head{gap:12px;align-items:center}.usage-card .usage-linear{padding-bottom:0}.traffic-part .usage-linear{padding-bottom:0}@media(max-width:760px){.reset-hint{font-size:10px}}
+
+/* One traffic presentation for administrator and standalone account cards. */
+.grid>.usage-card{min-height:0;min-width:0;align-self:start}
+:is(.usage-card,.traffic-part)>.card-head{gap:12px;align-items:center;margin-bottom:8px}
+:is(.usage-card,.traffic-part)>.card-head :is(h2,h3){font-size:14px;margin:0;font-weight:600}
+:is(.usage-card,.traffic-part) .reset-hint{font-size:11px;max-width:55%}
+:is(.usage-card,.traffic-part) .usage-linear{display:block;padding:0}
+:is(.usage-card,.traffic-part) .usage-linear .number{font-size:25px;line-height:1.4;letter-spacing:-.7px;margin:0;text-align:left}
+:is(.usage-card,.traffic-part) .usage-linear .number small{font-size:13px;font-weight:400;letter-spacing:0}
+:is(.usage-card,.traffic-part) .usage-linear .bar{height:6px;margin:12px 0 8px}
+:is(.usage-card,.traffic-part) .usage-caption{display:flex;justify-content:space-between;align-items:center;font-size:12px;gap:8px;margin:0}
+:is(.usage-card,.traffic-part) .transfer{gap:12px}
+:is(.usage-card,.traffic-part) .usage-caption .remaining{font-weight:400}
+@media(max-width:760px){.grid{grid-template-columns:minmax(0,1fr)}.grid>.card{min-width:0}:is(.usage-card,.traffic-part) .usage-linear .number{font-size:23px!important}:is(.usage-card,.traffic-part) .usage-linear .number small{font-size:11px}:is(.usage-card,.traffic-part) .usage-linear .bar{height:4px;margin:9px 0 7px}:is(.usage-card,.traffic-part) .usage-caption{font-size:11px}:is(.usage-card,.traffic-part) .transfer{gap:8px}:is(.usage-card,.traffic-part) .reset-hint{font-size:10px}}
