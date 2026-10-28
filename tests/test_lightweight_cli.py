@@ -279,9 +279,10 @@ class LightweightCliTests(unittest.TestCase):
             "3. 手动开启订阅后刷新\n"
             "4. 使用新订阅链接更新\n"
             "5. 查看机场状态\n"
+            "6. 自建备用订阅\n"
             "0. 返回\n"
             "\n"
-            "请输入选项 [0-5]：",
+            "请输入选项 [0-6]：",
         )
 
     def test_airport_submenu_invalid_selection_stays_in_the_submenu(self):
@@ -970,7 +971,7 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertEqual(self.service.calls, [("airport_status", ()), ("airport_status", ())])
         self.assertEqual(stdout.count(AIRPORT_MENU), 1)
-        self.assertEqual(stdout.count("机场订阅：输入下一项 [1-5]，回车查看菜单，0 返回上一级："), 2)
+        self.assertEqual(stdout.count("机场订阅：输入下一项 [1-6]，回车查看菜单，0 返回上一级："), 2)
         self.assertNotIn("按回车键返回当前菜单：", stdout)
 
     def test_main_menu_invalid_selection_stays_and_enter_expands_the_menu(self):
@@ -1017,7 +1018,7 @@ class MenuLoopTests(unittest.TestCase):
     def test_each_menu_prompt_lists_its_own_range(self):
         cases = (
             ("0\n", MENU, "请输入选项 [0-9]："),
-            ("1\n0\n0\n", AIRPORT_MENU, "请输入选项 [0-5]："),
+            ("1\n0\n0\n", AIRPORT_MENU, "请输入选项 [0-6]："),
             ("4\n0\n0\n", WEB_MENU, "请输入选项 [0-9]："),
             ("6\n0\n0\n", MAINTENANCE_MENU, "请输入选项 [0-3]："),
             ("7\n0\n0\n", CERT_MENU, "请输入选项 [0-2]："),

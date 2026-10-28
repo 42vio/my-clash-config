@@ -27,9 +27,9 @@ PROVIDER_NAME = "AmyTelecom"
 _PROFILE_RECIPES = {"compat": "compat", "balance": "balance"}
 
 
-def render_subscription_bundle(is_owner, xui, airport, template_root):
+def render_subscription_bundle(is_owner, xui, airport, template_root, *, backup_nodes=None):
     """Compose Clash profiles plus the user's portable self-hosted nodes."""
-    bundle = render_user_bundle(is_owner, xui, airport, template_root)
+    bundle = render_user_bundle(is_owner, xui, airport, template_root, backup_nodes=backup_nodes)
     bundle["nodes"] = render_node_subscription(merge_proxy_sources((("3x-ui", xui),)))
     return bundle
 
@@ -39,6 +39,7 @@ def render_user_bundle(
     xui: list[Mapping],
     airport: AirportProvider | None,
     template_root: Path,
+    *, backup_nodes=None,
 ) -> dict[str, str]:
     """Render only the profile variants authorized for one user."""
     if not is_owner and airport is not None:
@@ -52,23 +53,43 @@ def render_user_bundle(
             variant,
             [] if variant == "airport" else xui,
             AirportProvider(airport.airport_only_url) if variant == "airport" and airport.airport_only_url else airport,
+            backup_nodes if variant == 'compat' else None,
         )
         for variant in variants
     }
 
 
-def _render_variant(template_root, variant, xui, airport):
+def _render_variant(template_root, variant, xui, airport, backup_nodes=None):
     document, injections, positions = _compose_variant(template_root, variant)
     document["proxies"] = CommentedSeq(merge_proxy_sources((("3x-ui", xui),)) if xui else [])
     if airport is not None:
         _with_provider(document, airport)
     _inject_proxy_names(document, injections, airport is not None, positions)
-    if airport is None:
-        _drop_unusable_groups(document)
+    _configure_backup(document, backup_nodes)
+    _drop_unusable_groups(document)
     try:
         return dump_round_trip(document)
     except RoundTripYamlError:
         raise ValueError("rendered template could not be serialized") from None
+
+
+def _configure_backup(document, nodes):
+    from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP, PROVIDER, validate_nodes
+    groups=document['proxy-groups']
+    primary=next((g for g in groups if g['name']==PRIMARY_GROUP),None)
+    if primary is None:
+        if nodes:raise ValueError('backup primary group missing')
+        return
+    # Always retain the primary fallback group, even with only one node.
+    primary['proxies']=CommentedSeq(n for n in primary.get('proxies',[]) if n!=BACKUP_GROUP)
+    groups[:]=[g for g in groups if g['name']!=BACKUP_GROUP]
+    if not nodes:return
+    validate_nodes(nodes)
+    primary['proxies'].append(BACKUP_GROUP)
+    health=CommentedMap(url='https://www.gstatic.com/generate_204',interval=300,lazy=True,**{'expected-status':204})
+    providers=document.setdefault('proxy-providers',CommentedMap())
+    providers[PROVIDER]=CommentedMap(type='inline',payload=CommentedSeq(copy.deepcopy(nodes)),**{'health-check':CommentedMap(enable=True,**health)})
+    groups.insert(1,CommentedMap(name=BACKUP_GROUP,type='url-test',use=CommentedSeq([PROVIDER]),tolerance=100,**health))
 
 
 def _drop_unusable_groups(document):

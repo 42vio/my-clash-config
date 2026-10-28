@@ -255,6 +255,7 @@ def _load_current(root, relative):
 
 
 def _sanitize_compat(source):
+    source = _without_backup_source(source)
     public = clone_round_trip_document(source)
     proxy_names = {item.get("name") for item in source["proxies"] if isinstance(item, Mapping) and isinstance(item.get("name"), str)}
     if len(proxy_names) != len(source["proxies"]):
@@ -302,6 +303,33 @@ def _sanitize_compat(source):
     _strip_private_names_from_anchors(public, proxy_names)
     _strip_airport_cache_comments(public)
     return public, (tuple(dict.fromkeys(node_groups)), tuple(dict.fromkeys(provider_groups)), node_positions)
+
+
+def _without_backup_source(source):
+    """Import backup group structure without importing its private source URL."""
+    from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP, PROVIDER
+    source=clone_round_trip_document(source)
+    providers=source.get('proxy-providers')
+    if isinstance(providers,Mapping):providers.pop(PROVIDER,None)
+    groups=source['proxy-groups']
+    groups[:]=[g for g in groups if g.get('name')!=BACKUP_GROUP]
+    has_primary=any(g.get('name') in {PRIMARY_GROUP,'自建节点'} for g in groups)
+    node_names={p.get('name') for p in source['proxies'] if isinstance(p,Mapping)}
+    for group in groups:
+        if has_primary and group.get('name')=='自建节点':group['name']=PRIMARY_GROUP
+        if isinstance(group.get('proxies'),list):
+            members=[]
+            for name in group['proxies']:
+                if name==BACKUP_GROUP:continue
+                if has_primary and name=='自建节点':name=PRIMARY_GROUP
+                if group.get('name')==PRIMARY_GROUP and name not in node_names:
+                    matches=[n for n in node_names if isinstance(n,str) and n.rstrip(',')==name.rstrip(',')]
+                    if len(matches)==1:name=matches[0]
+                members.append(name)
+            if members!=list(group['proxies']):group['proxies']=CommentedSeq(members)
+        if isinstance(group.get('use'),list) and PROVIDER in group['use']:
+            group['use']=CommentedSeq(n for n in group['use'] if n!=PROVIDER)
+    return source
 
 
 def _detach_private_merge_lists(document, proxy_names, airports):

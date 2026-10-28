@@ -288,12 +288,11 @@ class Portal:
                 detail = '<a class="detail" target="_blank" rel="noopener noreferrer" href="%s">查看详情 ↗</a>' % esc(page_path(record['token'],user.email))
             body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span>%s</td><td>%s</td><td>%s</td><td><div class="user-actions">%s<button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email),client_id,self.presence(online[str(client_id)]),used,total,progress,esc(self.reset_rule(client_id)),status,detail,client_id,esc(user.email))
 
-        body += '</tbody></table></section>' + self.task_history() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新服务器概况和成员在线状态" title="刷新服务器概况和成员在线状态"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
+        body += '</tbody></table></section>' + self.task_history() + self.backup_dialog() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新服务器概况和成员在线状态" title="刷新服务器概况和成员在线状态"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
         return self.shell(state.users[state.owner_client_id].email + " · 管理总览", body, admin=True,prefix=prefix,csrf=csrf)
 
-    @staticmethod
-    def maintenance_card():
-        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="button history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><p class="subtle" id="task-progress" role="status">任务在后台执行，执行期间请勿重复操作。</p></section>'
+    def maintenance_card(self):
+        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="button history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><div class="backup-access"><div><span>备用线路</span><span class="backup-entry-state">%s</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div><p class="subtle" id="task-progress" role="status">任务在后台执行，执行期间请勿重复操作。</p></section>' % esc(self.backup_summary()['label'])
 
     def task_history(self):
         from clash_sub.web_tasks import history
@@ -304,6 +303,33 @@ class Portal:
     @staticmethod
     def management_dialogs():
         return '<dialog id="manage-dialog" aria-labelledby="manage-title"><div class="dialog-head"><h2 id="manage-title">用户链接</h2><button class="close-dialog" data-close="manage-dialog" aria-label="关闭">×</button></div><p class="dialog-note">网页与订阅链接独立管理，请勿公开分享。</p><div id="user-links"></div></dialog><dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-head"><h2 id="confirm-title">确认操作</h2><button class="close-dialog" data-close="confirm-dialog" aria-label="取消">×</button></div><p class="confirm-text" id="confirm-text"></p><div class="dialog-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button primary" id="confirm-action">确认执行</button></div></dialog>'
+
+    def published_composition(self, user):
+        if not user.current_release:return None
+        path=Path(self.config.public_root)/'releases'/str(user.client_id)/user.current_release/PROFILE_FILENAMES['compat']
+        try:
+            if path.stat().st_size>5*1024*1024:return None
+            import yaml
+            document=yaml.safe_load(path.read_bytes())
+            providers=document.get('proxy-providers',{}) or {}
+            parts=['自建节点']
+            if 'AmyTelecom' in providers:parts.append('机场')
+            if 'Backup' in providers:parts.append('备用节点')
+            return ' + '.join(parts) if len(parts)>1 else '仅自建节点'
+        except Exception:return None
+
+    def backup_summary(self):
+        from clash_sub.backup_subscription import status, eligible
+        result=status(self.config.private_root)
+        state=load_state(Path(self.config.private_root)/'state.json')
+        result['users']=[user.email for user in state.users.values() if user.active and eligible(user.email) and '备用节点' in (self.published_composition(user) or '')] if state else []
+        result['excluded']=['42vio','openwrt']
+        result['label']='刷新异常' if result['last_error'] else '已启用' if result['enabled'] and result['nodes'] else '未就绪' if result['configured'] else '未配置'
+        return result
+
+    @staticmethod
+    def backup_dialog():
+        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用线路</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用线路状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接在终端「机场订阅 → 自建备用订阅」中添加、更换或删除。客户端需更新标准订阅。</p></dialog>'
 
     def user_links(self, state, settings, client_id):
         user = state.users.get(client_id)
@@ -327,7 +353,7 @@ class Portal:
             if not user.current_release or not (Path(self.config.public_root)/'releases'/str(client_id)/user.current_release/filename).is_file():
                 continue
             token = airport_only_token(user.token,schema_version=state.schema_version) if variant=='airport' else user.token
-            result.append({'title':titles[variant],'url':base+'/s/'+token+'/'+filename,'rotate':'rotate-sub' if variant=='compat' else None,'target':str(client_id)})
+            result.append({'title':titles[variant],'url':base+'/s/'+token+'/'+filename,'rotate':'rotate-sub' if variant=='compat' else None,'target':str(client_id),'composition':self.published_composition(user) if variant=='compat' else None})
         if not any(r['title']=='个人网页' for r in result):
             result.append({'title':'个人网页尚未生成','url':None,'rotate':'rotate-page','target':str(client_id)})
         return {'email':user.email,'links':result}
@@ -391,11 +417,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = '<section class="card login-card"><form method="post" action="%s/login"><label for="username">管理员账号</label><input id="username" name="username" autocomplete="username" required maxlength="254"><label for="password">管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="8" maxlength="256"><button class="button primary">登录</button></form></section>' % esc(prefix)
                 return self.respond(200,portal.shell('owner 登录',body))
             if not session:
-                if rest in {'/onlines','/tasks','/server'} or rest.endswith('/links'):
+                if rest in {'/onlines','/tasks','/server','/backup'} or rest.endswith('/links'):
                     return self.respond(401,'{}',content_type='application/json')
                 return self.respond(303,headers=(('Location',prefix+'/login'),))
             if rest == '/':
                 return self.respond(200,portal.admin(state,settings,csrf=session[3]))
+            if rest == '/backup':
+                return self.respond(200,json.dumps(portal.backup_summary()),content_type='application/json')
             if rest == '/server':
                 return self.respond(200,portal.system_card())
             if rest == '/onlines':

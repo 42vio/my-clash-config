@@ -199,6 +199,37 @@ class ClashSubService:
                 raise ServiceError("airport_status_failed") from None
             traffic=saved.traffic
             return {"saved": True, "activation_configured": saved.activation_url is not None, "activation_host": _source_host(saved.activation_url) if saved.activation_url else None, "source_configured": bool(saved.source_url), "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": (traffic.upload+traffic.download) if traffic else None, "traffic_remaining": max(traffic.total-traffic.upload-traffic.download,0) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
+    def backup_status(self):
+        from clash_sub.backup_subscription import status
+        return status(self.config.private_root)
+    def replace_backup_source(self,url):
+        from clash_sub.backup_subscription import refresh
+        with self._lock():refresh(self.config.private_root,url,download=self._download,validate=self._validate_backup_nodes,now=self._clock())
+        return self._sync_backup_change()
+    def refresh_backup(self):
+        from clash_sub.backup_subscription import refresh
+        with self._lock():refresh(self.config.private_root,download=self._download,validate=self._validate_backup_nodes,now=self._clock())
+        return self._sync_backup_change()
+    def remove_backup_source(self):
+        from clash_sub.backup_subscription import remove
+        with self._lock():remove(self.config.private_root)
+        return self._sync_backup_change()
+    def refresh_backup_if_due(self):
+        from clash_sub.backup_subscription import read, INTERVAL
+        data=read(self.config.private_root)
+        if data and data['enabled'] and self._clock()-(data['last_success'] or 0)>=INTERVAL:
+            return self.refresh_backup()
+        return None
+    def _sync_backup_change(self):
+        result=self.sync_all()
+        if result.get('errors'):raise ServiceError('backup_sync_failed')
+        return self.backup_status()
+    def _validate_backup_nodes(self,nodes):
+        document={'proxies':nodes,'proxy-groups':[{'name':'backup-validation','type':'select','proxies':[n['name'] for n in nodes]}],'rules':['MATCH,backup-validation']}
+        with tempfile.TemporaryDirectory(prefix='backup-validation-',dir=str(self.config.private_root)) as directory:
+            candidate=Path(directory)/'nodes.yaml'
+            candidate.write_text(yaml.safe_dump(document,allow_unicode=True,sort_keys=False));candidate.chmod(0o600)
+            self._mihomo.validate(candidate)
     def rollback(self,user,release):
         with self._lock():
             self._recover()
@@ -283,7 +314,11 @@ class ClashSubService:
             _provider_url(self.config, identity.token),
             _provider_url(self.config, airport_only_token(identity.token)),
         ) if owner else None
-        bundle=self._render(owner,xui,provider,self.config.template_root); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
+        from clash_sub.backup_subscription import read as read_backup, eligible
+        backup=read_backup(self.config.private_root)
+        nodes=backup['nodes'] if backup and backup['enabled'] and eligible(client.email) else None
+        bundle=self._render(owner,xui,provider,self.config.template_root,**({'backup_nodes':nodes} if nodes else {})); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
+        if backup:forbidden+=(backup['url'],)
         for variant,text in bundle.items():
             if variant == "nodes":
                 if text != render_node_subscription(merge_proxy_sources((("3x-ui",xui),))):

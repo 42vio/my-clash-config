@@ -134,6 +134,13 @@ def _validate_proxy_providers(providers, allowed_provider_url):
         if not isinstance(name, str) or not name.strip() or not isinstance(extra, Mapping):
             raise CheckError("proxy-providers mapping is invalid")
         provider_type = extra.get("type")
+        if provider_type == 'inline' and name == 'Backup':
+            from clash_sub.backup_subscription import validate_nodes
+            if set(extra)-{'type','payload','health-check'}:
+                raise CheckError('backup proxy-provider mapping is invalid')
+            try:validate_nodes(extra.get('payload'))
+            except Exception:raise CheckError('backup proxy-provider mapping is invalid') from None
+            continue
         path = extra.get("path")
         if provider_type not in {"http", "file"} or not isinstance(path, str) or not path.strip():
             raise CheckError("proxy-providers mapping is invalid")

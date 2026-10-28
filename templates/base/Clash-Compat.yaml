@@ -93,7 +93,7 @@ dns:
 #========= 建立锚点 =========#
 auto: &auto {type: url-test, url: https://www.gstatic.com/generate_204, expected-status: 204, interval: 1800, tolerance: 50, empty-fallback: REJECT, exclude-filter: "流量|到期|剩余|官网|过期"}                                    # 自动测速组基底
 select: &select {type: select}
-fallback: {type: fallback}                    # 普通手选组
+fallback: &fallback {type: fallback, url: https://www.gstatic.com/generate_204, expected-status: 204, interval: 300, lazy: true}
 sub-select: {type: select, use: [Subscribe]}                  # 手动切换（订阅全列）
 direct-first: &direct-first {type: select, proxies: [DIRECT, 加速线路]}  # 直连优先 + 加速
 proxy-first: &proxy-first {type: select, proxies: [加速线路, DIRECT]}    # 加速优先
@@ -120,14 +120,15 @@ icons:
   final: &icon-final https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png
 
 proxy-groups:
+- {name: 🏴‍☠️ 自建节点, <<: *fallback, proxies: []}
 #节点分组（订阅按地区自动测速 / 手动切换；自建节点单列）
-- {name: 加速线路, type: select, proxies: [自动选择, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点], icon: *icon-proxy}
+- {name: 加速线路, type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点], icon: *icon-proxy}
 - {name: 自动选择, <<: *auto, icon: *icon-auto}
   # - {name: 🚀 手动切换, <<: *sub-select}
 
 #功能分组
 - {name: PT服务, <<: *direct-first, icon: *icon-pt}
-- {name: AI服务, <<: *select, proxies: [🇺🇲 美国节点, 🇯🇵 日本节点, 🇸🇬 新加坡节点], icon: *icon-ai}
+- {name: AI服务, <<: *select, proxies: [🏴‍☠️ 自建节点, 🇺🇲 美国节点, 🇯🇵 日本节点, 🇸🇬 新加坡节点], icon: *icon-ai}
 - {name: 游戏直连, <<: *select, proxies: [DIRECT], icon: *icon-game}
 - {name: Steam, <<: *direct-first, icon: *icon-steam}
 - {name: BiliBili, <<: *direct-first, icon: *icon-bilibili}

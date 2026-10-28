@@ -163,7 +163,6 @@ DOCUMENTED_CLI_COMMANDS = frozenset(
         "web",
         "web-serve",
         "web-task",
-        "online-serve",
         # Internal systemd entry: surfaced only to clash-sub-metadata.service,
         # never in the interactive menus or user documentation.
         "metadata-serve",

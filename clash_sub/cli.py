@@ -90,6 +90,16 @@ _AIRPORT_MENU_ROWS = (
     ("option", "3", (("手动开启订阅后刷新", None),)),
     ("option", "4", (("使用新订阅链接更新", None),)),
     ("option", "5", (("查看机场状态", None),)),
+    ("option", "6", (("自建备用订阅", None),)),
+    ("option", "0", (("返回", None),)),
+)
+
+_BACKUP_SUBSCRIPTION_ROWS = (
+    ("title", "自建备用订阅"),
+    ("option", "1", (("添加或更换备用订阅链接", None),)),
+    ("option", "2", (("刷新备用订阅并生成配置", None),)),
+    ("option", "3", (("删除备用订阅并生成配置", None),)),
+    ("option", "4", (("查看备用状态", None),)),
     ("option", "0", (("返回", None),)),
 )
 
@@ -193,7 +203,7 @@ def _render_submenu(rows, colors):
 
 
 MENU = _render_main_menu(_Colors(False)) + "请输入选项 [0-9]："
-AIRPORT_MENU = _render_submenu(_AIRPORT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
+AIRPORT_MENU = _render_submenu(_AIRPORT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-6]："
 MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
@@ -272,7 +282,7 @@ def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
         )
     if choice == "1":
         return _run_submenu(
-            _AIRPORT_MENU_ROWS, 5, _airport_dispatch, stdin, stdout, stderr, factory, colors, name="机场订阅"
+            _AIRPORT_MENU_ROWS, 6, _airport_dispatch, stdin, stdout, stderr, factory, colors, name="机场订阅"
         )
     if choice == "2":
         return _call("sync", None, stdout, stderr, factory), False
@@ -322,6 +332,8 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
 
 
 def _airport_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == "6":
+        return _run_submenu(_BACKUP_SUBSCRIPTION_ROWS,4,_backup_subscription_dispatch,stdin,stdout,stderr,factory,_colors_for(stdout),name="自建备用订阅")
     if choice == "1":
         return _menu_airport_portal(stdin, stdout, stderr, factory)
     if choice == "2":
@@ -332,6 +344,21 @@ def _airport_dispatch(choice, stdin, stdout, stderr, factory):
         return _menu_airport_source(stdin, stdout, stderr, factory)
     if choice == "5":
         return _call("airport-status", None, stdout, stderr, factory), False
+    return None
+
+
+def _backup_subscription_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == '1':
+        value=_prompt(stdin,stdout,'请输入备用订阅 HTTPS 链接（留空返回）：')
+        if not value:return 0,False
+        return _call('backup-replace',value,stdout,stderr,factory),False
+    if choice == '2':return _call('backup-refresh',None,stdout,stderr,factory),False
+    if choice == '3':
+        stdout.write('删除后重新生成标准订阅，自建策略组保留；客户端需更新订阅。\n')
+        answer=_prompt(stdin,stdout,'输入 DELETE 确认删除（其他输入取消）：')
+        if answer!='DELETE':return 0,False
+        return _call('backup-remove',None,stdout,stderr,factory),False
+    if choice == '4':return _call('backup-status',None,stdout,stderr,factory),False
     return None
 
 
@@ -833,26 +860,41 @@ def _run_command(parsed, stdout, stderr, factory):
 
 
 def _scheduled_refresh(stdout, stderr, factory):
-    # Weekly timer entry: a normal skip (or a busy lock / missing activation
+    # Daily subscription timer entry: a normal skip (or a busy lock / missing activation
     # page) is success for the unit; only real failures fail the run.
+    backup_failed=False
     try:
-        result = factory().auto_refresh_airport()
+        service=factory()
+        refresh_backup=getattr(service,'refresh_backup_if_due',None)
+        if refresh_backup is not None:
+            try:refresh_backup()
+            except ServiceError as error:
+                _error(stderr,error.code,1)
+                backup_failed=True
+        result = service.auto_refresh_airport()
     except ServiceError as error:
         if error.code in {"operation_busy", "airport_activation_missing", "airport_refresh_skipped"}:
-            return 0
+            return int(backup_failed)
         return _error(stderr, error.code, 1)
     except Exception:
         return _error(stderr, "service_unavailable", 1)
     if result.get("skipped"):
-        return 0
+        return int(backup_failed)
     _write_airport_update(stdout, result)
-    return 0
+    return int(backup_failed)
 
 
 def _call(operation, value, stdout, stderr, factory):
     try:
         service = factory()
-        if operation == "airport-replace":
+        if operation.startswith('backup-'):
+            if operation=='backup-replace':result=service.replace_backup_source(value)
+            elif operation=='backup-refresh':result=service.refresh_backup()
+            elif operation=='backup-remove':result=service.remove_backup_source()
+            elif operation=='backup-status':result=service.backup_status()
+            else:return _error(stderr,'invalid_command',2)
+            _write_backup_status(stdout,result)
+        elif operation == "airport-replace":
             _write_airport_update(stdout, service.replace_airport_source(value))
         elif operation == "airport-portal":
             _write_airport_update(stdout, service.configure_airport_portal(value))
@@ -1229,3 +1271,14 @@ def _cert_command(parsed, stdout, stderr):
     except Exception:
         return _error(stderr, "cert_command_failed", 1)
     return 0
+
+
+def _write_backup_status(stdout, result):
+    labels={None:'无','backup_download_failed':'下载失败，保留上次成功缓存','backup_source_invalid':'备用配置不可用'}
+    stdout.write('备用订阅：%s\n' % ('已配置' if result['configured'] else '未配置'))
+    stdout.write('缓存节点：%d 个\n' % len(result['nodes']))
+    for name in result['nodes']:stdout.write('  %s\n' % name)
+    stamp=result.get('last_success')
+    stdout.write('最近成功刷新：%s\n' % (datetime.fromtimestamp(stamp,timezone.utc).astimezone().isoformat() if stamp else '暂无'))
+    stdout.write('最近错误：%s\n' % labels.get(result.get('last_error'),'状态不可用'))
+    stdout.write('仅标准订阅包含备用；42vio、openwrt 除外。客户端需更新订阅。\n')

@@ -165,6 +165,7 @@ function drawUserLinks(data) {
       label.append(button);
     }
     block.append(label);
+    if (item.composition) { const note = document.createElement('p'); note.className = 'subscription-backup-note'; note.textContent = item.composition; block.append(note); }
     if (item.url) {
       const box = document.createElement('div'); box.className = 'linkbox';
       const input = document.createElement('input'); input.readOnly = true; input.value = item.url; input.setAttribute('aria-label', item.title);
@@ -239,6 +240,7 @@ document.addEventListener('click', async event => {
   const button = event.target.closest('button');
   if (!button) return;
   if (button.dataset.close) { document.getElementById(button.dataset.close).close(); return; }
+  if (button.hasAttribute('data-backup-details')) { await showBackupStatus(); return; }
   if (button.dataset.history) { document.querySelector('#history-dialog').showModal(); refreshTasks(); return; }
   if (button.hasAttribute('data-clear-history')) { askTask('delete-history', null); return; }
   if (button.dataset.user) {
@@ -290,4 +292,37 @@ if (adminBase && manageDialog) {
     if (!document.hidden) refreshTasks();
   });
   window.addEventListener('pagehide', () => clearTimeout(taskTimer));
+}
+
+async function showBackupStatus() {
+  const dialog = document.querySelector('#backup-dialog');
+  const root = document.querySelector('#backup-content');
+  if (!adminBase || !dialog || !root) return;
+  root.textContent = '正在读取…'; dialog.showModal();
+  try {
+    const response = await fetch(adminBase + '/backup', {cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(5000)});
+    if (!response.ok) throw new Error('unavailable');
+    const data = await response.json(); root.replaceChildren();
+    const badge=document.createElement('span');badge.className='badge';badge.textContent=data.label;root.append(badge);
+    const entry=document.querySelector('.backup-entry-state');if(entry)entry.textContent=data.label;
+    function row(title,value) {
+      const line=document.createElement('p');line.className='backup-status-row';
+      const label=document.createElement('span');label.textContent=title;
+      const text=document.createElement('span');text.textContent=value;
+      line.append(label,text);root.append(line);
+    }
+    row('缓存节点',data.nodes.length+' 个');
+    row('节点名称',data.nodes.join('、')||'暂无');
+    row('最近成功刷新',data.last_success ? new Date(data.last_success*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 北京时间' : '暂无');
+    const errors={backup_download_failed:'下载失败；保留上次成功缓存',backup_source_invalid:'备用配置不可用，请到终端检查'};
+    row('最近错误',errors[data.last_error]||'无');
+    row('已发布备用的用户',data.users.join('、')||'无');
+    row('固定排除',data.excluded.join('、'));
+    if(data.traffic) {
+      const size=bytes=>{let n=bytes,unit='B';for(const u of ['KB','MB','GB','TB']){if(n<1024)break;n/=1024;unit=u;}return n.toFixed(1)+' '+unit;};
+      const t=data.traffic,used=t.upload+t.download;
+      row('来源流量',size(used)+' / '+(t.total?size(t.total):'不限额'));
+      if(t.total)row('剩余流量',size(Math.max(0,t.total-used)));
+    } else row('来源流量','来源未提供');
+  } catch { root.textContent='无法取得备用状态，请稍后重试或重新登录。'; }
 }

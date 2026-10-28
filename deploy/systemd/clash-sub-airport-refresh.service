@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh the saved airport subscription
+Description=Refresh saved airport and backup subscriptions
 Wants=network-online.target
 After=network-online.target
 

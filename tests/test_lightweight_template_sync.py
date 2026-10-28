@@ -104,6 +104,33 @@ def write(path, text, mode=0o644):
     path.chmod(mode)
 
 class TemplateSyncTests(unittest.TestCase):
+    def test_backup_source_is_removed_but_primary_group_injection_is_preserved(self):
+        import yaml
+        from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP
+        from clash_sub.generator import render_user_bundle
+        from tests.test_lightweight_generator import reality_proxy
+        source=yaml.safe_load(COMPAT)
+        source['proxy-providers']['Backup']={'type':'http','url':'https://backup.example.test/private?token=placeholder','path':'./Backup.yaml','interval':86400}
+        source['proxy-groups'][0]['proxies']=['DIRECT',PRIMARY_GROUP]
+        source['proxy-groups'].extend([
+            {'name':PRIMARY_GROUP,'type':'fallback','proxies':['Dynamic',BACKUP_GROUP]},
+            {'name':BACKUP_GROUP,'type':'url-test','use':['Backup']},
+        ])
+        text=yaml.safe_dump(source,allow_unicode=True,sort_keys=False)
+        self.compat_source.write_text(text)
+        run_template_sync(self.root,compat=self.compat_source)
+        public=(self.root/'templates/base/Clash-Compat.yaml').read_text()
+        self.assertNotIn('token=placeholder',public)
+        self.assertNotIn('backup.example.test',public)
+        self.assertEqual(self.compat_source.read_text(),text)
+        manifest=yaml.safe_load((self.root/'templates/profiles.yaml').read_text())
+        self.assertIn(PRIMARY_GROUP,manifest['inject-node-groups'])
+        self.assertNotIn(BACKUP_GROUP,manifest['inject-provider-groups'])
+        rendered=yaml.safe_load(render_user_bundle(False,[reality_proxy('Runtime primary')],None,self.root/'templates')['compat'])
+        groups={g['name']:g for g in rendered['proxy-groups']}
+        self.assertEqual(groups[PRIMARY_GROUP]['proxies'],['Runtime primary'])
+        self.assertNotIn(BACKUP_GROUP,groups)
+
     def setUp(self):
         self.tmp = TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

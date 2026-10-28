@@ -78,6 +78,11 @@ def create_backup(repo_root, runner):
     ):
         raise RuntimeError("backup_incomplete")
     archive_names = list(_BACKUP_ARCHIVE_NAMES)
+    if private_root is not None and (private_root / 'backup-source.json').exists():
+        from clash_sub.backup_subscription import read
+        read(private_root)
+        sources.append(private_root / 'backup-source.json')
+        archive_names.append('var/lib/clash-sub/private/backup-source.json')
     if private_root is not None and (private_root / "web-settings.json").exists():
         from clash_sub.web_settings import read_settings
         read_settings(private_root)

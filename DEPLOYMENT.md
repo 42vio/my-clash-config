@@ -174,6 +174,7 @@ clash-sub rollback --install
 | 私密运行时目录 | `/var/lib/clash-sub/private` |
 | 公开发布目录 | `/var/lib/clash-sub/public` |
 | 机场 provider | `/var/lib/clash-sub/public/provider/AmyTelecom.yaml` |
+| 备用订阅来源与缓存（可选，0600） | `/var/lib/clash-sub/private/backup-source.json` |
 | 机场来源记录 / 流量缓存 | `/var/lib/clash-sub/private/airport-source.json`、`/var/lib/clash-sub/private/traffic-cache.json` |
 | 服务配置 | `/opt/my-clash-config/private/config/service.yaml` |
 | Nginx 路由 | `/etc/nginx/clash-sub/routes.conf` |

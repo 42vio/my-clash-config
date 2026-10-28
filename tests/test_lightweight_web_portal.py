@@ -133,6 +133,34 @@ class PortalTests(unittest.TestCase):
         self.assertNotIn('Clash-Airport.yaml',body)
         self.assertIn("connect-src 'self'",headers)
 
+    def test_backup_status_requires_admin_and_redacts_credentials(self):
+        from tests.test_lightweight_backup_subscription import SOURCE,NODES,download
+        from clash_sub import backup_subscription as backup
+        backup.refresh(self.root,SOURCE,download=lambda *_:download(),now=100)
+        path=self.config.public_root/'releases/2/release/Clash-Compat.yaml'
+        path.write_text('proxy-providers:\n  Backup: {type: inline}\n')
+        self.assertEqual(self.request('/admin/backup')[0],401)
+        status,_,body=self.request('/admin/backup',cookie=self.login())
+        self.assertEqual(status,200)
+        data=json.loads(body)
+        self.assertEqual(data['users'],['member'])
+        self.assertEqual(data['nodes'],[n['name'] for n in NODES])
+        self.assertNotIn(SOURCE,body)
+        self.assertNotIn('synthetic-backup-password',body)
+        token=self.settings['pages']['2']['token']
+        self.assertNotIn('backup-dialog',self.request('/p/'+token+'/')[2])
+        self.assertEqual(self.request('/p/'+token+'/backup')[0],404)
+
+    def test_standard_composition_describes_published_config_not_current_cache(self):
+        path=self.config.public_root/'releases/2/release/Clash-Compat.yaml'
+        for providers,label in [('{}','仅自建节点'),('{Backup: {type: inline}}','自建节点 + 备用节点'),('{AmyTelecom: {type: http}}','自建节点 + 机场')]:
+            with self.subTest(label=label):
+                path.write_text('proxy-providers: '+providers+'\n')
+                data=self.portal.user_links(self.state,self.settings,2)
+                standard=next(item for item in data['links'] if item['title']=='标准订阅')
+                self.assertEqual(standard['composition'],label)
+                self.assertTrue(all(not item.get('composition') for item in data['links'] if item['title']!='标准订阅'))
+
     def test_tasks_require_session_csrf_and_explicit_confirmation(self):
         cookie=self.login()
         csrf=self.portal.session_record(cookie,self.settings,self.state)[3]

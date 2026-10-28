@@ -4,8 +4,7 @@ profiles:
   balance:
     dns: balance
 inject-node-groups:
-- 加速线路
-- AI服务
+- 🏴‍☠️ 自建节点
 inject-provider-groups:
 - 自动选择
 - 🇭🇰 香港节点
@@ -14,5 +13,4 @@ inject-provider-groups:
 - 🇨🇳 台湾节点
 - 🇸🇬 新加坡节点
 inject-node-positions:
-  加速线路: 1
-  AI服务: 0
+  🏴‍☠️ 自建节点: 0
