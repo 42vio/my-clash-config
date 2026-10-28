@@ -285,13 +285,13 @@ class Portal:
 
     @staticmethod
     def maintenance_card():
-        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><span class="subtle">owner 专属</span></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><p class="subtle" id="task-progress" role="status">任务在后台执行，执行期间请勿重复操作。</p></section>'
+        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="button history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><p class="subtle" id="task-progress" role="status">任务在后台执行，执行期间请勿重复操作。</p></section>'
 
     def task_history(self):
         from clash_sub.web_tasks import history
         rows = history(self.config)
         content = ''.join('<div class="history-row"><div><strong>%s</strong><span class="subtle">%s</span></div><span class="badge">%s</span><time>%s</time></div>' % (esc(r['title']),esc(r.get('target_label','')+' · '+r['phase']),esc(r['label']),datetime.fromtimestamp(r['updated_at'],ZoneInfo('Asia/Shanghai')).strftime('%m.%d %H:%M')) for r in rows[:10])
-        return '<section class="card operation-history"><div class="card-head"><h2>执行记录</h2><span class="subtle">最近十次操作</span></div><div id="operation-list">%s</div></section>' % (content or '<p class="subtle">暂无执行记录</p>')
+        return '<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><h2 id="history-title">执行记录</h2><button class="close-dialog" data-close="history-dialog" aria-label="关闭执行记录">×</button></div><p class="dialog-note">最近十次操作</p><div id="operation-list">%s</div></dialog>' % (content or '<p class="subtle">暂无执行记录</p>')
 
     @staticmethod
     def management_dialogs():

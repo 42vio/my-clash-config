@@ -196,8 +196,10 @@ def run(config, root, task_id, *, service_factory=None, runner=subprocess.run, s
             after=load_state(Path(config.private_root)/'state.json')
             _rebind_rotated(config,before,after,int(target))
         elif action=='refresh-airport':
-            update(config,task_id,'running','刷新 Amy 订阅')
-            service_factory().refresh_airport()
+            update(config,task_id,'running','开启机场订阅并刷新 Amy')
+            result = service_factory().auto_refresh_airport()
+            if result.get('skipped'):
+                raise ServiceError('airport_portal_unavailable')
         elif action=='update-sync':
             update(config,task_id,'running','更新代码与服务，网页可能短暂中断')
             run_update(root,runner,authorize=check_authorization)
@@ -210,5 +212,11 @@ def run(config, root, task_id, *, service_factory=None, runner=subprocess.run, s
             provision_pages(settings,load_state(Path(config.private_root)/'state.json'))
             write_settings(config.private_root,settings)
         update(config,task_id,'success','已完成')
-    except Exception:
-        update(config,task_id,'failed','执行失败，请到终端检查；未自动重试')
+    except Exception as error:
+        phase = {
+            'airport_activation_missing':'未设置机场订阅开关页面，请先在终端设置',
+            'airport_portal_unavailable':'机场开关页面和订阅暂不可用，保留原配置；未自动重试',
+            'airport_download_failed':'机场订阅下载失败，保留原配置；未自动重试',
+        }.get(error.code if isinstance(error,ServiceError) else None,
+              '执行失败，请到终端检查；未自动重试')
+        update(config,task_id,'failed',phase)

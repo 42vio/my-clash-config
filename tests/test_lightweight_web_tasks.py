@@ -52,9 +52,11 @@ class TaskTests(unittest.TestCase):
     def test_worker_does_not_replay_completed_task(self):
         task=self.queue()
         service=Mock()
+        service.auto_refresh_airport.return_value={'updated':True}
         run(self.config,self.root,task,service_factory=lambda:service,runner=self.runner)
         run(self.config,self.root,task,service_factory=lambda:service,runner=self.runner)
-        service.refresh_airport.assert_called_once()
+        service.auto_refresh_airport.assert_called_once()
+        service.refresh_airport.assert_not_called()
         self.assertEqual(history(self.config)[0]['status'],'success')
         self.assertEqual(self.queue(),task)
 
@@ -64,8 +66,24 @@ class TaskTests(unittest.TestCase):
         save_state(self.root/'state.json',state)
         service=Mock()
         run(self.config,self.root,task,service_factory=lambda:service,runner=self.runner)
-        service.refresh_airport.assert_not_called()
+        service.auto_refresh_airport.assert_not_called()
         self.assertEqual(history(self.config)[0]['status'],'failed')
+
+    def test_unavailable_airport_skip_is_not_reported_as_success(self):
+        task=self.queue()
+        service=Mock()
+        service.auto_refresh_airport.return_value={'updated':False,'skipped':True}
+        run(self.config,self.root,task,service_factory=lambda:service)
+        record=history(self.config)[0]
+        self.assertEqual(record['status'],'failed')
+        self.assertIn('保留原配置',record['phase'])
+
+    def test_airport_failure_shows_safe_reason_without_sensitive_details(self):
+        task=self.queue()
+        service=Mock()
+        service.auto_refresh_airport.side_effect=ServiceError('airport_download_failed')
+        run(self.config,self.root,task,service_factory=lambda:service)
+        self.assertIn('下载失败',history(self.config)[0]['phase'])
 
     def test_update_failure_never_runs_sync(self):
         task=self.queue('update-sync')

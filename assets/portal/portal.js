@@ -222,6 +222,7 @@ document.addEventListener('click', async event => {
   const button = event.target.closest('button');
   if (!button) return;
   if (button.dataset.close) { document.getElementById(button.dataset.close).close(); return; }
+  if (button.dataset.history) { document.querySelector('#history-dialog').showModal(); refreshTasks(); return; }
   if (button.dataset.user) {
     selectedUser = button.dataset.user;
     document.querySelector('#manage-title').textContent = '读取用户链接';
