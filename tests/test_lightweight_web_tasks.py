@@ -10,7 +10,7 @@ from clash_sub.domain import RuntimeState, UserState
 from clash_sub.service import ServiceError
 from clash_sub.state import generate_token, load_state, save_state
 from clash_sub.web_settings import password_hash, provision_pages, read_settings, write_settings
-from clash_sub.web_tasks import authorization, enqueue, history, run
+from clash_sub.web_tasks import authorization, delete_history, enqueue, history, run, update
 
 
 class TaskTests(unittest.TestCase):
@@ -33,6 +33,26 @@ class TaskTests(unittest.TestCase):
         for action,target in [('shell',None),('update-sync',';reboot'),('rotate-sub','airport'),('rotate-sub','999')]:
             with self.subTest(action=action,target=target),self.assertRaises(ValueError):self.queue(action,target)
         self.runner.assert_not_called()
+
+    def test_history_deletion_clears_finished_records_and_preserves_pending(self):
+        task=self.queue()
+        delete_history(self.config,self.actor)
+        self.assertEqual([r['id'] for r in history(self.config)],[task])
+        update(self.config,task,'running','执行中')
+        delete_history(self.config,self.actor)
+        self.assertEqual([r['id'] for r in history(self.config)],[task])
+        update(self.config,task,'failed','失败')
+        other=self.queue(key='request-bbbbbbbbbbbbbbbb')
+        delete_history(self.config,self.actor)
+        self.assertEqual([r['id'] for r in history(self.config)],[other])
+        delete_history(self.config,self.actor)
+        self.assertEqual([r['id'] for r in history(self.config)],[other])
+
+    def test_history_deletion_requires_current_owner_authority(self):
+        task=self.queue()
+        update(self.config,task,'success','已完成')
+        with self.assertRaises(ValueError):delete_history(self.config,'invalid')
+        self.assertEqual(len(history(self.config)),1)
 
     def test_duplicate_request_returns_same_job_and_other_request_is_busy(self):
         task=self.queue()

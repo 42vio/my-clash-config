@@ -127,6 +127,16 @@ def update(config, task_id, status, phase, *, only_queued=False):
             _write(config.private_root,rows)
 
 
+def delete_history(config, actor):
+    with _OperationLock(Path(config.private_root)/'web-task.lock'):
+        state = load_state(Path(config.private_root)/'state.json')
+        if not secrets.compare_digest(actor,authorization(read_settings(config.private_root),state)):
+            raise ValueError('owner_authorization_invalid')
+        rows = _read(config.private_root)
+        # Keep unfinished jobs, including those whose status is uncertain.
+        _write(config.private_root,[r for r in rows if r['status'] in {'queued','running'}])
+
+
 def _rebind_rotated(config, before, after, client_id):
     """An authorized subscription rotation preserves independent page addresses."""
     from clash_sub.web_settings import provision_pages

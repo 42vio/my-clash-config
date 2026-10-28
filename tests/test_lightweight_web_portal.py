@@ -157,6 +157,19 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request('/admin/tasks',method='POST',fields=fields,cookie=cookie,origin='https://sub.example.com')[0],400)
         self.assertFalse((self.root/'web-tasks.json').exists())
 
+    def test_history_delete_requires_session_origin_csrf_and_confirmation(self):
+        cookie=self.login()
+        csrf=self.portal.session_record(cookie,self.settings,self.state)[3]
+        fields={'csrf':csrf,'confirmed':'yes'}
+        with patch('clash_sub.web_tasks.delete_history') as remove:
+            self.assertEqual(self.request('/admin/tasks/delete',method='POST',fields=fields,origin='https://sub.example.com')[0],401)
+            self.assertEqual(self.request('/admin/tasks/delete',method='POST',fields=fields,cookie=cookie,origin='https://evil.example')[0],403)
+            self.assertEqual(self.request('/admin/tasks/delete',method='POST',fields={**fields,'csrf':'wrong'},cookie=cookie,origin='https://sub.example.com')[0],403)
+            self.assertEqual(self.request('/admin/tasks/delete',method='POST',fields={**fields,'confirmed':'no'},cookie=cookie,origin='https://sub.example.com')[0],400)
+            remove.assert_not_called()
+            self.assertEqual(self.request('/admin/tasks/delete',method='POST',fields=fields,cookie=cookie,origin='https://sub.example.com')[0],200)
+            remove.assert_called_once()
+
     def test_personal_owner_link_does_not_grant_admin_or_reveal_entry(self):
         token=self.settings['pages']['1']['token']
         status,_,body=self.request('/p/'+token+'/')
@@ -189,10 +202,10 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.request('/p/'+token+'/server')[0],404)
 
     def test_server_refresh_button_is_only_in_administrator_overview(self):
-        self.assertIn('data-action="refresh-server"',self.request('/admin/',cookie=self.login())[2])
+        self.assertIn('data-action="refresh-overview"',self.request('/admin/',cookie=self.login())[2])
         for key in ('1','2','airport'):
             token=self.settings['pages'][key]['token']
-            self.assertNotIn('data-action="refresh-server"',self.request('/p/'+token+'/')[2])
+            self.assertNotIn('data-action="refresh-overview"',self.request('/p/'+token+'/')[2])
 
     def test_online_failure_is_unknown_and_not_exposed_to_personal_pages(self):
         calls=[]
@@ -218,7 +231,7 @@ class PortalTests(unittest.TestCase):
         _,_,body=self.request('/admin/',cookie=self.login())
         for key in ('1','2'):
             path=page_path(self.settings['pages'][key]['token'],self.state.users[int(key)].email)
-            self.assertIn('class="detail" href="'+path+'"',body)
+            self.assertIn('class="detail" target="_blank" rel="noopener noreferrer" href="'+path+'"',body)
             status,_,personal=self.request(path)
             self.assertEqual(status,200)
             self.assertNotIn('data-admin-base="/admin/',personal)
@@ -310,7 +323,7 @@ class PortalTests(unittest.TestCase):
 
     def test_system_card_uses_preview_percentages_bars_and_sampled_speed(self):
         files = {
-            '/proc/meminfo':'MemTotal: 1000 kB\nMemAvailable: 750 kB\n',
+            '/proc/meminfo':'MemTotal: 1000 kB\nMemAvailable: 750 kB\nSwapTotal: 512 kB\nSwapFree: 500 kB\n',
             '/proc/uptime':'288000 0', '/proc/loadavg':'0.03 0.06 0.02 1/1 1',
             '/proc/stat':'cpu 100 0 0 900 0 0 0 0',
             '/proc/1/net/dev':'header\nheader\neth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0',
@@ -325,6 +338,8 @@ class PortalTests(unittest.TestCase):
             body = self.portal.system_card()
         self.assertIn('10.0 <small>%</small>',body)
         self.assertIn('25.0 <small>%</small>',body)
+        self.assertIn('Swap 12.0 KB / 512.0 KB',body)
+        self.assertIn('平均网速',body)
         self.assertIn('width:25.00%',body)
         self.assertIn('负载 0.03 / 0.06 / 0.02',body)
         self.assertIn('3 天 8 小时',body)

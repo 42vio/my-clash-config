@@ -10,7 +10,7 @@ function notify(message) {
 document.addEventListener('click', async (event) => {
   const button = event.target.closest('button[data-action]');
   if (!button) return;
-  if (button.dataset.action === 'refresh-server') { await refreshServer(); return; }
+  if (button.dataset.action === 'refresh-overview') { await refreshOverview(true); return; }
   if (button.dataset.action === 'back') { history.back(); return; }
   const block = button.closest('.subscription-block');
   const code = block.querySelector('code');
@@ -32,15 +32,12 @@ document.addEventListener('click', async (event) => {
 
 const adminBase = document.querySelector('main[data-admin-base]')?.dataset.adminBase || '';
 
-// Manual refresh updates only the administrator's server card.
+// Overview requests share one foreground-only refresh schedule.
 let serverPending = false;
 async function refreshServer() {
   const card = document.querySelector('#server-overview');
-  if (!adminBase || !card || serverPending) return;
-  const button = card.querySelector('[data-action="refresh-server"]');
+  if (!adminBase || !card || document.hidden || serverPending) return false;
   serverPending = true;
-  button.disabled = true;
-  button.textContent = '刷新中…';
   card.setAttribute('aria-busy', 'true');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -51,15 +48,14 @@ async function refreshServer() {
     const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
     const replacement = doc.querySelector('#server-overview');
     if (!replacement) throw new Error('unavailable');
+    if (document.hidden) return false;
     card.replaceWith(replacement);
-    notify('服务器概况已刷新');
-  } catch (error) {
-    notify(error.message === 'login' ? '登录已失效，请重新登录。' : '刷新失败，保留原数据，请稍后重试。');
+    return true;
+  } catch {
+    return false;
   } finally {
     clearTimeout(timeout);
     serverPending = false;
-    button.disabled = false;
-    button.textContent = '刷新 ↻';
     card.removeAttribute('aria-busy');
   }
 }
@@ -80,7 +76,8 @@ function renderPresence(cell, state) {
 }
 let presencePending = false;
 async function refreshPresence() {
-  if (!presenceCells.length || document.hidden || presencePending) return;
+  if (!presenceCells.length) return true;
+  if (document.hidden || presencePending) return false;
   presencePending = true;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -90,31 +87,49 @@ async function refreshPresence() {
     const data = await response.json();
     if (document.hidden) return;
     for (const cell of presenceCells) renderPresence(cell, data.states?.[cell.dataset.onlineClient] ?? 'unknown');
+    return true;
   } catch {
     if (!document.hidden) {
       for (const cell of presenceCells) renderPresence(cell, 'unknown');
     }
+    return false;
   } finally {
     clearTimeout(timeout);
     presencePending = false;
   }
 }
-let presenceInterval = null;
-function stopPresencePolling() {
-  clearInterval(presenceInterval);
-  presenceInterval = null;
+let overviewPending = false;
+async function refreshOverview(manual = false) {
+  const button = document.querySelector('.floating-refresh');
+  if (!adminBase || !button || document.hidden || overviewPending) return;
+  overviewPending = true;
+  button.disabled = true; button.setAttribute('aria-busy','true');
+  button.querySelector('.refresh-label').textContent = '刷新中';
+  try {
+    const results = await Promise.allSettled([refreshServer(), refreshPresence()]);
+    if (manual && !document.hidden) notify(results.every(r => r.status === 'fulfilled' && r.value === true)
+      ? '服务器概况与成员在线状态已刷新'
+      : '部分数据刷新失败，请稍后重试；登录过期时请重新登录。');
+  } finally {
+    overviewPending = false; button.disabled = false; button.removeAttribute('aria-busy');
+    button.querySelector('.refresh-label').textContent = '刷新';
+  }
 }
-function updatePresencePolling(refreshNow = true) {
-  stopPresencePolling();
-  if (document.hidden || !presenceCells.length) return;
-  if (refreshNow) refreshPresence();
-  presenceInterval = setInterval(refreshPresence, 30000);
+let overviewInterval = null;
+function stopOverviewPolling() {
+  clearInterval(overviewInterval); overviewInterval = null;
 }
-if (presenceCells.length) {
-  updatePresencePolling(false);
-  document.addEventListener('visibilitychange', () => updatePresencePolling());
-  window.addEventListener('pagehide', stopPresencePolling);
-  window.addEventListener('pageshow', () => updatePresencePolling());
+function updateOverviewPolling(refreshNow = true) {
+  stopOverviewPolling();
+  if (document.hidden || !adminBase || !document.querySelector('.floating-refresh')) return;
+  if (refreshNow) refreshOverview();
+  overviewInterval = setInterval(() => refreshOverview(), 30000);
+}
+if (adminBase && document.querySelector('.floating-refresh')) {
+  updateOverviewPolling(false);
+  document.addEventListener('visibilitychange', () => updateOverviewPolling());
+  window.addEventListener('pagehide', stopOverviewPolling);
+  window.addEventListener('pageshow', event => updateOverviewPolling(event.persisted));
 }
 
 // Fixed owner actions. Confirmation occurs before any authenticated POST.
@@ -161,6 +176,7 @@ function drawUserLinks(data) {
 }
 function askTask(action, target) {
   const descriptions = {
+    'delete-history':['删除全部执行记录','删除全部已结束的执行记录，保留等待中和执行中的任务。不会撤销操作或更改订阅配置。删除后无法恢复。'],
     'rotate-page':['更换网页链接','旧网页链接将立即失效，已导入客户端的订阅不受影响。请确认目标用户。'],
     'rotate-sub':['更换订阅链接','该用户的旧订阅地址将失效，所有客户端需要重新导入。其个人网页地址保留。owner 操作后可能需要重新登录。'],
     'refresh-airport':['刷新 Amy 订阅','获取最新机场节点与流量信息，保留现有订阅地址。'],
@@ -169,7 +185,7 @@ function askTask(action, target) {
   if (!(action in descriptions)) return;
   const [title, detail] = descriptions[action];
   confirmation = {action, target, request_id: crypto.randomUUID()};
-  document.querySelector('#confirm-title').textContent = target && selectedName ? selectedName + (target === 'airport' ? ' · 机场网页' : '') + ' · ' + title : title;
+  document.querySelector('#confirm-title').textContent = target && action !== 'delete-history' && selectedName ? selectedName + (target === 'airport' ? ' · 机场网页' : '') + ' · ' + title : title;
   document.querySelector('#confirm-text').textContent = detail;
   document.querySelector('#confirm-action').textContent = '确认执行';
   confirmDialog.showModal();
@@ -199,7 +215,8 @@ async function refreshTasks() {
       info.append(title,phase);
       const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = row.label;
       const time = document.createElement('time'); time.textContent = new Date(row.updated_at*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit'});
-      element.append(info,badge,time); root.append(element);
+      element.append(info,badge,time);
+      root.append(element);
     }
     if (!rows.length) root.textContent = '暂无执行记录';
     const current = rows.find(row => row.status === 'queued' || row.status === 'running');
@@ -223,6 +240,7 @@ document.addEventListener('click', async event => {
   if (!button) return;
   if (button.dataset.close) { document.getElementById(button.dataset.close).close(); return; }
   if (button.dataset.history) { document.querySelector('#history-dialog').showModal(); refreshTasks(); return; }
+  if (button.hasAttribute('data-clear-history')) { askTask('delete-history', null); return; }
   if (button.dataset.user) {
     selectedUser = button.dataset.user;
     document.querySelector('#manage-title').textContent = '读取用户链接';
@@ -243,6 +261,13 @@ document.addEventListener('click', async event => {
   submitting = true; button.disabled = true;
   const operation = confirmation;
   try {
+    if (operation.action === 'delete-history') {
+      const body = new URLSearchParams({csrf:csrfToken,confirmed:'yes'});
+      const response = await fetch(adminBase + '/tasks/delete', {method:'POST',body,credentials:'same-origin',signal:AbortSignal.timeout(8000)});
+      if (!response.ok) { notify(response.status === 409 ? '操作繁忙，请稍后重试。' : '删除失败，请检查登录状态后重试。'); return; }
+      confirmation = null; confirmDialog.close(); notify('已清空已结束的执行记录');
+      await refreshTasks(); return;
+    }
     const body = new URLSearchParams({...operation, target:operation.target || '', csrf:csrfToken, confirmed:'yes'});
     const response = await fetch(adminBase + '/tasks', {method:'POST',body,credentials:'same-origin',signal:AbortSignal.timeout(8000)});
     if (response.status !== 202) {
@@ -253,6 +278,7 @@ document.addEventListener('click', async event => {
     notify('任务已提交到后台，可在执行记录中查看结果。');
     refreshTasks();
   } catch {
+    if (operation.action === 'delete-history') { notify('暂未确认删除结果，请重新打开执行记录查看。'); refreshTasks(); return; }
     notify('暂未收到确认，请先查看执行记录，不要重复提交。');
     tasksPending = true; refreshTasks();
   } finally { submitting = false; button.disabled = false; }

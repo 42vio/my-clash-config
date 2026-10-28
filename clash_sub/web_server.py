@@ -204,8 +204,10 @@ class Portal:
     def system_card(self):
         # Only host measurements; unknown values never imply healthy connectivity.
         metrics = {name: {'value': '暂无数据', 'unit': '', 'detail': '暂无数据', 'ratio': None}
-                   for name in ('CPU', '内存', '磁盘', '实时网速')}
+                   for name in ('CPU', '内存', '磁盘', '平均网速')}
         uptime = '暂无数据'
+        swap = 'Swap 暂无数据'
+        values = {}
         network = []
         try:
             values = dict((key.rstrip(':'), int(value.split()[0]) * 1024) for key, value in (line.split(None, 1) for line in Path('/proc/meminfo').read_text().splitlines()))
@@ -213,6 +215,11 @@ class Portal:
             ratio = used / total * 100
             metrics['内存'] = dict(value='%.1f' % ratio, unit='%', detail=size(used)+' / '+size(total), ratio=ratio)
         except (OSError, ValueError, KeyError, ZeroDivisionError):
+            pass
+        try:
+            swap_total = values['SwapTotal']
+            swap = ('Swap ' + size(max(0,swap_total-values['SwapFree'])) + ' / ' + size(swap_total)) if swap_total else 'Swap 未启用'
+        except KeyError:
             pass
         try:
             disk = shutil.disk_usage(self.config.public_root)
@@ -237,12 +244,12 @@ class Portal:
                 elapsed = current[0] - previous[0]
                 upload = size(max(0, current[2]-previous[2])/elapsed) + '/s'
                 download = size(max(0, current[1]-previous[1])/elapsed) + '/s'
-                metrics['实时网速'] = dict(value=download, unit='↓', detail='↑ '+upload+' · ↓ '+download, ratio=None)
+                metrics['平均网速'] = dict(value=download, unit='↓', detail='↑ '+upload+' · ↓ '+download, ratio=None)
                 if current[3] > previous[3]:
                     ratio = max(0, min(100, 100 * (1 - (current[4]-previous[4])/(current[3]-previous[3]))))
                     metrics['CPU'].update(value='%.1f' % ratio, unit='%', ratio=ratio)
             else:
-                metrics['实时网速']['detail'] = '等待下一次访问采样'
+                metrics['平均网速']['detail'] = '等待下一次访问采样'
         except (OSError, ValueError, IndexError):
             pass
         try:
@@ -255,8 +262,9 @@ class Portal:
         cards = []
         for name, metric in metrics.items():
             bar = '<div class="bar"><i style="width:%.2f%%"></i></div>' % metric['ratio'] if metric['ratio'] is not None else '<div class="metric-sampling">等待采样</div>' if name == 'CPU' else '<div class="metric-spacer"></div>'
-            cards.append('<div class="metric"><label>%s</label><strong>%s <small>%s</small></strong>%s<p>%s</p></div>' % (esc(name), esc(metric['value']), esc(metric['unit']), bar, esc(metric['detail'])))
-        return '<section class="card server" id="server-overview"><div class="card-head"><div class="server-title"><h2>服务器概况</h2></div><div class="server-tools"><span class="badge"><i class="dot"></i>运行中</span><button class="button server-refresh" data-action="refresh-server">刷新 ↻</button></div></div><div class="metrics">%s</div><div class="server-footer"><span>已连续运行 %s</span><div class="network">%s</div></div><p class="subtle server-sampling-note">CPU 与网速按两次访问的差值采样；网络配置不代表外部连通。</p></section>' % (''.join(cards), esc(uptime), ''.join('<span><i class="dot"></i>%s</span>' % esc(label) for label in network))
+            extra = '<p class="swap-usage">%s</p>' % esc(swap) if name == '内存' else ''
+            cards.append('<div class="metric"><label>%s</label><strong>%s <small>%s</small></strong>%s<p>%s</p>%s</div>' % (esc(name), esc(metric['value']), esc(metric['unit']), bar, esc(metric['detail']), extra))
+        return '<section class="card server" id="server-overview"><div class="card-head"><div class="server-title"><h2>服务器概况</h2></div><div class="server-tools"><span class="badge"><i class="dot"></i>运行中</span></div></div><div class="metrics">%s</div><div class="server-footer"><span>已连续运行 %s · <span class="refresh-stamp">更新于 %s</span></span><div class="network">%s</div></div><p class="subtle server-sampling-note">前台每 30 秒刷新；CPU 与网速为两次采样间的平均值，网络配置不代表外部连通。</p></section>' % (''.join(cards), esc(uptime), datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M:%S 北京时间'), ''.join('<span><i class="dot"></i>%s</span>' % esc(label) for label in network))
 
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
@@ -277,10 +285,10 @@ class Portal:
             record = settings['pages'].get(str(client_id))
             detail = '<span class="subtle">网页未启用</span>'
             if record and self.resolve_page(record['token'],settings,state) == str(client_id):
-                detail = '<a class="detail" href="%s">查看详情 ↗</a>' % esc(page_path(record['token'],user.email))
+                detail = '<a class="detail" target="_blank" rel="noopener noreferrer" href="%s">查看详情 ↗</a>' % esc(page_path(record['token'],user.email))
             body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span>%s</td><td>%s</td><td>%s</td><td><div class="user-actions">%s<button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email),client_id,self.presence(online[str(client_id)]),used,total,progress,esc(self.reset_rule(client_id)),status,detail,client_id,esc(user.email))
 
-        body += '</tbody></table></section>' + self.task_history() + self.system_card() + self.management_dialogs()
+        body += '</tbody></table></section>' + self.task_history() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新服务器概况和成员在线状态" title="刷新服务器概况和成员在线状态"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
         return self.shell(state.users[state.owner_client_id].email + " · 管理总览", body, admin=True,prefix=prefix,csrf=csrf)
 
     @staticmethod
@@ -291,7 +299,7 @@ class Portal:
         from clash_sub.web_tasks import history
         rows = history(self.config)
         content = ''.join('<div class="history-row"><div><strong>%s</strong><span class="subtle">%s</span></div><span class="badge">%s</span><time>%s</time></div>' % (esc(r['title']),esc(r.get('target_label','')+' · '+r['phase']),esc(r['label']),datetime.fromtimestamp(r['updated_at'],ZoneInfo('Asia/Shanghai')).strftime('%m.%d %H:%M')) for r in rows[:10])
-        return '<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><h2 id="history-title">执行记录</h2><button class="close-dialog" data-close="history-dialog" aria-label="关闭执行记录">×</button></div><p class="dialog-note">最近十次操作</p><div id="operation-list">%s</div></dialog>' % (content or '<p class="subtle">暂无执行记录</p>')
+        return '<dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><h2 id="history-title">执行记录</h2><div class="history-tools"><button class="history-delete" data-clear-history>删除全部</button><button class="close-dialog" data-close="history-dialog" aria-label="关闭执行记录">×</button></div></div><p class="dialog-note">最近十次操作</p><div id="operation-list">%s</div></dialog>' % (content or '<p class="subtle">暂无执行记录</p>')
 
     @staticmethod
     def management_dialogs():
@@ -447,6 +455,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     with portal.lock:
                         portal.sessions.pop(hashlib.sha256(cookie['portal_session'].value.encode()).hexdigest(),None)
                 return self.respond(303,headers=(('Location',prefix+'/login'),('Set-Cookie','portal_session=; Path=/admin/; Secure; HttpOnly; SameSite=Strict; Max-Age=0')))
+            if rest == '/tasks/delete':
+                if payload.get('confirmed') != 'yes':
+                    return self.respond(400,'必须确认操作')
+                from clash_sub.web_tasks import delete_history, authorization
+                from clash_sub.operation import ServiceError
+                try:
+                    delete_history(portal.config,authorization(settings,state))
+                except ServiceError:
+                    return self.respond(409,'操作繁忙，请稍后重试')
+                except ValueError:
+                    return self.respond(400,'记录无效')
+                return self.respond(200,'{}',content_type='application/json')
             if rest == '/tasks':
                 if payload.get('confirmed') != 'yes':
                     return self.respond(400,'必须确认操作')
