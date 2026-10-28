@@ -19,6 +19,7 @@ geo-auto-update: true
 geo-update-interval: 168
 
 profile:
+  store-selected: true
   store-fake-ip: true
 
 dns:
@@ -75,6 +76,14 @@ dns:
     - https://1.1.1.1/dns-query#加速线路
     - https://8.8.8.8/dns-query#加速线路
 
+    # 阿里解析个人域名有问题,临时解决方案
+    "+.42io.cc":
+    - https://doh.pub/dns-query
+
+  proxy-server-nameserver-policy:
+    "+.42io.cc":
+    - https://doh.pub/dns-query
+
   # 代理节点域名，如果不写，就会回退到 nameserver-policy → nameserver → fallback。
   proxy-server-nameserver:
   - https://223.5.5.5/dns-query
@@ -100,7 +109,7 @@ icons:
   game: &icon-game https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Game.png
   steam: &icon-steam https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Steam.png
   bilibili: &icon-bilibili https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/bilibili.png
-  china-media: &icon-china-media https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png
+  # china-media:  &icon-china-media  https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/DomesticMedia.png
   global-media: &icon-global-media https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ForeignMedia.png
   apple: &icon-apple https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Apple.png
   google: &icon-google https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Google_Search.png
@@ -118,11 +127,11 @@ proxy-groups:
 
 #功能分组
 - {name: PT服务, <<: *direct-first, icon: *icon-pt}
-- {name: AI服务, <<: *select, proxies: [🇺🇲 美国节点, 🇭🇰 香港节点], icon: *icon-ai}
+- {name: AI服务, <<: *select, proxies: [🇺🇲 美国节点, 🇯🇵 日本节点, 🇸🇬 新加坡节点], icon: *icon-ai}
 - {name: 游戏直连, <<: *select, proxies: [DIRECT], icon: *icon-game}
 - {name: Steam, <<: *direct-first, icon: *icon-steam}
 - {name: BiliBili, <<: *direct-first, icon: *icon-bilibili}
-- {name: 国内流媒体, <<: *direct-first, icon: *icon-china-media}
+  # - {name: 国内流媒体, <<: *direct-first, icon: *icon-china-media}
 - {name: 国外流媒体, <<: *proxy-first, icon: *icon-global-media}
 - {name: 苹果服务, <<: *direct-first, icon: *icon-apple}
 - {name: 谷歌服务, <<: *proxy-first, icon: *icon-google}
@@ -164,7 +173,7 @@ rule-providers:
 rules:
 
   # 自建服务器
-- IP-CIDR,199.19.110.145/32,DIRECT,no-resolve   #BWG服务器
+- IP-CIDR, 64.64.240.57/32,DIRECT,no-resolve   #BWG服务器
 - DOMAIN-SUFFIX,42io.cc,DIRECT
 - DOMAIN-SUFFIX,ibigsea.com,DIRECT
 - DOMAIN-SUFFIX,hitrontech.com,DIRECT
