@@ -239,7 +239,7 @@ class LightweightCliTests(unittest.TestCase):
             "│  1. 机场订阅",
             "│  2. 重新生成所有配置",
             "│  3. 查看用户链接",
-            "│  4. 网页与 3x-ui 面板",
+            "│  4. 订阅页面与 3x-ui 管理面板",
             "│  5. 查看运行状态",
             "│  6. 程序维护",
             "│  7. 证书管理",
@@ -2023,13 +2023,13 @@ class WebMenuConsistencyTests(unittest.TestCase):
         self.assertNotIn('刷新访问状态',WEB_MENU)
 
     def test_web_menu_automatically_displays_status_on_entry_and_after_switch(self):
-        before='订阅网页：开启\n3x-ui 公网面板：关闭'
-        after='订阅网页：关闭\n3x-ui 公网面板：关闭'
+        before='订阅页面 ● 已开启    3x-ui 面板 ○ 已关闭'
+        after='订阅页面 ○ 已关闭    3x-ui 面板 ○ 已关闭'
         with patch('clash_sub.web_manage.access_status',side_effect=[before,after]) as status, patch('clash_sub.cli._web_command',return_value=0) as command:
             code,stdout,stderr=run_cli(None,None,stdin_text='4\n4\n0\n0\n')
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
-        self.assertIn('网页与 3x-ui 面板\n'+before,stdout)
+        self.assertIn('订阅页面与 3x-ui 管理面板\n'+before,stdout)
         self.assertIn(after,stdout)
         self.assertLess(stdout.index(before),stdout.index(after))
         self.assertEqual(status.call_count,2)
@@ -2040,8 +2040,8 @@ class WebMenuConsistencyTests(unittest.TestCase):
         with patch('clash_sub.web_manage.access_status',side_effect=ValueError('synthetic-private-value')):
             code,stdout,stderr=run_cli(None,None,stdin_text='4\n0\n0\n')
         self.assertEqual(code,0)
-        self.assertIn('订阅网页：未知',stdout)
-        self.assertIn('3x-ui 公网面板：未知',stdout)
+        self.assertIn('订阅页面 ? 未知',stdout)
+        self.assertIn('3x-ui 面板 ? 未知',stdout)
         self.assertNotIn('synthetic-private-value',stdout+stderr)
 
     def test_bandwagon_key_is_not_accepted_as_a_command_argument(self):
@@ -2093,8 +2093,8 @@ class WebMenuConsistencyTests(unittest.TestCase):
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         self.assertEqual([call.args[:2] for call in command.call_args_list],[('web-on',None),('web-off',None),('panel-on',None),('panel-off',None)])
-        self.assertIn('关闭订阅网页（保留订阅下载）',stdout)
-        self.assertIn('关闭公网 3x-ui 面板',stdout)
+        self.assertIn('关闭订阅页面（保留订阅下载）',stdout)
+        self.assertIn('关闭公网访问',stdout)
 
     def test_api_token_menu_uses_hidden_prompt_without_outputting_secret(self):
         with patch('clash_sub.cli.os.geteuid',return_value=0), patch('getpass.getpass',return_value='synthetic-api-token') as prompt, patch('clash_sub.web_manage.execute',return_value='令牌已保存') as execute:
@@ -2112,7 +2112,7 @@ class WebMenuConsistencyTests(unittest.TestCase):
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         self.assertEqual(stdout.count(WEB_MENU),2)
-        self.assertEqual(stdout.count('网页与 3x-ui 面板：输入下一项 [1-9]，回车查看菜单，0 返回上一级：'),2)
+        self.assertEqual(stdout.count('订阅页面与 3x-ui 管理面板：输入下一项 [1-9]，回车查看菜单，0 返回上一级：'),2)
         self.assertEqual([item.args[:2] for item in command.call_args_list],[('tunnel',None),('set-api-token',None)])
         self.assertEqual(stdout.count(MENU),2)
 

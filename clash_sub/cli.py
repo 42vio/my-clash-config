@@ -55,6 +55,9 @@ class _Colors:
     def yellow(self, text):
         return self._paint(text, _YELLOW)
 
+    def gray(self, text):
+        return self._paint(text, "\033[0;90m")
+
     def red(self, text):
         return self._paint(text, _RED)
 
@@ -74,7 +77,7 @@ _MAIN_MENU_ROWS = (
     ("option", "1", (("机场订阅", None),)),
     ("option", "2", (("重新生成所有配置", None),)),
     ("option", "3", (("查看用户链接", None),)),
-    ("option", "4", (("网页与 3x-ui 面板", None),)),
+    ("option", "4", (("订阅页面与 3x-ui 管理面板", None),)),
     ("option", "5", (("查看运行状态", None),)),
     ("divider",),
     ("option", "6", (("程序维护", None),)),
@@ -135,15 +138,15 @@ _USER_MENU_ROWS = (
 )
 
 _WEB_MENU_ROWS = (
-    ("title", "网页与 3x-ui 面板"),
-    ("section", "订阅网页"),
-    ("option", "1", (("初始化订阅网页（关闭公网 3x-ui 面板）", None),)),
+    ("title", "订阅页面与 3x-ui 管理面板"),
+    ("section", "订阅页面"),
+    ("option", "1", (("初始化订阅页面（关闭 3x-ui 管理面板公网访问）", None),)),
     ("option", "2", (("设置网页管理员账号与密码", None),)),
-    ("option", "3", (("开启订阅网页", None),)),
-    ("option", "4", (("关闭订阅网页（保留订阅下载）", None),)),
-    ("section", "3x-ui 面板"),
-    ("option", "5", (("开启公网 3x-ui 面板", None),)),
-    ("option", "6", (("关闭公网 3x-ui 面板", None),)),
+    ("option", "3", (("开启订阅页面", None),)),
+    ("option", "4", (("关闭订阅页面（保留订阅下载）", None),)),
+    ("section", "3x-ui 管理面板"),
+    ("option", "5", (("开启公网访问", None),)),
+    ("option", "6", (("关闭公网访问", None),)),
     ("option", "7", (("SSH 隧道使用说明", None),)),
     ("section", "API 配置"),
     ("option", "8", (("设置 3x-ui API 令牌", None),)),
@@ -203,13 +206,19 @@ def _render_main_menu(colors):
     return "".join(lines)
 
 
+def _paint_access_status(status, colors):
+    for label, paint in (('● 已开启',colors.green),('○ 已关闭',colors.gray),('? 未初始化',colors.yellow),('? 未知',colors.yellow)):
+        status=status.replace(label,paint(label))
+    return status
+
+
 def _render_submenu(rows, colors, *, status=None):
     lines = []
     for row in rows:
         if row[0] == "title":
             lines.append(colors.green(row[1]) + "\n")
             if status is not None:
-                lines.append(status + "\n")
+                lines.append(_paint_access_status(status, colors) + "\n")
             lines.append("\n")
             continue
         if row[0] == "section":
@@ -231,7 +240,7 @@ MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "�
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 USER_MENU = _render_submenu(_USER_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
-_WEB_STATUS_UNKNOWN = '订阅网页：未知\n3x-ui 公网面板：未知'
+_WEB_STATUS_UNKNOWN = '订阅页面 ? 未知    3x-ui 面板 ? 未知'
 WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False), status=_WEB_STATUS_UNKNOWN) + "请输入选项 [0-9]："
 
 
@@ -302,7 +311,7 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "4":
         return _run_submenu(
-            _WEB_MENU_ROWS, 9, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与 3x-ui 面板"
+            _WEB_MENU_ROWS, 9, _web_dispatch, stdin, stdout, stderr, factory, colors, name="订阅页面与 3x-ui 管理面板"
         )
     if choice == "1":
         return _run_submenu(
@@ -355,7 +364,7 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
         if exit_menu or code != 0:
             return code, True
         if rows is _WEB_MENU_ROWS and choice in {'1', '3', '4', '5', '6'}:
-            stdout.write('\n' + _web_access_status() + '\n')
+            stdout.write('\n' + _paint_access_status(_web_access_status(),colors) + '\n')
 
 
 def _web_access_status():

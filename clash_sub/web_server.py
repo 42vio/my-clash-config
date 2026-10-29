@@ -119,7 +119,7 @@ class Portal:
             header += '<span class="subtle reset-hint" title="北京时间">%s 重置</span>' % esc(reset)
         body = '<div class="traffic-part provider-quota" id="provider-quota">' + header + '</div>'
         if usage is None:
-            message = '未配置 · 请在终端「网页与 3x-ui 面板 → 搬瓦工 API 设置」添加凭据' if result['status'] == 'unconfigured' else '查询失败 · 请在终端验证搬瓦工 API 设置'
+            message = '未配置 · 请在终端「订阅页面与 3x-ui 管理面板 → 搬瓦工 API 设置」添加凭据' if result['status'] == 'unconfigured' else '查询失败 · 请在终端验证搬瓦工 API 设置'
             return body + '<p class="subtle">%s</p></div>' % message
         ratio = min(100, usage['used'] / usage['total'] * 100)
         body += '<div class="usage usage-linear"><div class="number">%s <small>/ %s</small></div><div class="bar" role="progressbar" aria-label="搬瓦工套餐流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%.1f"><i style="width:%.2f%%"></i></div><div class="usage-caption"><span class="provider-caption-note">套餐收发合计</span><span class="remaining">剩余 %s</span></div></div>' % (size(usage['used']), size(usage['total']), ratio, ratio, size(max(0, usage['total'] - usage['used'])))

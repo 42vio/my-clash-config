@@ -14,9 +14,9 @@ from clash_sub.web_settings import admin_username, validate_username, admin_pref
 
 
 def _access_status(settings):
-    webpage = '开启' if settings['enabled'] else '关闭' if settings.get('password_hash') else '未初始化'
-    panel = '开启' if settings['panel_public'] else '关闭'
-    return '订阅网页：%s\n3x-ui 公网面板：%s' % (webpage, panel)
+    webpage = '● 已开启' if settings['enabled'] else '○ 已关闭' if settings.get('password_hash') else '? 未初始化'
+    panel = '● 已开启' if settings['panel_public'] else '○ 已关闭'
+    return '订阅页面 %s    3x-ui 面板 %s' % (webpage, panel)
 
 
 def access_status(root):
@@ -98,8 +98,8 @@ def execute(root, action, *, password=None, username=None, api_token=None, bwh_v
                 raise
         if action == 'web-off':
             if not _stop_web_services(config, runner):
-                return '订阅网页已关闭，但网页服务或 socket 未完全停止，内存释放未完成；请检查服务后重试关闭。'
-            return '订阅网页已关闭，网页服务及 socket 已停止以释放内存；订阅下载、代理和 3x-ui 不受影响。'
+                return '订阅页面已关闭，但网页服务或 socket 未完全停止，内存释放未完成；请检查服务后重试关闭。'
+            return '订阅页面已关闭，网页服务及 socket 已停止以释放内存；订阅下载、代理和 3x-ui 不受影响。'
         if action in {"setup", "links", "rotate-page", "reset-password"}:
             base = 'https://' + config.subscription_authority
             lines = ['管理员：' + base + admin_prefix(settings,state) + '/'] if target is None or target in {'admin',str(state.owner_client_id)} else []
@@ -115,5 +115,5 @@ def execute(root, action, *, password=None, username=None, api_token=None, bwh_v
                 lines.insert(0,'网页管理员账号：'+admin_username(settings))
             return '\n'.join(lines)
         if action in {'web-on','web-off'}:
-            return '订阅网页已%s；个人页、机场页和管理员页统一切换，订阅下载、代理和 3x-ui 面板开关保持不变。' % ('开启' if settings['enabled'] else '关闭')
+            return '订阅页面已%s；个人页、机场页和管理员页统一切换，订阅下载、代理和 3x-ui 面板开关保持不变。' % ('开启' if settings['enabled'] else '关闭')
         return '3x-ui 面板公网访问已%s；代理与订阅服务继续运行。' % ('开启' if settings['panel_public'] else '关闭')
