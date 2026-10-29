@@ -106,11 +106,18 @@
 
 /* Compact proxy counters stay grouped beneath the provider quota. */
 .proxy-usage-summary{display:flex;align-items:baseline;justify-content:flex-start;flex-wrap:wrap;gap:5px 12px;margin-top:11px;padding:0;background:none;border:0;border-radius:0;font-size:11px;color:var(--muted)}
-.proxy-usage-heading{display:inline-flex;align-items:baseline;gap:9px}.proxy-usage-heading strong{font-size:12px;font-weight:550;color:var(--ink);line-height:1.5}.proxy-usage-heading strong small{font-size:11px;font-weight:400}
+.proxy-usage-heading{display:inline-flex;align-items:baseline;gap:9px}.proxy-usage-heading strong{font-size:18px;font-weight:600;color:var(--ink);line-height:1.5}.proxy-usage-heading strong small{font-size:11px;font-weight:400}
 .proxy-usage-summary .transfer{display:inline-flex;gap:12px;margin:0 0 0 0;padding-left:12px;border-left:1px solid var(--line);width:auto;font-size:11px}.proxy-usage-summary .transfer>span{white-space:nowrap}.proxy-usage-summary .transfer b{font-weight:400;color:var(--muted);margin-left:3px}
-@media(max-width:760px){.proxy-usage-summary{margin-top:9px;gap:5px 8px;font-size:10px}.proxy-usage-heading{gap:8px}.proxy-usage-heading strong{font-size:11px}.proxy-usage-heading strong small,.proxy-usage-summary .transfer{font-size:10px}.proxy-usage-summary .transfer{gap:9px;padding-left:9px}}
+@media(max-width:760px){.proxy-usage-summary{margin-top:9px;gap:5px 8px;font-size:10px}.proxy-usage-heading{gap:8px}.proxy-usage-heading strong{font-size:16px}.proxy-usage-heading strong small,.proxy-usage-summary .transfer{font-size:10px}.proxy-usage-summary .transfer{gap:9px;padding-left:9px}}
 @media(max-width:420px){.proxy-usage-summary .transfer{flex-basis:100%;padding-left:0;border-left:0}}
 
 /* Put proxy totals next to their member breakdown. */
 .users>.card-head{margin-bottom:12px}.member-usage-summary{margin:0 0 20px;padding:0 0 14px;border-bottom:1px solid var(--line)}
 @media(max-width:760px){.users>.card-head{margin-bottom:9px}.member-usage-summary{margin:0 0 10px;padding-bottom:10px}}
+
+/* Clickable reset date details, including touch devices. */
+.reset-info{position:relative;text-align:right}
+.reset-info summary{cursor:pointer;list-style:none;text-decoration:underline dotted;text-underline-offset:4px}
+.reset-info summary::-webkit-details-marker{display:none}
+.reset-info summary:focus-visible{outline:2px solid var(--green);outline-offset:4px;border-radius:3px}
+.reset-tooltip{position:absolute;right:0;top:calc(100% + 9px);z-index:10;width:max-content;max-width:min(260px,80vw);padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);box-shadow:0 6px 20px #20283014;font-size:11px;line-height:1.6;text-align:left;font-weight:400}

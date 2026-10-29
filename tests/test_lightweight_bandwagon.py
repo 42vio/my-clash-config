@@ -24,16 +24,16 @@ class BandwagonTests(unittest.TestCase):
         result = cache.get()
         self.assertEqual(result, {'usage': first, 'updated': 1000, 'status': 'ok'})
         result['usage']['used'] = 0
-        now[0] = 1299
+        now[0] = 1059
         self.assertEqual(cache.get()['usage'], first)
         self.assertEqual(reader.call_count, 1)
-        now[0] = 1300
+        now[0] = 1060
         self.assertEqual(cache.get(), {'usage': first, 'updated': 1000, 'status': 'error'})
-        now[0] = 1599
+        now[0] = 1119
         self.assertEqual(cache.get()['status'], 'error')
         self.assertEqual(reader.call_count, 2)
-        now[0] = 1600
-        self.assertEqual(cache.get(), {'usage': second, 'updated': 1600, 'status': 'ok'})
+        now[0] = 1120
+        self.assertEqual(cache.get(), {'usage': second, 'updated': 1120, 'status': 'ok'})
         self.assertNotIn(KEY, repr(cache.get()))
 
     def test_usage_cache_never_reuses_data_across_credentials_changes_or_deletion(self):

@@ -32,6 +32,20 @@ class Request:
 
 
 class PortalTests(unittest.TestCase):
+    def test_airport_reset_date_uses_beijing_day_and_handles_year_boundary(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from clash_sub.web_server import airport_reset_date
+        for value, expected in (
+            ('2026-10-18T23:59:00','10 月 19 日重置'),
+            ('2026-10-19T23:59:00','10 月 19 日重置'),
+            ('2026-10-20T00:00:00','11 月 19 日重置'),
+            ('2026-12-20T00:00:00','1 月 19 日重置'),
+        ):
+            with self.subTest(value=value):
+                stamp=datetime.fromisoformat(value).replace(tzinfo=ZoneInfo('Asia/Shanghai')).timestamp()
+                self.assertEqual(airport_reset_date(stamp),expected)
+
     def test_provider_is_admin_only_and_matches_approved_layout(self):
         reader = unittest.mock.Mock(return_value={'used': 200 * 1024**3, 'total': 1000 * 1024**3, 'next_reset': 1800000000})
         self.portal.provider = UsageCache(credentials_reader=lambda: ('123', 'synthetic-private-api-key'), reader=reader, clock=lambda:self.now[0])
@@ -48,7 +62,7 @@ class PortalTests(unittest.TestCase):
             self.assertIn('套餐收发合计',body)
             self.assertIn('KiwiVM API',body)
             self.assertIn('代理用量',body)
-            self.assertIn('30.0 B', body.split('id="members"',1)[1])
+            self.assertIn('30.0 <small>B</small>', body.split('id="members"',1)[1])
             self.assertNotIn('synthetic-private-api-key',body)
         self.portal.store.refresh = lambda: None
         self.request('/admin/overview/refresh',cookie=cookie)
@@ -577,7 +591,7 @@ class PortalTests(unittest.TestCase):
             db.executemany('INSERT INTO inbounds VALUES (?,?,?,?,?)',[(10,40,100,1,9999),(2,3,100,0,8888)])
         self.assertEqual(read_inbound_traffic(self.config.xui_database),{'upload':12,'download':43,'total':200})
         body=self.portal.admin(self.state,self.settings)
-        self.assertIn('55.0 B',body)
+        self.assertIn('55.0 <small>B</small>',body)
         self.assertIn('重置时间待确认',self.portal.inbound_card())
         self.assertNotIn('9999',body)
         with closing(sqlite3.connect(self.config.xui_database)) as db, db:

@@ -42,10 +42,22 @@ def size(value):
         value /= 1024
 
 
-def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unlimited_label="不限额"):
+def reset_hint(label, detail):
+    return '<details class="reset-info subtle reset-hint"><summary>%s</summary><div class="reset-tooltip">%s</div></details>' % (esc(label), esc(detail))
+
+
+def airport_reset_date(now):
+    today = datetime.fromtimestamp(now, ZoneInfo('Asia/Shanghai'))
+    month = today.month if today.day <= 19 else today.month % 12 + 1
+    return '%d 月 19 日重置' % month
+
+
+def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unlimited_label="不限额", reset_detail=None):
     tag, kind, heading = ('div', 'traffic-part', 'h3') if compact else ('section', 'card usage-card', 'h2')
     reset_label = reset + '重置' if reset.startswith('每') else '重置时间待确认' if reset == '待确认' else reset
     header = '<div class="card-head"><%s>%s</%s><span class="subtle reset-hint" title="%s">%s</span></div>' % (heading, esc(title), heading, esc(note), esc(reset_label))
+    if reset_detail is not None:
+        header = '<div class="card-head"><%s>%s</%s>%s</div>' % (heading, esc(title), heading, reset_hint(reset_label, reset_detail))
     if traffic is None:
         return '<%s class="%s">%s<p>暂无数据</p></%s>' % (tag, kind, header, tag)
     used = traffic.upload + traffic.download
@@ -108,15 +120,18 @@ class Portal:
         traffic = self.inbound_traffic()
         if traffic is None:
             return '<div class="proxy-usage-summary member-usage-summary">3x-ui · 入站统计读取失败，暂无数据</div>'
-        return '<div class="proxy-usage-summary member-usage-summary" aria-label="3x-ui 代理用量" title="入站当前累计，与搬瓦工套餐用量分别统计，不相加"><div class="proxy-usage-heading"><span>3x-ui</span><strong>%s</strong></div><div class="transfer"><span title="代理上传流量">↑ %s</span><span title="代理下载流量">↓ %s</span></div></div>' % (size(traffic['upload'] + traffic['download']), size(traffic['upload']), size(traffic['download']))
+        total,unit=size(traffic['upload'] + traffic['download']).split()
+        return '<div class="proxy-usage-summary member-usage-summary" aria-label="3x-ui 代理用量" title="入站当前累计，与搬瓦工套餐用量分别统计，不相加"><div class="proxy-usage-heading"><span>3x-ui</span><strong>%s <small>%s</small></strong></div><div class="transfer"><span title="代理上传流量">↑ %s</span><span title="代理下载流量">↓ %s</span></div></div>' % (total,unit,size(traffic['upload']),size(traffic['download']))
 
     def provider_card(self):
         result = self.provider.get()
         usage = result['usage']
         header = '<div class="card-head"><h3>搬瓦工 · 自建</h3>'
         if usage is not None:
-            reset = datetime.fromtimestamp(usage['next_reset'], ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M')
-            header += '<span class="subtle reset-hint" title="北京时间">%s 重置</span>' % esc(reset)
+            reset = datetime.fromtimestamp(usage['next_reset'], ZoneInfo('Asia/Shanghai'))
+            label = '%d 月 %d 日重置' % (reset.month, reset.day)
+            detail = '%d 月 %d 日 %s（北京时间）' % (reset.month, reset.day, reset.strftime('%H:%M'))
+            header += reset_hint(label, detail)
         body = '<div class="traffic-part provider-quota" id="provider-quota">' + header + '</div>'
         if usage is None:
             message = '未配置 · 请在终端「订阅页面与 3x-ui 管理面板 → 搬瓦工 API 设置」添加凭据' if result['status'] == 'unconfigured' else '查询失败 · 请在终端验证搬瓦工 API 设置'
@@ -125,7 +140,7 @@ class Portal:
         body += '<div class="usage usage-linear"><div class="number">%s <small>/ %s</small></div><div class="bar" role="progressbar" aria-label="搬瓦工套餐流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%.1f"><i style="width:%.2f%%"></i></div><div class="usage-caption"><span class="provider-caption-note">套餐收发合计</span><span class="remaining">剩余 %s</span></div></div>' % (size(usage['used']), size(usage['total']), ratio, ratio, size(max(0, usage['total'] - usage['used'])))
         stamp = datetime.fromtimestamp(result['updated'], ZoneInfo('Asia/Shanghai')).strftime('%m-%d %H:%M 北京时间')
         status = '查询失败 · 保留上次成功数据' if result['status'] == 'error' else '服务商统计可能延迟'
-        return body + '<div class="provider-meta"><span class="provider-source">KiwiVM API</span><span>更新于 %s</span></div><p class="subtle provider-status">%s · 最多每 5 分钟查询一次</p></div>' % (esc(stamp), status)
+        return body + '<div class="provider-meta"><span class="provider-source">KiwiVM API</span><span>更新于 %s</span></div><p class="subtle provider-status">%s · 最多每 1 分钟查询一次</p></div>' % (esc(stamp), status)
 
     def refresh_overview_data(self):
         """Refresh local display data without fetching upstream subscriptions."""
@@ -306,7 +321,7 @@ class Portal:
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
         body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.provider_card() + '<hr class="divider">'
-        body += usage_card("Amy 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=AMY_RESET_RULE) + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><h2>代理用量</h2><span class="subtle">在线来源：3x-ui</span></div>' + self.proxy_summary() + '<p class="mobile-member-note">重置规则和账号详情可点「详情」查看</p><table class="user-table has-presence"><thead><tr><th>用户</th><th>在线状态</th><th>已用 / 额度</th><th>流量重置时间</th><th>账号状态</th><th></th></tr></thead><tbody>'
+        body += usage_card("Amy 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><h2>代理用量</h2><span class="subtle">在线来源：3x-ui</span></div>' + self.proxy_summary() + '<p class="mobile-member-note">重置规则和账号详情可点「详情」查看</p><table class="user-table has-presence"><thead><tr><th>用户</th><th>在线状态</th><th>已用 / 额度</th><th>流量重置时间</th><th>账号状态</th><th></th></tr></thead><tbody>'
         online = self.online_states(state)
         clients = {c.client_id: c for c in self.snapshot().clients}
         for client_id, user in sorted(state.users.items()):

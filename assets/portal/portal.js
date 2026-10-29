@@ -310,3 +310,6 @@ async function showBackupStatus() {
 }
 
 refreshOverviewOnEntry();
+
+document.addEventListener('click',event=>{document.querySelectorAll('.reset-info[open]').forEach(item=>{if(!item.contains(event.target))item.open=false;});});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.reset-info[open]').forEach(item=>item.open=false);});

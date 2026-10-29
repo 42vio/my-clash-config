@@ -13,7 +13,7 @@ from clash_sub.online import CREDENTIALS, read_credentials, save_credentials
 
 
 class UsageCache:
-    """On-demand five-minute cache; keep last success only for the same account."""
+    """On-demand one-minute cache; keep last success only for the same account."""
 
     def __init__(self, *, credentials_reader=None, reader=None, clock=time.time):
         self.credentials_reader = credentials_reader or load_credentials
@@ -39,7 +39,7 @@ class UsageCache:
             if credentials is None:
                 return {'usage': None, 'updated': None, 'status': 'unconfigured'}
             now = self.clock()
-            if self.checked is None or now - self.checked >= 300:
+            if self.checked is None or now - self.checked >= 60:
                 try:
                     self.usage = dict(self.reader(*credentials))
                     self.updated = now
