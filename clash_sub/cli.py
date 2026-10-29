@@ -74,7 +74,7 @@ _MAIN_MENU_ROWS = (
     ("title", "clash-sub 管理脚本"),
     ("option", "0", (("退出", None),)),
     ("divider",),
-    ("option", "1", (("机场订阅", None),)),
+    ("option", "1", (("订阅来源", None),)),
     ("option", "2", (("重新生成所有配置", None),)),
     ("option", "3", (("查看用户链接", None),)),
     ("option", "4", (("订阅页面与 3x-ui 管理面板", None),)),
@@ -87,18 +87,18 @@ _MAIN_MENU_ROWS = (
 )
 
 _AIRPORT_MENU_ROWS = (
-    ("title", "机场订阅"),
+    ("title", "订阅来源"),
     ("option", "1", (("设置订阅开关页面", None),)),
     ("option", "2", (("自动开启订阅并刷新", None), ("（推荐）", "green"))),
     ("option", "3", (("手动开启订阅后刷新", None),)),
     ("option", "4", (("使用新订阅链接更新", None),)),
     ("option", "5", (("查看机场状态", None),)),
-    ("option", "6", (("自建备用订阅", None),)),
+    ("option", "6", (("备用节点管理", None),)),
     ("option", "0", (("返回", None),)),
 )
 
 _BACKUP_SUBSCRIPTION_ROWS = (
-    ("title", "自建备用订阅"),
+    ("title", "备用节点管理"),
     ("option", "1", (("添加或更换备用订阅链接", None),)),
     ("option", "2", (("刷新备用订阅并生成配置", None),)),
     ("option", "3", (("删除备用订阅并生成配置", None),)),
@@ -311,7 +311,7 @@ def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
         )
     if choice == "1":
         return _run_submenu(
-            _AIRPORT_MENU_ROWS, 6, _airport_dispatch, stdin, stdout, stderr, factory, colors, name="机场订阅"
+            _AIRPORT_MENU_ROWS, 6, _airport_dispatch, stdin, stdout, stderr, factory, colors, name="订阅来源"
         )
     if choice == "2":
         return _call("sync", None, stdout, stderr, factory), False
@@ -373,7 +373,7 @@ def _web_access_status():
 
 def _airport_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "6":
-        return _run_submenu(_BACKUP_SUBSCRIPTION_ROWS,6,_backup_subscription_dispatch,stdin,stdout,stderr,factory,_colors_for(stdout),name="自建备用订阅")
+        return _run_submenu(_BACKUP_SUBSCRIPTION_ROWS,6,_backup_subscription_dispatch,stdin,stdout,stderr,factory,_colors_for(stdout),name="备用节点管理")
     if choice == "1":
         return _menu_airport_portal(stdin, stdout, stderr, factory)
     if choice == "2":
@@ -400,7 +400,14 @@ def _backup_subscription_dispatch(choice, stdin, stdout, stderr, factory):
         return _call('backup-remove',None,stdout,stderr,factory),False
     if choice == '4':return _call('backup-status',None,stdout,stderr,factory),False
     if choice == '5':
-        stdout.write('每行一个 VLESS、Trojan 或 Shadowsocks 链接，空行结束；替换现有手动节点，保留订阅来源。\n')
+        stdout.write('支持的节点类型：\n'
+                     '  VLESS        vless://\n'
+                     '  Trojan       trojan://\n'
+                     '  Shadowsocks  ss://\n'
+                     '  AnyTLS       anytls://\n'
+                     '  Hysteria 2   hysteria2:// 或 hy2://\n'
+                     '\n每行粘贴一条节点链接，可混合多种类型，空行结束。\n'
+                     '本次导入会替换现有手动节点，保留订阅来源。\n')
         lines=[];length=0
         while True:
             line=stdin.readline(1048577)

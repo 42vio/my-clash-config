@@ -11,6 +11,64 @@ def _decode(value):
     return base64.b64decode(value + '=' * (-len(value) % 4), altchars=b'-_', validate=True).decode('utf-8')
 
 
+def _port_list(value):
+    if not re.fullmatch(r'\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*', value):
+        raise ValueError
+    for item in value.split(','):
+        bounds=[int(v) for v in item.split('-')]
+        if not all(1 <= v <= 65535 for v in bounds) or bounds[0] > bounds[-1]:
+            raise ValueError
+    return int(value.split(',')[0].split('-')[0])
+
+
+def _parse_tls_proxy(url, node, query):
+    """Map AnyTLS / Hysteria 2 share parameters without dropping extensions."""
+    hysteria=node['type']=='hysteria2'
+    allowed={'sni','insecure','allowInsecure','alpn','security','type'}
+    allowed |= {'obfs','obfs-password','pinSHA256','mport','hop-interval','up','down'} if hysteria else {'fp'}
+    if set(query)-allowed or query.get('security','tls')!='tls' or query.get('type','tcp' if not hysteria else 'udp')!=('udp' if hysteria else 'tcp'):
+        raise ValueError
+    if url.username is None or (not hysteria and url.password is not None):
+        raise ValueError
+    auth=unquote(url.netloc.rsplit('@',1)[0],errors='strict')
+    if not auth or any(ord(c)<32 for c in auth):
+        raise ValueError
+    node['password']=auth
+    if query.get('sni'):node['sni']=query['sni']
+    flags=[query[k] for k in ('insecure','allowInsecure') if k in query]
+    if flags:
+        if any(value not in ('0','1','false','true') for value in flags):raise ValueError
+        values=[value in ('1','true') for value in flags]
+        if len(set(values))!=1:raise ValueError
+        node['skip-cert-verify']=values[0]
+    if 'alpn' in query:
+        node['alpn']=query['alpn'].split(',')
+        if not all(node['alpn']):raise ValueError
+    if not hysteria:
+        if query.get('fp'):node['client-fingerprint']=query['fp']
+        return node
+    if 'obfs' in query:
+        if query['obfs'] not in ('salamander','gecko') or not query.get('obfs-password'):raise ValueError
+        node.update(obfs=query['obfs'],**{'obfs-password':query['obfs-password']})
+    elif 'obfs-password' in query:raise ValueError
+    if 'pinSHA256' in query:
+        fingerprint=query['pinSHA256'].replace(':','')
+        if not re.fullmatch(r'[0-9a-fA-F]{64}',fingerprint):raise ValueError
+        node['fingerprint']=fingerprint.lower()
+    if 'mport' in query:
+        if 'ports' in node:raise ValueError
+        _port_list(query['mport'])
+        node['ports']=query['mport']
+    if 'hop-interval' in query:
+        if not query['hop-interval'].isascii() or not query['hop-interval'].isdigit() or int(query['hop-interval'])<=0:raise ValueError
+        node['hop-interval']=int(query['hop-interval'])
+    for key in ('up','down'):
+        if key in query:
+            if not re.fullmatch(r'\d+(?:\.\d+)?',query[key]) or float(query[key])<=0:raise ValueError
+            node[key]=query[key]+' Mbps'
+    return node
+
+
 def parse_links(text):
     if not isinstance(text, str) or len(text.encode()) > 1024 * 1024:
         raise ServiceError('backup_nodes_invalid')
@@ -37,9 +95,18 @@ def _parse(line):
         encoded, separator, fragment = line[5:].partition('#')
         line = 'ss://' + _decode(encoded) + (separator + fragment if separator else '')
     url = urlsplit(line)
-    if url.scheme not in ('vless', 'trojan', 'ss') or url.path not in ('', '/'):
+    if url.scheme not in ('vless', 'trojan', 'ss', 'anytls', 'hysteria2', 'hy2') or url.path not in ('', '/'):
         raise ValueError
-    host, port = url.hostname, url.port
+    kind='hysteria2' if url.scheme=='hy2' else url.scheme
+    host=url.hostname
+    ports=None
+    if kind=='hysteria2':
+        address=url.netloc.rsplit('@',1)[-1]
+        ports=address.split(']',1)[1].removeprefix(':') if address.startswith('[') else address.partition(':')[2]
+        port=_port_list(ports) if ports else 443
+    else:
+        port=url.port
+        if kind=='anytls' and port is None:port=443
     if not host or not port or not 1 <= port <= 65535 or any(c in host for c in '/@?#[] \\'):
         raise ValueError
     name = unquote(url.fragment, errors='strict') or '%s %s:%s' % (url.scheme.upper(), host, port)
@@ -49,7 +116,10 @@ def _parse(line):
     query = dict(pairs)
     if len(query) != len(pairs) or any(any(ord(c)<32 for c in value) for value in query.values()):
         raise ValueError
-    node = {'name': name, 'type': url.scheme, 'server': host, 'port': port}
+    node = {'name': name, 'type': kind, 'server': host, 'port': port}
+    if kind in ('anytls','hysteria2'):
+        if ports and (',' in ports or '-' in ports):node['ports']=ports
+        return _parse_tls_proxy(url,node,query)
     if url.scheme == 'ss':
         if query:
             raise ValueError

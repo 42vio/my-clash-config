@@ -381,7 +381,7 @@ class Portal:
 
     @staticmethod
     def backup_dialog():
-        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「机场订阅 → 自建备用订阅」中分别添加、替换或删除。客户端需更新标准订阅。</p></dialog>'
+        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「订阅来源 → 备用节点管理」中分别添加、替换或删除。客户端需更新标准订阅。</p></dialog>'
 
     def user_links(self, state, settings, client_id):
         user = state.users.get(client_id)

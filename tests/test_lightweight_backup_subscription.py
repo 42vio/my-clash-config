@@ -173,6 +173,24 @@ class ManualBackupTests(unittest.TestCase):
     seed=BackupSubscriptionTests.seed
     LINK='trojan://placeholder-manual-password@192.0.2.30:443?sni=example.com#Manual'
 
+    def test_anytls_and_hysteria_import_together_only_into_standard_subscription(self):
+        links='\n'.join(('anytls://placeholder@example.com/?sni=example.com#AnyTLS',
+                          'hy2://placeholder@example.com/?obfs=salamander&obfs-password=placeholder#HY2'))
+        backup.import_nodes(self.root,links,now=200)
+        nodes=backup.combined_nodes(backup.read(self.root))
+        templates=Path(__file__).resolve().parents[1]/'templates'
+        bundle=render_subscription_bundle(True,[reality_proxy('Actual main')],AirportProvider('https://sub.example.test/s/owner/AmyTelecom.yaml'),templates,backup_nodes=nodes)
+        payload=yaml.safe_load(bundle['compat'])['proxy-providers']['Backup']['payload']
+        self.assertEqual([node['type'] for node in payload],['anytls','hysteria2'])
+        self.assertNotIn('Backup',yaml.safe_load(bundle['balance']).get('proxy-providers',{}))
+        self.assertNotIn('Backup',yaml.safe_load(bundle['airport']).get('proxy-providers',{}))
+        from clash_sub.node_subscription import render_node_subscription
+        self.assertEqual(bundle['nodes'],render_node_subscription([reality_proxy('Actual main')]))
+        previous=(self.root/backup.FILENAME).read_bytes()
+        with self.assertRaises(ServiceError):
+            backup.import_nodes(self.root,links+'\nhy2://placeholder@example.com/?obfs=unknown',now=300)
+        self.assertEqual((self.root/backup.FILENAME).read_bytes(),previous)
+
     def test_manual_and_subscription_can_be_changed_and_deleted_independently(self):
         self.seed()
         backup.import_nodes(self.root,self.LINK,now=200)

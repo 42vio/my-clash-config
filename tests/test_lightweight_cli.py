@@ -236,7 +236,7 @@ class LightweightCliTests(unittest.TestCase):
             "╔──────────────────────────────────────────────╗",
             "│  clash-sub 管理脚本",
             "│  0. 退出",
-            "│  1. 机场订阅",
+            "│  1. 订阅来源",
             "│  2. 重新生成所有配置",
             "│  3. 查看用户链接",
             "│  4. 订阅页面与 3x-ui 管理面板",
@@ -278,7 +278,7 @@ class LightweightCliTests(unittest.TestCase):
             "3. 手动开启订阅后刷新\n"
             "4. 使用新订阅链接更新\n"
             "5. 查看机场状态\n"
-            "6. 自建备用订阅\n"
+            "6. 备用节点管理\n"
             "0. 返回\n"
             "\n"
             "请输入选项 [0-6]：",
@@ -970,7 +970,7 @@ class MenuLoopTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertEqual(self.service.calls, [("airport_status", ()), ("airport_status", ())])
         self.assertEqual(stdout.count(AIRPORT_MENU), 1)
-        self.assertEqual(stdout.count("机场订阅：输入下一项 [1-6]，回车查看菜单，0 返回上一级："), 2)
+        self.assertEqual(stdout.count("订阅来源：输入下一项 [1-6]，回车查看菜单，0 返回上一级："), 2)
         self.assertNotIn("按回车键返回当前菜单：", stdout)
 
     def test_main_menu_invalid_selection_stays_and_enter_expands_the_menu(self):
