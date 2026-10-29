@@ -85,3 +85,14 @@
 .backup-access{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 0 0;font-size:12px}.backup-access>div{display:flex;align-items:center;gap:9px}.backup-entry-state{color:var(--muted);font-size:10px}.backup-detail-link{border:0;background:none;color:var(--green);font-size:11px;padding:4px 0;white-space:nowrap}.backup-dialog-bar{display:flex;justify-content:space-between;align-items:center;margin:15px 0 18px}#backup-dialog{width:min(650px,calc(100% - 32px));max-height:85dvh;overflow-y:auto}#backup-dialog .badge{font-size:10px;padding:3px 8px}#backup-dialog .backup-summary{grid-template-columns:1fr 1fr;gap:16px}#backup-dialog .backup-summary>div:last-child{grid-column:1 / -1}.backup-terminal-note{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;line-height:1.7;color:var(--muted)}.subscription-backup-note{font-size:11px;color:var(--muted);margin:6px 0 9px}.subscription-backup-note.with-backup{color:var(--green)}@media(max-width:760px){.backup-access{font-size:11px;padding-top:10px}.backup-detail-link{font-size:10px}#backup-dialog{padding:20px}#backup-dialog .backup-summary{gap:13px}.backup-terminal-note,.subscription-backup-note{font-size:10px}}
 
 .backup-status-row{display:flex;justify-content:space-between;gap:20px;padding:11px 0;border-bottom:1px solid var(--line);font-size:12px}.backup-status-row>span:first-child{flex-shrink:0;color:var(--muted)}.backup-status-row>span:last-child{text-align:right;overflow-wrap:anywhere;color:var(--ink)}
+
+/* Mobile: put proxy usage ahead of subscription maintenance. */
+@media(max-width:760px){
+  main:has(>#members){display:flex;flex-direction:column}
+  main:has(>#members)>.admin-overview{display:contents}
+  main:has(>#members)>#members{order:1}
+  main:has(>#members) .maintenance{order:2;margin-top:12px}
+  main:has(>#members)>#server-overview{order:3}
+  main:has(>#members)>.preview-navigation{order:4}
+  main:has(>#members)>footer{order:5}
+}

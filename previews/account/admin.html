@@ -99,6 +99,17 @@
 /* Put proxy totals next to their member breakdown. */
 .users>.card-head{margin-bottom:12px}.member-usage-summary{margin:0 0 20px;padding:0 0 14px;border-bottom:1px solid var(--line)}
 @media(max-width:760px){.users>.card-head{margin-bottom:9px}.member-usage-summary{margin:0 0 10px;padding-bottom:10px}}
+
+/* Mobile: put proxy usage ahead of subscription maintenance. */
+@media(max-width:760px){
+  main:has(>#members){display:flex;flex-direction:column}
+  main:has(>#members)>.admin-overview{display:contents}
+  main:has(>#members)>#members{order:1}
+  main:has(>#members) .maintenance{order:2;margin-top:12px}
+  main:has(>#members)>#server-overview{order:3}
+  main:has(>#members)>.preview-navigation{order:4}
+  main:has(>#members)>footer{order:5}
+}
 </style>
 </head>
 <body>
