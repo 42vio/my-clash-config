@@ -104,6 +104,20 @@ def write(path, text, mode=0o644):
     path.chmod(mode)
 
 class TemplateSyncTests(unittest.TestCase):
+    def test_legacy_backup_reference_is_removed_when_group_was_renamed(self):
+        import yaml
+        from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP
+        legacy=BACKUP_GROUP.replace('备用节点','备用线路')
+        source=yaml.safe_load(COMPAT)
+        source['proxy-groups'].append({'name':PRIMARY_GROUP,'type':'fallback','proxies':['Dynamic',legacy]})
+        self.compat_source.write_text(yaml.safe_dump(source,allow_unicode=True,sort_keys=False))
+        original=self.compat_source.read_bytes()
+        run_template_sync(self.root,compat=self.compat_source)
+        public=(self.root/'templates/base/Clash-Compat.yaml').read_text()
+        self.assertNotIn(legacy,public)
+        self.assertIn(PRIMARY_GROUP,public)
+        self.assertEqual(self.compat_source.read_bytes(),original)
+
     def test_backup_source_is_removed_but_primary_group_injection_is_preserved(self):
         import yaml
         from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP

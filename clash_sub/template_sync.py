@@ -308,11 +308,12 @@ def _sanitize_compat(source):
 def _without_backup_source(source):
     """Import backup group structure without importing its private source URL."""
     from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP, PROVIDER
+    backup_groups={BACKUP_GROUP, BACKUP_GROUP.replace('备用节点','备用线路')}
     source=clone_round_trip_document(source)
     providers=source.get('proxy-providers')
     if isinstance(providers,Mapping):providers.pop(PROVIDER,None)
     groups=source['proxy-groups']
-    groups[:]=[g for g in groups if g.get('name')!=BACKUP_GROUP]
+    groups[:]=[g for g in groups if g.get('name') not in backup_groups]
     has_primary=any(g.get('name') in {PRIMARY_GROUP,'自建节点'} for g in groups)
     node_names={p.get('name') for p in source['proxies'] if isinstance(p,Mapping)}
     for group in groups:
@@ -320,7 +321,7 @@ def _without_backup_source(source):
         if isinstance(group.get('proxies'),list):
             members=[]
             for name in group['proxies']:
-                if name==BACKUP_GROUP:continue
+                if name in backup_groups:continue
                 if has_primary and name=='自建节点':name=PRIMARY_GROUP
                 if group.get('name')==PRIMARY_GROUP and name not in node_names:
                     matches=[n for n in node_names if isinstance(n,str) and n.rstrip(',')==name.rstrip(',')]
