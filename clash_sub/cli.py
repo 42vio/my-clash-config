@@ -134,19 +134,18 @@ _USER_MENU_ROWS = (
 
 _WEB_MENU_ROWS = (
     ("title", "网页与 3x-ui 面板"),
-    ("option", "2", (("查看访问状态", None),)),
     ("section", "订阅网页"),
     ("option", "1", (("初始化订阅网页（关闭公网 3x-ui 面板）", None),)),
-    ("option", "6", (("设置网页管理员账号与密码", None),)),
-    ("option", "8", (("开启订阅网页", None),)),
-    ("option", "9", (("关闭订阅网页（保留订阅下载）", None),)),
+    ("option", "2", (("设置网页管理员账号与密码", None),)),
+    ("option", "3", (("开启订阅网页", None),)),
+    ("option", "4", (("关闭订阅网页（保留订阅下载）", None),)),
     ("section", "3x-ui 面板"),
-    ("option", "3", (("开启公网 3x-ui 面板", None),)),
-    ("option", "4", (("关闭公网 3x-ui 面板", None),)),
-    ("option", "5", (("SSH 隧道使用说明", None),)),
+    ("option", "5", (("开启公网 3x-ui 面板", None),)),
+    ("option", "6", (("关闭公网 3x-ui 面板", None),)),
+    ("option", "7", (("SSH 隧道使用说明", None),)),
     ("section", "API 配置"),
-    ("option", "7", (("设置 3x-ui API 令牌", None),)),
-    ("option", "10", (("搬瓦工 API 设置", None),)),
+    ("option", "8", (("设置 3x-ui API 令牌", None),)),
+    ("option", "9", (("搬瓦工 API 设置", None),)),
     ("spacer",),
     ("option", "0", (("返回主菜单", None),)),
 )
@@ -202,11 +201,14 @@ def _render_main_menu(colors):
     return "".join(lines)
 
 
-def _render_submenu(rows, colors):
+def _render_submenu(rows, colors, *, status=None):
     lines = []
     for row in rows:
         if row[0] == "title":
-            lines.append(colors.green(row[1]) + "\n\n")
+            lines.append(colors.green(row[1]) + "\n")
+            if status is not None:
+                lines.append(status + "\n")
+            lines.append("\n")
             continue
         if row[0] == "section":
             lines.append("\n" + colors.yellow("── %s ──" % row[1]) + "\n")
@@ -227,7 +229,8 @@ MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "�
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 USER_MENU = _render_submenu(_USER_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
-WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False)) + "请输入选项 [0-10]："
+_WEB_STATUS_UNKNOWN = '订阅网页：未知\n3x-ui 公网面板：未知'
+WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False), status=_WEB_STATUS_UNKNOWN) + "请输入选项 [0-9]："
 
 
 class _CommandParser(argparse.ArgumentParser):
@@ -297,7 +300,7 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "4":
         return _run_submenu(
-            _WEB_MENU_ROWS, 10, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与 3x-ui 面板"
+            _WEB_MENU_ROWS, 9, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与 3x-ui 面板"
         )
     if choice == "1":
         return _run_submenu(
@@ -332,7 +335,8 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
     expanded = True
     while True:
         if expanded:
-            stdout.write(_render_submenu(rows, colors))
+            status = _web_access_status() if rows is _WEB_MENU_ROWS else None
+            stdout.write(_render_submenu(rows, colors, status=status))
         prompt = None if expanded else colors.yellow("\n%s：输入下一项 [1-%d]，回车查看菜单，0 返回上一级：" % (name, maximum))
         choice = _read_choice(stdin, stdout, maximum, prompt=prompt)
         expanded = False
@@ -348,6 +352,16 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
         code, exit_menu = outcome
         if exit_menu or code != 0:
             return code, True
+        if rows is _WEB_MENU_ROWS and choice in {'1', '3', '4', '5', '6'}:
+            stdout.write('\n' + _web_access_status() + '\n')
+
+
+def _web_access_status():
+    from clash_sub.web_manage import access_status
+    try:
+        return access_status(default_repo_root())
+    except Exception:
+        return _WEB_STATUS_UNKNOWN
 
 
 def _airport_dispatch(choice, stdin, stdout, stderr, factory):
@@ -772,9 +786,9 @@ def _web_command(action, target, stdout, stderr, stdin=None):
 
 
 def _web_dispatch(choice, stdin, stdout, stderr, factory):
-    if choice == "10":
+    if choice == "9":
         return _run_submenu(_BWH_MENU_ROWS, 3, _bwh_dispatch, stdin, stdout, stderr, factory, _colors_for(stdout), name="搬瓦工 API 设置")
-    actions = {"1": "setup", "2": "status", "3": "panel-on", "4": "panel-off", "5": "tunnel", "6": "reset-password", "7": "set-api-token", "8": "web-on", "9": "web-off"}
+    actions = {"1": "setup", "2": "reset-password", "3": "web-on", "4": "web-off", "5": "panel-on", "6": "panel-off", "7": "tunnel", "8": "set-api-token"}
     if choice not in actions:
         return None
     return _web_command(actions[choice], None, stdout, stderr, stdin=stdin), False

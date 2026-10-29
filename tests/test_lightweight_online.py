@@ -10,6 +10,18 @@ from clash_sub.online import OnlineCache, parse_online, query_online, read_token
 
 
 class OnlineTests(unittest.TestCase):
+    def test_access_status_reads_switches_without_starting_services(self):
+        from clash_sub.web_manage import access_status
+        config=SimpleNamespace(private_root='/private')
+        for settings,expected in (
+            ({'enabled':True,'panel_public':False,'password_hash':'set'},'订阅网页：开启\n3x-ui 公网面板：关闭'),
+            ({'enabled':False,'panel_public':True,'password_hash':'set'},'订阅网页：关闭\n3x-ui 公网面板：开启'),
+            ({'enabled':False,'panel_public':True},'订阅网页：未初始化\n3x-ui 公网面板：开启'),
+        ):
+            with self.subTest(settings=settings), patch('clash_sub.web_manage.load_config',return_value=config), patch('clash_sub.web_manage.read_settings',return_value=settings), patch('clash_sub.web_manage.subprocess.run') as run:
+                self.assertEqual(access_status('/repo'),expected)
+                run.assert_not_called()
+
     def test_upgrade_stops_and_removes_old_bridge_units_idempotently(self):
         from clash_sub.installer import Installer,InstallPaths
         with tempfile.TemporaryDirectory() as directory:

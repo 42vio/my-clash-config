@@ -13,6 +13,18 @@ from clash_sub.state import load_state
 from clash_sub.web_settings import admin_username, validate_username, admin_prefix, page_path, password_hash, provision_pages, read_settings, write_settings
 
 
+def _access_status(settings):
+    webpage = '开启' if settings['enabled'] else '关闭' if settings.get('password_hash') else '未初始化'
+    panel = '开启' if settings['panel_public'] else '关闭'
+    return '订阅网页：%s\n3x-ui 公网面板：%s' % (webpage, panel)
+
+
+def access_status(root):
+    """Read configured access switches without changing settings or services."""
+    config = load_config(config_path(root), root)
+    return _access_status(read_settings(config.private_root))
+
+
 def execute(root, action, *, password=None, username=None, api_token=None, bwh_veid=None, bwh_api_key=None, target=None, runner=subprocess.run, actor=None, authorize=None):
     config = load_config(config_path(root), root)
     with _OperationLock(Path(config.private_root) / "operation.lock"):
@@ -46,7 +58,7 @@ def execute(root, action, *, password=None, username=None, api_token=None, bwh_v
             if not secrets.compare_digest(actor,authorization(settings,state)):
                 raise ValueError('owner_authorization_invalid')
         if action == "status":
-            return "3x-ui 面板公网访问：%s；订阅网页：%s" % ("开启" if settings['panel_public'] else "关闭", "开启" if settings['enabled'] else "关闭" if settings['password_hash'] else "未初始化")
+            return _access_status(settings)
         if action == "tunnel":
             installed = _load_install_state(root)
             return "在本机执行（请替换 SSH 别名或地址）：\nssh -N -L 127.0.0.1:14631:127.0.0.1:%d <SSH别名>\n浏览器打开：http://127.0.0.1:14631%s/" % (installed.panel_port, installed.panel_base_path)
