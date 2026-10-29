@@ -140,7 +140,7 @@ _USER_MENU_ROWS = (
 _WEB_MENU_ROWS = (
     ("title", "订阅页面与 3x-ui 管理面板"),
     ("section", "订阅页面"),
-    ("option", "1", (("初始化订阅页面（关闭 3x-ui 管理面板公网访问）", None),)),
+    ("option", "1", (("初始化订阅页面", None),)),
     ("option", "2", (("设置网页管理员账号与密码", None),)),
     ("option", "3", (("开启订阅页面", None),)),
     ("option", "4", (("关闭订阅页面（保留订阅下载）", None),)),
@@ -213,13 +213,9 @@ def _paint_access_status(status, colors):
 
 
 def _render_submenu(rows, colors, *, status=None):
-    lines = []
+    lines = [_paint_access_status(status, colors) + "\n"] if status is not None else []
     for row in rows:
         if row[0] == "title":
-            lines.append(colors.green(row[1]) + "\n")
-            if status is not None:
-                lines.append(_paint_access_status(status, colors) + "\n")
-            lines.append("\n")
             continue
         if row[0] == "section":
             lines.append("\n" + colors.yellow("── %s ──" % row[1]) + "\n")

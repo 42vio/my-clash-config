@@ -627,6 +627,22 @@ class PortalTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):execute(self.root,'panel-off')
         self.assertTrue(read_settings(self.root)['panel_public'])
 
+    def test_setup_enables_pages_without_changing_panel_access(self):
+        from clash_sub.web_manage import execute
+        self.config.nginx_routes=Path('/etc/nginx/clash-sub/routes.conf')
+        self.config.mihomo_binary=Path('/usr/local/bin/mihomo')
+        self.config.systemctl_binary=Path('/bin/systemctl')
+        for panel_public in (True,False):
+            with self.subTest(panel_public=panel_public):
+                self.settings.update(enabled=False,panel_public=panel_public)
+                write_settings(self.root,self.settings)
+                with patch('clash_sub.web_manage.load_config',return_value=self.config), patch('clash_sub.web_manage._OperationLock'), patch('clash_sub.web_manage._load_install_state'), patch('clash_sub.web_manage._rerender_nginx'), patch.object(Path,'is_file',return_value=True):
+                    execute(self.root,'setup',username='owner',password='test-password',runner=lambda *a,**kw:SimpleNamespace(returncode=0))
+                saved=read_settings(self.root)
+                self.assertTrue(saved['enabled'])
+                self.assertEqual(saved['panel_public'],panel_public)
+                self.assertEqual(saved['pages'],self.settings['pages'])
+
     def test_web_switch_preserves_links_password_and_panel_setting(self):
         from clash_sub.web_manage import execute
         from clash_sub.nginx import render_sub_server

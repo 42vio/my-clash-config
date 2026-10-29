@@ -77,8 +77,6 @@ def execute(root, action, *, password=None, username=None, api_token=None, bwh_v
             if not all(Path('/etc/systemd/system/' + name).is_file() for name in ('clash-sub-web.socket',)):
                 raise ValueError("run_clash_sub_update_first")
             settings['enabled'] = True
-            if action == 'setup':
-                settings['panel_public'] = False
             result = runner([str(config.systemctl_binary), 'enable', '--now', 'clash-sub-web.socket'], capture_output=True, timeout=30, check=False)
             if result.returncode:
                 raise ValueError("web_socket_enable_failed")

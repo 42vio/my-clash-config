@@ -273,7 +273,6 @@ class LightweightCliTests(unittest.TestCase):
     def test_airport_submenu_text_is_fixed(self):
         self.assertEqual(
             AIRPORT_MENU,
-            "机场订阅\n\n"
             "1. 设置订阅开关页面\n"
             "2. 自动开启订阅并刷新（推荐）\n"
             "3. 手动开启订阅后刷新\n"
@@ -2029,7 +2028,8 @@ class WebMenuConsistencyTests(unittest.TestCase):
             code,stdout,stderr=run_cli(None,None,stdin_text='4\n4\n0\n0\n')
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
-        self.assertIn('订阅页面与 3x-ui 管理面板\n'+before,stdout)
+        self.assertIn(before+'\n\n── 订阅页面 ──',stdout)
+        self.assertNotIn('订阅页面与 3x-ui 管理面板\n',stdout)
         self.assertIn(after,stdout)
         self.assertLess(stdout.index(before),stdout.index(after))
         self.assertEqual(status.call_count,2)
