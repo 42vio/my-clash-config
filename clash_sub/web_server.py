@@ -344,7 +344,7 @@ class Portal:
         return self.shell(state.users[state.owner_client_id].email + " · 管理总览", body, admin=True,prefix=prefix,csrf=csrf)
 
     def maintenance_card(self):
-        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="button history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><div class="backup-access"><div><span>备用线路</span><span class="backup-entry-state">%s</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div><p class="subtle" id="task-progress" role="status">任务在后台执行，执行期间请勿重复操作。</p></section>' % esc(self.backup_summary()['label'])
+        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="button history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><div class="backup-access"><div><span>备用节点</span><span class="backup-entry-state">%s</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div><p class="subtle" id="task-progress" role="status">任务在后台执行，执行期间请勿重复操作。</p></section>' % esc(self.backup_summary()['label'])
 
     def task_history(self):
         from clash_sub.web_tasks import history
@@ -381,7 +381,7 @@ class Portal:
 
     @staticmethod
     def backup_dialog():
-        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用线路</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用线路状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「机场订阅 → 自建备用订阅」中分别添加、替换或删除。客户端需更新标准订阅。</p></dialog>'
+        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「机场订阅 → 自建备用订阅」中分别添加、替换或删除。客户端需更新标准订阅。</p></dialog>'
 
     def user_links(self, state, settings, client_id):
         user = state.users.get(client_id)

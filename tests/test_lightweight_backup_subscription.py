@@ -103,11 +103,15 @@ class BackupSubscriptionTests(unittest.TestCase):
                 providers=doc.get('proxy-providers',{})
                 self.assertEqual('Backup' in providers,kind=='compat')
                 groups={g['name']:g for g in doc['proxy-groups']}
+                order=list(groups)
+                if owner and kind!='airport':
+                    self.assertLess(order.index('自动选择'),order.index(backup.PRIMARY_GROUP))
                 if kind!='airport':
                     expected=['Actual name from 3x-ui']+([backup.BACKUP_GROUP] if kind=='compat' else [])
                     self.assertEqual(groups[backup.PRIMARY_GROUP]['proxies'],expected)
                     self.assertEqual(groups[backup.PRIMARY_GROUP]['type'],'fallback')
                 if kind=='compat':
+                    self.assertEqual(order.index(backup.BACKUP_GROUP),order.index(backup.PRIMARY_GROUP)+1)
                     self.assertEqual(providers['Backup']['type'],'inline')
                     self.assertEqual(len(providers['Backup']['payload']),3)
                     self.assertNotIn(SOURCE,text)

@@ -120,11 +120,11 @@ icons:
   final: &icon-final https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png
 
 proxy-groups:
-- {name: 🏴‍☠️ 自建节点, <<: *fallback, proxies: []}
 #节点分组（订阅按地区自动测速 / 手动切换；自建节点单列）
 - {name: 加速线路, type: select, proxies: [自动选择, 🏴‍☠️ 自建节点, 🇭🇰 香港节点, 🇯🇵 日本节点, 🇺🇲 美国节点, 🇨🇳 台湾节点, 🇸🇬 新加坡节点], icon: *icon-proxy}
 - {name: 自动选择, <<: *auto, icon: *icon-auto}
   # - {name: 🚀 手动切换, <<: *sub-select}
+- {name: 🏴‍☠️ 自建节点, <<: *fallback, proxies: []}
 
 #功能分组
 - {name: PT服务, <<: *direct-first, icon: *icon-pt}

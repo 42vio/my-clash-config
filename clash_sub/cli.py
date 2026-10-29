@@ -1363,7 +1363,7 @@ def _cert_command(parsed, stdout, stderr):
 
 def _write_backup_status(stdout, result):
     labels={None:'无','backup_download_failed':'下载失败，保留上次成功缓存','backup_source_invalid':'备用配置不可用'}
-    stdout.write('备用线路：%s\n' % ('已配置' if result['configured'] else '未配置'))
+    stdout.write('备用节点：%s\n' % ('已配置' if result['configured'] else '未配置'))
     stdout.write('合并节点：%d 个\n' % len(result['nodes']))
     stdout.write('订阅来源：%d 个；手动导入：%d 个\n' % (len(result.get('subscription_nodes',result['nodes'])),len(result.get('manual_nodes',[]))))
     for name in result['nodes']:stdout.write('  %s\n' % name)

@@ -16,7 +16,7 @@ from clash_sub.checks import _validate_proxies
 FILENAME = 'backup-source.json'
 PROVIDER = 'Backup'
 PRIMARY_GROUP = '🏴\u200d☠️ 自建节点'
-BACKUP_GROUP = '🏴\u200d☠️ 备用线路'
+BACKUP_GROUP = '🏴\u200d☠️ 备用节点'
 EXCLUDED_USERS = frozenset({'42vio', 'openwrt'})
 INTERVAL = 86400
 LIMIT = 5 * 1024 * 1024

@@ -89,7 +89,7 @@ def _configure_backup(document, nodes):
     health=CommentedMap(url='https://www.gstatic.com/generate_204',interval=300,lazy=True,**{'expected-status':204})
     providers=document.setdefault('proxy-providers',CommentedMap())
     providers[PROVIDER]=CommentedMap(type='inline',payload=CommentedSeq(copy.deepcopy(nodes)),**{'health-check':CommentedMap(enable=True,**health)})
-    groups.insert(1,CommentedMap(name=BACKUP_GROUP,type='url-test',use=CommentedSeq([PROVIDER]),tolerance=100,**health))
+    groups.insert(groups.index(primary)+1,CommentedMap(name=BACKUP_GROUP,type='url-test',use=CommentedSeq([PROVIDER]),tolerance=100,**health))
 
 
 def _drop_unusable_groups(document):
