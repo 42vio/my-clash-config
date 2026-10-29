@@ -32,24 +32,50 @@ def _valid_token(token):
     return isinstance(token, str) and 16 <= len(token) <= 2048 and all(33 <= ord(ch) <= 126 for ch in token)
 
 
-def save_token(token, path=TOKEN_FILE):
-    """Atomically store a hidden CLI input in a project-owned private file."""
-    if not _valid_token(token):
-        raise ValueError('online_credentials_invalid')
+def read_credentials(path=CREDENTIALS):
+    """Read the shared private credential mapping without following aliases."""
+    path = Path(path)
+    if path.is_symlink():
+        raise ValueError('credentials_invalid')
+    flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+    with os.fdopen(os.open(path, flags), 'rb') as handle:
+        details = os.fstat(handle.fileno())
+        if (not stat.S_ISREG(details.st_mode) or details.st_nlink != 1
+                or stat.S_IMODE(details.st_mode) != 0o600 or details.st_uid != os.geteuid()):
+            raise ValueError('credentials_invalid')
+        data = handle.read(LIMIT + 1)
+    if len(data) > LIMIT:
+        raise ValueError('credentials_invalid')
+    values = json.loads(data)
+    if not isinstance(values, dict):
+        raise ValueError('credentials_invalid')
+    return values
+
+
+def save_credentials(updates, path=TOKEN_FILE, *, remove=()):
+    """Merge private fields atomically, preserving other integrations."""
     path = Path(path)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent = path.parent.lstat()
     if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) & 0o077:
-        raise ValueError('online_credentials_invalid')
+        raise ValueError('credentials_invalid')
+    values = {}
     if path.exists() or path.is_symlink():
-        details = path.lstat()
-        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o600:
-            raise ValueError('online_credentials_invalid')
+        try:
+            values = read_credentials(path)
+        except (OSError, ValueError) as error:
+            raise ValueError('credentials_invalid') from error
+    values.update(updates)
+    for key in remove:
+        values.pop(key, None)
+    payload = json.dumps(values).encode()
+    if len(payload) > LIMIT:
+        raise ValueError('credentials_invalid')
     fd, candidate = tempfile.mkstemp(prefix='.credentials-', dir=path.parent)
     try:
-        with os.fdopen(fd, 'w') as handle:
+        with os.fdopen(fd, 'wb') as handle:
             os.fchmod(handle.fileno(), 0o600)
-            json.dump({'XUI_API_TOKEN': token}, handle)
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(candidate, path)
@@ -63,17 +89,14 @@ def save_token(token, path=TOKEN_FILE):
             os.unlink(candidate)
 
 
-def read_token(path=CREDENTIALS):
-    """Read the root-only project credential file on demand."""
-    path = Path(path)
-    with path.open('rb') as handle:
-        details = os.fstat(handle.fileno())
-        if path.is_symlink() or not stat.S_ISREG(details.st_mode) or stat.S_IMODE(details.st_mode) != 0o600 or details.st_uid != os.geteuid():
-            raise ValueError('online_credentials_invalid')
-        data = handle.read(LIMIT + 1)
-    if len(data) > LIMIT:
+def save_token(token, path=TOKEN_FILE):
+    if not _valid_token(token):
         raise ValueError('online_credentials_invalid')
-    token = json.loads(data)['XUI_API_TOKEN']
+    save_credentials({'XUI_API_TOKEN': token}, path)
+
+
+def read_token(path=CREDENTIALS):
+    token = read_credentials(path)['XUI_API_TOKEN']
     if not _valid_token(token):
         raise ValueError('online_credentials_invalid')
     return token

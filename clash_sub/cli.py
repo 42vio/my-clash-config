@@ -134,16 +134,29 @@ _USER_MENU_ROWS = (
 
 _WEB_MENU_ROWS = (
     ("title", "网页与 3x-ui 面板"),
-    ("option", "1", (("初始化订阅网页（关闭公网 3x-ui 面板）", None),)),
     ("option", "2", (("查看访问状态", None),)),
+    ("section", "订阅网页"),
+    ("option", "1", (("初始化订阅网页（关闭公网 3x-ui 面板）", None),)),
+    ("option", "6", (("设置网页管理员账号与密码", None),)),
+    ("option", "8", (("开启订阅网页", None),)),
+    ("option", "9", (("关闭订阅网页（保留订阅下载）", None),)),
+    ("section", "3x-ui 面板"),
     ("option", "3", (("开启公网 3x-ui 面板", None),)),
     ("option", "4", (("关闭公网 3x-ui 面板", None),)),
     ("option", "5", (("SSH 隧道使用说明", None),)),
-    ("option", "6", (("设置网页管理员账号与密码", None),)),
+    ("section", "API 配置"),
     ("option", "7", (("设置 3x-ui API 令牌", None),)),
-    ("option", "8", (("开启订阅网页", None),)),
-    ("option", "9", (("关闭订阅网页（保留订阅下载）", None),)),
+    ("option", "10", (("搬瓦工 API 设置", None),)),
+    ("spacer",),
     ("option", "0", (("返回主菜单", None),)),
+)
+
+_BWH_MENU_ROWS = (
+    ("title", "搬瓦工 API 设置"),
+    ("option", "1", (("添加或更换 API 配置", None),)),
+    ("option", "2", (("验证连接并查看套餐用量", None),)),
+    ("option", "3", (("删除 API 配置", "red"),)),
+    ("option", "0", (("返回上一级", None),)),
 )
 
 
@@ -195,6 +208,12 @@ def _render_submenu(rows, colors):
         if row[0] == "title":
             lines.append(colors.green(row[1]) + "\n\n")
             continue
+        if row[0] == "section":
+            lines.append("\n" + colors.yellow("── %s ──" % row[1]) + "\n")
+            continue
+        if row[0] == "spacer":
+            lines.append("\n")
+            continue
         _, number, segments = row
         number_painted, label_painted, _width = _render_option_line(number, segments, colors)
         lines.append("%s %s\n" % (number_painted, label_painted))
@@ -208,7 +227,7 @@ MAINTENANCE_MENU = _render_submenu(_MAINTENANCE_MENU_ROWS, _Colors(False)) + "�
 CERT_MENU = _render_submenu(_CERT_MENU_ROWS, _Colors(False)) + "请输入选项 [0-2]："
 BACKUP_MENU = _render_submenu(_BACKUP_MENU_ROWS, _Colors(False)) + "请输入选项 [0-3]："
 USER_MENU = _render_submenu(_USER_MENU_ROWS, _Colors(False)) + "请输入选项 [0-5]："
-WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False)) + "请输入选项 [0-9]："
+WEB_MENU = _render_submenu(_WEB_MENU_ROWS, _Colors(False)) + "请输入选项 [0-10]："
 
 
 class _CommandParser(argparse.ArgumentParser):
@@ -278,7 +297,7 @@ def _main_menu(stdin, stdout, stderr, factory, colors):
 def _main_dispatch(choice, stdin, stdout, stderr, factory, colors):
     if choice == "4":
         return _run_submenu(
-            _WEB_MENU_ROWS, 9, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与 3x-ui 面板"
+            _WEB_MENU_ROWS, 10, _web_dispatch, stdin, stdout, stderr, factory, colors, name="网页与 3x-ui 面板"
         )
     if choice == "1":
         return _run_submenu(
@@ -707,9 +726,26 @@ def _web_command(action, target, stdout, stderr, stdin=None):
     import getpass
     if os.geteuid() != 0:
         return _error(stderr, "not_root", 1)
+    if action in {"set-bwh-api", "bwh-status", "delete-bwh-api"} and target is not None:
+        return _error(stderr, "invalid_arguments", 2)
     try:
         password = None
         username = None
+        if action == "set-bwh-api":
+            veid = _prompt(stdin or sys.stdin, stdout, "输入搬瓦工 VEID（回车取消）：")
+            if not veid:
+                return 0
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", getpass.GetPassWarning)
+                api_key = getpass.getpass("输入搬瓦工 API Key（隐藏输入，回车取消）：")
+            if not api_key:
+                return 0
+            stdout.write(execute(default_repo_root(), action, bwh_veid=veid, bwh_api_key=api_key) + "\n")
+            return 0
+        if action == "delete-bwh-api":
+            if _prompt(stdin or sys.stdin, stdout, "仅删除搬瓦工凭据，保留 3x-ui 令牌。输入 DELETE 确认：") != "DELETE":
+                return 0
         if action == "set-api-token":
             import warnings
             with warnings.catch_warnings():
@@ -736,10 +772,19 @@ def _web_command(action, target, stdout, stderr, stdin=None):
 
 
 def _web_dispatch(choice, stdin, stdout, stderr, factory):
+    if choice == "10":
+        return _run_submenu(_BWH_MENU_ROWS, 3, _bwh_dispatch, stdin, stdout, stderr, factory, _colors_for(stdout), name="搬瓦工 API 设置")
     actions = {"1": "setup", "2": "status", "3": "panel-on", "4": "panel-off", "5": "tunnel", "6": "reset-password", "7": "set-api-token", "8": "web-on", "9": "web-off"}
     if choice not in actions:
         return None
     return _web_command(actions[choice], None, stdout, stderr, stdin=stdin), False
+
+
+def _bwh_dispatch(choice, stdin, stdout, stderr, factory):
+    action = {"1": "set-bwh-api", "2": "bwh-status", "3": "delete-bwh-api"}.get(choice)
+    if action is None:
+        return None
+    return _web_command(action, None, stdout, stderr, stdin=stdin), False
 
 
 def _parser():
@@ -766,7 +811,7 @@ def _parser():
     task.add_argument('task_id')
     task.add_argument('--sync-only', action='store_true')
     web = commands.add_parser("web", add_help=False)
-    web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel", "set-api-token", "web-on", "web-off"))
+    web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel", "set-api-token", "web-on", "web-off", "set-bwh-api", "bwh-status", "delete-bwh-api"))
     web.add_argument("target", nargs="?")
     # Internal systemd entry (clash-sub-airport-refresh.timer); never displayed.
     commands.add_parser("airport-scheduled-refresh", add_help=False)

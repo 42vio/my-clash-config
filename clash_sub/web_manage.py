@@ -13,9 +13,23 @@ from clash_sub.state import load_state
 from clash_sub.web_settings import admin_username, validate_username, admin_prefix, page_path, password_hash, provision_pages, read_settings, write_settings
 
 
-def execute(root, action, *, password=None, username=None, api_token=None, target=None, runner=subprocess.run, actor=None, authorize=None):
+def execute(root, action, *, password=None, username=None, api_token=None, bwh_veid=None, bwh_api_key=None, target=None, runner=subprocess.run, actor=None, authorize=None):
     config = load_config(config_path(root), root)
     with _OperationLock(Path(config.private_root) / "operation.lock"):
+        if action in {'set-bwh-api', 'bwh-status', 'delete-bwh-api'}:
+            from clash_sub.bandwagon import load_credentials, save_api, delete_api, query_usage, format_usage
+            if action == 'set-bwh-api':
+                usage = query_usage(bwh_veid, bwh_api_key)
+                summary = format_usage(usage)
+                save_api(bwh_veid, bwh_api_key)
+                return '搬瓦工 API 已保存并验证成功。' + summary
+            if action == 'delete-bwh-api':
+                delete_api()
+                return '搬瓦工 API 配置已删除，3x-ui 令牌和代理服务不受影响。'
+            credentials = load_credentials()
+            if credentials is None:
+                return '搬瓦工 API 尚未配置，请先添加 VEID 和 API Key。'
+            return '搬瓦工 API 验证成功。' + format_usage(query_usage(*credentials))
         if action == 'set-api-token':
             from clash_sub.online import TOKEN_FILE, save_token, query_online
             save_token(api_token)

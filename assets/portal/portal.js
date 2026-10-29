@@ -78,14 +78,14 @@ async function refreshPageData(manual) {
   }
 }
 let overviewPending = false;
-async function refreshOverview(manual = false) {
+async function refreshOverview(manual = false, fresh = manual) {
   const button = document.querySelector('.floating-refresh');
   if (!adminBase || !button || document.hidden || overviewPending) return;
   overviewPending = true;
   button.disabled = true; button.setAttribute('aria-busy','true');
   button.querySelector('.refresh-label').textContent = '刷新中';
   try {
-    const updated = await refreshPageData(manual);
+    const updated = await refreshPageData(fresh);
     const historyUpdated = manual ? await refreshTasks() : true;
     if (manual && !document.hidden) notify(updated && historyUpdated !== false
       ? '页面数据已刷新'
@@ -95,21 +95,19 @@ async function refreshOverview(manual = false) {
     button.querySelector('.refresh-label').textContent = '刷新';
   }
 }
-let overviewInterval = null;
-function stopOverviewPolling() {
-  clearInterval(overviewInterval); overviewInterval = null;
-}
-function updateOverviewPolling(refreshNow = true) {
-  stopOverviewPolling();
-  if (document.hidden || !adminBase || !document.querySelector('.floating-refresh')) return;
-  if (refreshNow) refreshOverview();
-  overviewInterval = setInterval(() => refreshOverview(), 30000);
+// Refresh once per page entry; returning to a visible tab does not poll.
+let overviewEntryRefreshed = false;
+function refreshOverviewOnEntry() {
+  if (document.hidden || overviewEntryRefreshed || !adminBase || !document.querySelector('.floating-refresh')) return;
+  overviewEntryRefreshed = true;
+  refreshOverview(false, true);
 }
 if (adminBase && document.querySelector('.floating-refresh')) {
-  updateOverviewPolling(false);
-  document.addEventListener('visibilitychange', () => updateOverviewPolling());
-  window.addEventListener('pagehide', stopOverviewPolling);
-  window.addEventListener('pageshow', event => updateOverviewPolling(event.persisted));
+  document.addEventListener('visibilitychange', refreshOverviewOnEntry);
+  window.addEventListener('pageshow', event => {
+    if (event.persisted) overviewEntryRefreshed = false;
+    refreshOverviewOnEntry();
+  });
 }
 
 // Fixed owner actions. Confirmation occurs before any authenticated POST.
@@ -270,7 +268,7 @@ if (adminBase && manageDialog) {
   refreshTasks();
   document.addEventListener('visibilitychange', () => {
     clearTimeout(taskTimer);
-    if (!document.hidden) refreshTasks();
+    if (!document.hidden && tasksPending) refreshTasks();
   });
   window.addEventListener('pagehide', () => clearTimeout(taskTimer));
 }
@@ -307,3 +305,5 @@ async function showBackupStatus() {
     } else row('来源流量','来源未提供');
   } catch { root.textContent='无法取得备用状态，请稍后重试或重新登录。'; }
 }
+
+refreshOverviewOnEntry();
