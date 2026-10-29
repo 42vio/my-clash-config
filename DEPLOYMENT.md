@@ -9,7 +9,7 @@
 - 443/TCP 未被占用，3x-ui 已安装，且目标 owner 的 3x-ui client 已启用并可用其 email 识别。
 - 先按下节完成 3x-ui 设置；不要提交订阅 URL、token 或任何私密 YAML。
 
-防火墙 和 BBR设置
+防火墙
 
 ```
 # 按顺序放行端口——这一行最重要，先保住 SSH
@@ -17,6 +17,12 @@
 80/tcp
 443/tcp
 ```
+
+BBR
+
+https://vpsoso.com/blog/vps/tcp_better
+
+https://github.com/666shen/tcp-dashboard
 
 
 

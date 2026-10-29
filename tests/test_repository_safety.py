@@ -440,11 +440,17 @@ class RepositorySafetyTests(unittest.TestCase):
 
     def test_project_use_documents_only_use_placeholder_url_hosts(self):
         # The four manuals never carry a real portal or subscription host:
-        # only the project's own GitHub links and Chinese placeholder hosts
-        # (which this ASCII pattern cannot even match) may appear.
+        # Public references are allowed only as exact, document-specific lines;
+        # other URLs still cannot expose a real portal or subscription host.
         allowed = {"github.com", "sub"}
+        public_references = {
+            ("DEPLOYMENT.md", "https://vpsoso.com/blog/vps/tcp_better"),
+        }
         for relative in PROJECT_USE_DOCUMENTS:
-            document = (ROOT / relative).read_text(encoding="utf-8")
+            document = "\n".join(
+                line for line in (ROOT / relative).read_text(encoding="utf-8").splitlines()
+                if (relative, line.strip()) not in public_references
+            )
             hosts = {
                 host.rstrip(".")
                 for host in re.findall(r"https://([A-Za-z0-9.-]+)", document)
