@@ -91,13 +91,22 @@ class Portal:
 
     def inbound_card(self):
         with self._snapshot_lock:
-            if self.clock() - self._inbound_time >= 300:
+            if self._inbound is None or self.clock() - self._inbound_time >= 300:
                 self._inbound = read_inbound_traffic(self.config.xui_database)
                 self._inbound_time = self.clock()
             traffic = self._inbound
         if traffic is None:
             return '<h3>自建流量 · 3x-ui 入站</h3><p>暂无数据 · 入站统计读取失败</p>'
         return usage_card('自建流量 · 3x-ui 入站', Traffic(traffic['upload'], traffic['download'], traffic['total'] or 0, 0), '入站当前累计', compact=True, reset=self.reset_rule(), unlimited_label='入站总额度未设置')
+
+    def refresh_overview_data(self):
+        """Refresh local display data without fetching upstream subscriptions."""
+        with self._snapshot_lock:
+            self._snapshot = None
+            self._inbound_time = 0
+            self._inbound = None
+            self._resets = None
+        self.store.refresh()
 
     def reset_rule(self, client_id=None):
         with self._snapshot_lock:
@@ -288,7 +297,7 @@ class Portal:
                 detail = '<a class="detail" target="_blank" rel="noopener noreferrer" href="%s">查看详情 ↗</a>' % esc(page_path(record['token'],user.email))
             body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span>%s</td><td>%s</td><td>%s</td><td><div class="user-actions">%s<button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email),client_id,self.presence(online[str(client_id)]),used,total,progress,esc(self.reset_rule(client_id)),status,detail,client_id,esc(user.email))
 
-        body += '</tbody></table></section>' + self.task_history() + self.backup_dialog() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新服务器概况和成员在线状态" title="刷新服务器概况和成员在线状态"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
+        body += '</tbody></table></section>' + self.task_history() + self.backup_dialog() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新全部页面数据" title="刷新全部页面数据"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
         return self.shell(state.users[state.owner_client_id].email + " · 管理总览", body, admin=True,prefix=prefix,csrf=csrf)
 
     def maintenance_card(self):
@@ -417,10 +426,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = '<section class="card login-card"><form method="post" action="%s/login"><label for="username">管理员账号</label><input id="username" name="username" autocomplete="username" required maxlength="254"><label for="password">管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="8" maxlength="256"><button class="button primary">登录</button></form></section>' % esc(prefix)
                 return self.respond(200,portal.shell('owner 登录',body))
             if not session:
-                if rest in {'/onlines','/tasks','/server','/backup'} or rest.endswith('/links'):
+                if rest in {'/onlines','/tasks','/server','/backup','/overview','/overview/refresh'} or rest.endswith('/links'):
                     return self.respond(401,'{}',content_type='application/json')
                 return self.respond(303,headers=(('Location',prefix+'/login'),))
             if rest == '/':
+                return self.respond(200,portal.admin(state,settings,csrf=session[3]))
+            if rest in {'/overview','/overview/refresh'}:
+                if rest == '/overview/refresh':
+                    portal.refresh_overview_data()
                 return self.respond(200,portal.admin(state,settings,csrf=session[3]))
             if rest == '/backup':
                 return self.respond(200,json.dumps(portal.backup_summary()),content_type='application/json')

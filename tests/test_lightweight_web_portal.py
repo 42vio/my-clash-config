@@ -229,6 +229,38 @@ class PortalTests(unittest.TestCase):
         token=self.settings['pages']['2']['token']
         self.assertEqual(self.request('/p/'+token+'/server')[0],404)
 
+    def test_full_overview_refresh_is_admin_only_and_rereads_local_traffic(self):
+        calls=[]
+        self.store.refresh=lambda:calls.append('refresh')
+        for endpoint in ('/admin/overview','/admin/overview/refresh'):
+            self.assertEqual(self.request(endpoint)[0],401)
+        self.assertEqual(calls,[])
+        cookie=self.login()
+        self.request('/admin/',cookie=cookie)
+        self.assertIsNotNone(self.portal._snapshot)
+        with patch.object(self.portal,'snapshot_reader',return_value=SimpleNamespace(clients=self.clients)) as reader:
+            status,headers,body=self.request('/admin/overview/refresh',cookie=cookie)
+        self.assertEqual(status,200)
+        self.assertIn('no-store',headers)
+        self.assertEqual(calls,['refresh'])
+        reader.assert_called_once()
+        for marker in ('traffic-card','id="members"','id="server-overview"','class="card maintenance"'):
+            self.assertIn(marker,body)
+        token=self.settings['pages']['2']['token']
+        self.assertEqual(self.request('/p/'+token+'/overview/refresh')[0],404)
+
+    def test_automatic_overview_refresh_reuses_local_cache(self):
+        calls=[]
+        self.store.refresh=lambda:calls.append('refresh')
+        cookie=self.login()
+        self.request('/admin/',cookie=cookie)
+        with patch.object(self.portal,'snapshot_reader') as reader:
+            status,_,body=self.request('/admin/overview',cookie=cookie)
+        self.assertEqual(status,200)
+        self.assertIn('id="members"',body)
+        self.assertEqual(calls,[])
+        reader.assert_not_called()
+
     def test_server_refresh_button_is_only_in_administrator_overview(self):
         self.assertIn('data-action="refresh-overview"',self.request('/admin/',cookie=self.login())[2])
         for key in ('1','2','airport'):

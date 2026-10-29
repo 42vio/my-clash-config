@@ -134,6 +134,25 @@ class RenderSubscriptionUserinfoTests(unittest.TestCase):
 
 
 class CacheSemanticsTests(StoreTestCase):
+    def test_explicit_refresh_bypasses_ttl_and_updates_all_clients(self):
+        reader = RecordingReader(
+            make_snapshot(make_client(7, upload=1), make_client(8, upload=2)),
+            make_snapshot(make_client(7, upload=10), make_client(8, upload=20)),
+        )
+        store = self.make_store(reader)
+        store.traffic_for(7)
+        store.refresh()
+        self.assertEqual(store.traffic_for(7).upload, 10)
+        self.assertEqual(store.traffic_for(8).upload, 20)
+        self.assertEqual(len(reader.calls), 2)
+
+    def test_explicit_refresh_failure_keeps_existing_traffic(self):
+        reader = RecordingReader(make_snapshot(make_client(7, upload=10)), OSError('unavailable'))
+        store = self.make_store(reader)
+        original = store.traffic_for(7)
+        store.refresh()
+        self.assertEqual(store.traffic_for(7), original)
+
     def test_first_query_refreshes_and_returns_traffic(self):
         reader = RecordingReader(
             make_snapshot(make_client(7, upload=10, download=20, total=30, expiry_ms=40000))

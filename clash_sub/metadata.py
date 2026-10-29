@@ -93,6 +93,13 @@ class TrafficMetadataStore:
             return None
         return source.traffic
 
+    def refresh(self):
+        """Explicitly reread local user counters, retaining the cache on failure."""
+        with self._lock:
+            if self._entries is None:
+                self._load_cached()
+            self._refresh(None)
+
     def freshness(self):
         """Only numeric observation times; no source URL or credential leaves the store."""
         with self._lock:

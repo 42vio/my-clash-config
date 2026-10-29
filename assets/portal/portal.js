@@ -32,70 +32,49 @@ document.addEventListener('click', async (event) => {
 
 const adminBase = document.querySelector('main[data-admin-base]')?.dataset.adminBase || '';
 
-// Overview requests share one foreground-only refresh schedule.
-let serverPending = false;
-async function refreshServer() {
-  const card = document.querySelector('#server-overview');
-  if (!adminBase || !card || document.hidden || serverPending) return false;
-  serverPending = true;
-  card.setAttribute('aria-busy', 'true');
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
-  try {
-    const response = await fetch(adminBase + '/server', {cache:'no-store', credentials:'same-origin', redirect:'error', signal:controller.signal});
-    if (response.status === 401) throw new Error('login');
-    if (!response.ok) throw new Error('unavailable');
-    const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const replacement = doc.querySelector('#server-overview');
-    if (!replacement) throw new Error('unavailable');
-    if (document.hidden) return false;
-    card.replaceWith(replacement);
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timeout);
-    serverPending = false;
-    card.removeAttribute('aria-busy');
+// Patch values in place so cards keep their identity, focus and animation state.
+function patchOverviewNode(current, incoming) {
+  if (current.nodeType !== incoming.nodeType || current.nodeName !== incoming.nodeName) {
+    current.replaceWith(incoming.cloneNode(true));
+    return;
+  }
+  if (current.nodeType === Node.TEXT_NODE) {
+    if (current.nodeValue !== incoming.nodeValue) current.nodeValue = incoming.nodeValue;
+    return;
+  }
+  if (current.nodeType !== Node.ELEMENT_NODE) return;
+  for (const attr of [...current.attributes]) {
+    if (!incoming.hasAttribute(attr.name) && attr.name !== 'open') current.removeAttribute(attr.name);
+  }
+  for (const attr of incoming.attributes) {
+    if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+  }
+  const oldChildren = [...current.childNodes], newChildren = [...incoming.childNodes];
+  for (let i = 0; i < Math.max(oldChildren.length, newChildren.length); i++) {
+    if (!newChildren[i]) oldChildren[i].remove();
+    else if (!oldChildren[i]) current.append(newChildren[i].cloneNode(true));
+    else patchOverviewNode(oldChildren[i], newChildren[i]);
   }
 }
-
-// Presence is admin-only. Hidden tabs stop polling; failures never imply offline.
-const presenceCells = [...document.querySelectorAll('[data-online-client]')];
-function renderPresence(cell, state) {
-  const labels = {online: '在线', offline: '离线', unknown: '未知'};
-  if (!(state in labels)) state = 'unknown';
-  const badge = document.createElement('span');
-  badge.className = 'presence ' + state;
-  badge.title = '来源：3x-ui 在线查询';
-  const marker = document.createElement(state === 'unknown' ? 'span' : 'i');
-  marker.setAttribute('aria-hidden', 'true');
-  if (state === 'unknown') marker.textContent = '—';
-  badge.append(marker, document.createTextNode(labels[state]));
-  cell.replaceChildren(badge);
-}
-let presencePending = false;
-async function refreshPresence() {
-  if (!presenceCells.length) return true;
-  if (document.hidden || presencePending) return false;
-  presencePending = true;
+async function refreshPageData(manual) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const timeout = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch(adminBase + '/onlines', {cache: 'no-store', credentials: 'same-origin', signal: controller.signal});
+    const response = await fetch(adminBase + (manual ? '/overview/refresh' : '/overview'), {
+      cache:'no-store', credentials:'same-origin', redirect:'error', signal:controller.signal
+    });
     if (!response.ok) throw new Error('unavailable');
-    const data = await response.json();
-    if (document.hidden) return;
-    for (const cell of presenceCells) renderPresence(cell, data.states?.[cell.dataset.onlineClient] ?? 'unknown');
+    const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+    const selectors = ['.traffic-card', '#members', '#server-overview', '.backup-entry-state'];
+    const regions = selectors.map(selector => [document.querySelector(selector), doc.querySelector(selector)]);
+    if (regions.some(([current, next]) => !current || !next)) throw new Error('unavailable');
+    if (document.hidden) return false;
+    for (const [current, next] of regions) patchOverviewNode(current, next);
     return true;
   } catch {
-    if (!document.hidden) {
-      for (const cell of presenceCells) renderPresence(cell, 'unknown');
-    }
     return false;
   } finally {
     clearTimeout(timeout);
-    presencePending = false;
   }
 }
 let overviewPending = false;
@@ -106,9 +85,10 @@ async function refreshOverview(manual = false) {
   button.disabled = true; button.setAttribute('aria-busy','true');
   button.querySelector('.refresh-label').textContent = '刷新中';
   try {
-    const results = await Promise.allSettled([refreshServer(), refreshPresence()]);
-    if (manual && !document.hidden) notify(results.every(r => r.status === 'fulfilled' && r.value === true)
-      ? '服务器概况与成员在线状态已刷新'
+    const updated = await refreshPageData(manual);
+    const historyUpdated = manual ? await refreshTasks() : true;
+    if (manual && !document.hidden) notify(updated && historyUpdated !== false
+      ? '页面数据已刷新'
       : '部分数据刷新失败，请稍后重试；登录过期时请重新登录。');
   } finally {
     overviewPending = false; button.disabled = false; button.removeAttribute('aria-busy');
@@ -229,6 +209,7 @@ async function refreshTasks() {
     }
   } catch {
     document.querySelector('#task-progress').textContent = '暂时无法取得结果，更新期间请稍后重试或重新登录。';
+    return false;
   } finally {
     taskRequestPending = false;
     if (tasksPending && !document.hidden) taskTimer = setTimeout(refreshTasks, 5000);
