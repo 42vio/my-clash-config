@@ -16,6 +16,7 @@ from clash_sub.state import save_state, airport_only_token
 from clash_sub.web_server import Handler, Portal
 from clash_sub.web_settings import admin_prefix, page_path, password_hash, provision_pages, read_settings, write_settings
 from clash_sub.online import OnlineCache
+from clash_sub.bandwagon import UsageCache
 
 
 class Request:
@@ -31,6 +32,41 @@ class Request:
 
 
 class PortalTests(unittest.TestCase):
+    def test_provider_is_admin_only_and_matches_approved_layout(self):
+        reader = unittest.mock.Mock(return_value={'used': 200 * 1024**3, 'total': 1000 * 1024**3, 'next_reset': 1800000000})
+        self.portal.provider = UsageCache(credentials_reader=lambda: ('123', 'synthetic-private-api-key'), reader=reader, clock=lambda:self.now[0])
+        self.request('/admin/')
+        self.request('/p/'+self.settings['pages']['2']['token']+'/')
+        reader.assert_not_called()
+        cookie = self.login()
+        with patch('clash_sub.web_server.read_inbound_traffic',return_value={'upload':10,'download':20,'total':100}):
+            code, _, body = self.request('/admin/',cookie=cookie)
+            self.assertEqual(code, 200)
+            self.assertIn('搬瓦工 · 自建',body)
+            self.assertIn('200.0 GB <small>/ 1000.0 GB',body)
+            self.assertIn('剩余 800.0 GB',body)
+            self.assertIn('套餐收发合计',body)
+            self.assertIn('KiwiVM API',body)
+            self.assertIn('代理用量',body)
+            self.assertIn('30.0 B', body.split('id="members"',1)[1])
+            self.assertNotIn('synthetic-private-api-key',body)
+        self.portal.store.refresh = lambda: None
+        self.request('/admin/overview/refresh',cookie=cookie)
+        reader.assert_called_once()
+
+    def test_provider_missing_and_stale_failure_do_not_show_false_zero(self):
+        self.portal.provider = SimpleNamespace(get=lambda:{'usage':None,'updated':None,'status':'unconfigured'})
+        body = self.portal.provider_card()
+        self.assertIn('未配置',body)
+        self.assertNotIn('0.0',body)
+        self.portal.provider = SimpleNamespace(get=lambda:{'usage':None,'updated':None,'status':'error'})
+        self.assertIn('查询失败',self.portal.provider_card())
+        self.portal.provider = SimpleNamespace(get=lambda:{'usage':{'used':600,'total':500,'next_reset':1800000000},'updated':self.now[0],'status':'error'})
+        body = self.portal.provider_card()
+        self.assertIn('保留上次成功数据',body)
+        self.assertIn('aria-valuenow="100.0"',body)
+        self.assertIn('剩余 0.0 B',body)
+
     def test_default_online_reader_uses_same_process_only_for_admin(self):
         with patch('clash_sub.web_server.query_online',return_value=frozenset({'member'})) as query:
             self.portal=Portal(self.config,clock=lambda:self.now[0],store=self.store,snapshot_reader=lambda _:SimpleNamespace(clients=self.clients))
@@ -144,7 +180,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(status,200)
         data=json.loads(body)
         self.assertEqual(data['users'],['member'])
-        self.assertEqual(data['nodes'],[n['name'] for n in NODES])
+        self.assertEqual(data['nodes'],[NODES[0]['name']])
         self.assertNotIn(SOURCE,body)
         self.assertNotIn('synthetic-backup-password',body)
         token=self.settings['pages']['2']['token']
@@ -312,9 +348,10 @@ class PortalTests(unittest.TestCase):
         self.assertNotIn('role="progressbar"',unlimited)
 
     def test_provider_cards_share_linear_layout_and_remaining_caption(self):
+        self.portal.provider = SimpleNamespace(get=lambda:{'usage':{'used':50,'total':1000,'next_reset':1800000000},'updated':self.now[0],'status':'ok'})
         with patch('clash_sub.web_server.read_inbound_traffic',return_value={'upload':20,'download':30,'total':1000}):
             body=self.portal.admin(self.state,self.settings)
-        self.assertEqual(body.count('class="traffic-part"'),2)
+        self.assertEqual(body.count('class="traffic-part'),2)
         self.assertEqual(body.count('class="usage usage-linear"'),2)
         self.assertEqual(body.count('class="remaining">剩余 950.0 B'),2)
         self.assertNotIn('class="ring"',body)
@@ -541,7 +578,7 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(read_inbound_traffic(self.config.xui_database),{'upload':12,'download':43,'total':200})
         body=self.portal.admin(self.state,self.settings)
         self.assertIn('55.0 B',body)
-        self.assertIn('重置时间待确认',body)
+        self.assertIn('重置时间待确认',self.portal.inbound_card())
         self.assertNotIn('9999',body)
         with closing(sqlite3.connect(self.config.xui_database)) as db, db:
             db.execute('UPDATE inbounds SET up=0,down=0')

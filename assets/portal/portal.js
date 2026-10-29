@@ -290,7 +290,10 @@ async function showBackupStatus() {
       const text=document.createElement('span');text.textContent=value;
       line.append(label,text);root.append(line);
     }
-    row('缓存节点',data.nodes.length+' 个');
+    row('合并节点',data.nodes.length+' 个');
+    row('订阅来源',(data.subscription_nodes||[]).join('、')||'暂无');
+    row('手动导入',(data.manual_nodes||[]).join('、')||'暂无');
+    row('手动节点修改',data.manual_updated ? new Date(data.manual_updated*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 北京时间' : '暂无');
     row('节点名称',data.nodes.join('、')||'暂无');
     row('最近成功刷新',data.last_success ? new Date(data.last_success*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 北京时间' : '暂无');
     const errors={backup_download_failed:'下载失败；保留上次成功缓存',backup_source_invalid:'备用配置不可用，请到终端检查'};

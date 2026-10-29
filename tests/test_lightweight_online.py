@@ -38,12 +38,12 @@ class OnlineTests(unittest.TestCase):
                 self.assertEqual(run.call_count,2)
             self.assertEqual(list(paths.systemd_dir.iterdir()),[])
 
-    def test_web_unit_allows_only_local_ipv4_and_keeps_metadata_isolated(self):
+    def test_web_unit_allows_provider_https_and_keeps_metadata_isolated(self):
         root=Path(__file__).resolve().parents[1]/'deploy'/'systemd'
         web=(root/'clash-sub-web.service').read_text()
         self.assertNotIn('PrivateNetwork=true',web)
-        self.assertIn('IPAddressDeny=any',web)
-        self.assertIn('IPAddressAllow=127.0.0.1/32',web)
+        self.assertNotIn('IPAddressDeny=any',web)
+        self.assertIn('Fixed HTTPS provider endpoint',web)
         self.assertIn('RestrictAddressFamilies=AF_UNIX AF_INET',web)
         self.assertIn('PrivateNetwork=true',(root/'clash-sub-metadata.service').read_text())
         self.assertFalse((root/'clash-sub-online.service').exists())

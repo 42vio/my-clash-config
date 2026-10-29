@@ -39,7 +39,16 @@ def read(root):
         if len(raw) > LIMIT:
             raise ValueError
         data = json.loads(raw)
-        if not isinstance(data,dict) or data.get('version') != 1 or not _valid_airport_url(data.get('url')) or type(data.get('enabled')) is not bool:
+        if not isinstance(data,dict) or data.get('version') != 1 or (data.get('url') is not None and not _valid_airport_url(data.get('url'))) or type(data.get('enabled')) is not bool:
+            raise ValueError
+        manual = data.get('manual_nodes', [])
+        if manual:
+            validate_nodes(manual)
+        elif manual != []:
+            raise ValueError
+        if data.get('manual_updated') is not None and type(data['manual_updated']) is not int:
+            raise ValueError
+        if data.get('url') is None and (data.get('nodes') or not manual):
             raise ValueError
         if data.get('nodes'):
             validate_nodes(data['nodes'])
@@ -91,6 +100,8 @@ def _write(root, data):
 def refresh(root, url=None, *, download=download_airport_document, validate=None, now=None):
     previous=read(root)
     source=url if url is not None else previous['url'] if previous else None
+    if source is None and previous and previous.get('manual_nodes'):
+        return previous
     if not _valid_airport_url(source):
         raise ServiceError('backup_url_invalid')
     current=dict(previous or {'version':1,'url':source,'enabled':True,'nodes':[],'last_success':None,'traffic':None,'last_error':None})
@@ -102,6 +113,8 @@ def refresh(root, url=None, *, download=download_airport_document, validate=None
         if validate is not None:validate(nodes)
         # Store only nodes, never remote rules, groups or scripts.
         current.update(url=source,enabled=True,nodes=nodes,last_success=int(time.time() if now is None else now),last_error=None,traffic=asdict(downloaded.traffic) if downloaded.traffic else None)
+        merged=combined_nodes(current)
+        if validate is not None:validate(merged)
         _write(root,current)
     except Exception:
         current=dict(previous or current)
@@ -112,6 +125,16 @@ def refresh(root, url=None, *, download=download_airport_document, validate=None
 
 
 def remove(root):
+    try:data=read(root)
+    except ServiceError:data=None
+    if data and data.get('manual_nodes'):
+        data.update(url=None,nodes=[],last_success=None,last_error=None,traffic=None)
+        _write(root,data)
+        return
+    _remove_file(root)
+
+
+def _remove_file(root):
     path=Path(root)/FILENAME
     try:info=path.lstat()
     except FileNotFoundError:return
@@ -132,4 +155,44 @@ def status(root):
         return {'configured':False,'enabled':False,'nodes':[],'last_success':None,'last_error':'backup_source_invalid','traffic':None}
     if not data:
         return {'configured':False,'enabled':False,'nodes':[],'last_success':None,'last_error':None,'traffic':None}
-    return {k:data[k] for k in ('enabled','last_success','last_error','traffic')} | {'configured':True,'nodes':[n['name'] for n in data['nodes']]}
+    subscription=[n['name'] for n in data['nodes']]
+    manual=[n['name'] for n in data.get('manual_nodes',[])]
+    return {k:data[k] for k in ('enabled','last_success','last_error','traffic')} | {'configured':True,'nodes':[n['name'] for n in combined_nodes(data)],'subscription_nodes':subscription,'manual_nodes':manual,'manual_updated':data.get('manual_updated'),'subscription_configured':bool(data.get('url'))}
+
+
+def combined_nodes(data):
+    """Deduplicate connection settings; deterministically disambiguate names."""
+    result, seen, names = [], set(), set()
+    for node in data['nodes'] + data.get('manual_nodes', []):
+        identity=json.dumps({k:v for k,v in node.items() if k!='name'},sort_keys=True,ensure_ascii=False)
+        if identity in seen:continue
+        seen.add(identity)
+        current=dict(node);base=node['name'];name=base;number=2
+        while name in names:
+            name='%s (%d)' % (base,number);number+=1
+        current['name']=name;names.add(name);result.append(current)
+    if result:validate_nodes(result)
+    return result
+
+
+def import_nodes(root, text, *, validate=None, now=None):
+    from clash_sub.node_import import parse_links
+    nodes=parse_links(text)
+    # Assign unique names before handing a candidate to the core.
+    candidate=combined_nodes({'nodes':[], 'manual_nodes':nodes})
+    if validate is not None:validate(candidate)
+    current=dict(read(root) or {'version':1,'url':None,'enabled':True,'nodes':[],'last_success':None,'traffic':None,'last_error':None})
+    current.update(manual_nodes=candidate,manual_updated=int(time.time() if now is None else now),enabled=True)
+    if validate is not None:validate(combined_nodes(current))
+    _write(root,current)
+    return current
+
+
+def remove_manual(root):
+    current=read(root)
+    if current is None:return
+    if not current.get('url'):
+        _remove_file(root)
+        return
+    current.pop('manual_nodes',None);current.pop('manual_updated',None)
+    _write(root,current)

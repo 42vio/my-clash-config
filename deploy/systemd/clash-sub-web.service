@@ -19,8 +19,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET
-IPAddressDeny=any
-IPAddressAllow=127.0.0.1/32
+# Fixed HTTPS provider endpoint is queried on demand; no periodic collector.
 ReadOnlyPaths=-/etc/clash-sub
 ReadOnlyPaths=/etc/x-ui
 ReadWritePaths=/var/lib/clash-sub/private

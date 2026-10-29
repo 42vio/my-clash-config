@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs
 
-from clash_sub.bandwagon import delete_api, load_credentials, query_usage, save_api
+from clash_sub.bandwagon import UsageCache, delete_api, load_credentials, query_usage, save_api
 from clash_sub.online import read_token, save_token
 
 
@@ -15,6 +15,50 @@ KEY = 'synthetic-bandwagon-key-for-tests'
 
 
 class BandwagonTests(unittest.TestCase):
+    def test_usage_cache_success_failure_and_recovery_are_rate_limited(self):
+        now = [1000]
+        first = {'used': 100, 'total': 500, 'next_reset': 1800000000}
+        second = dict(first, used=200)
+        reader = Mock(side_effect=[first, ValueError(KEY), second])
+        cache = UsageCache(credentials_reader=lambda: ('123', KEY), reader=reader, clock=lambda: now[0])
+        result = cache.get()
+        self.assertEqual(result, {'usage': first, 'updated': 1000, 'status': 'ok'})
+        result['usage']['used'] = 0
+        now[0] = 1299
+        self.assertEqual(cache.get()['usage'], first)
+        self.assertEqual(reader.call_count, 1)
+        now[0] = 1300
+        self.assertEqual(cache.get(), {'usage': first, 'updated': 1000, 'status': 'error'})
+        now[0] = 1599
+        self.assertEqual(cache.get()['status'], 'error')
+        self.assertEqual(reader.call_count, 2)
+        now[0] = 1600
+        self.assertEqual(cache.get(), {'usage': second, 'updated': 1600, 'status': 'ok'})
+        self.assertNotIn(KEY, repr(cache.get()))
+
+    def test_usage_cache_never_reuses_data_across_credentials_changes_or_deletion(self):
+        credentials = Mock(return_value=('123', KEY))
+        reader = Mock(return_value={'used': 100, 'total': 500, 'next_reset': 1800000000})
+        cache = UsageCache(credentials_reader=credentials, reader=reader, clock=lambda: 1000)
+        cache.get()
+        credentials.return_value = ('456', KEY)
+        reader.side_effect = ValueError('sensitive upstream failure')
+        self.assertEqual(cache.get(), {'usage': None, 'updated': None, 'status': 'error'})
+        credentials.return_value = None
+        self.assertEqual(cache.get(), {'usage': None, 'updated': None, 'status': 'unconfigured'})
+        self.assertEqual(reader.call_count, 2)
+        credentials.side_effect = ValueError(KEY)
+        self.assertEqual(cache.get(), {'usage': None, 'updated': None, 'status': 'error'})
+
+    def test_usage_cache_coalesces_concurrent_queries(self):
+        from concurrent.futures import ThreadPoolExecutor
+        reader = Mock(return_value={'used': 100, 'total': 500, 'next_reset': 1800000000})
+        cache = UsageCache(credentials_reader=lambda: ('123', KEY), reader=reader)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            values = list(pool.map(lambda _: cache.get(), range(16)))
+        self.assertEqual(reader.call_count, 1)
+        self.assertTrue(all(value['status'] == 'ok' for value in values))
+
     def connection(self, payload, status=200):
         connection = Mock()
         raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode()

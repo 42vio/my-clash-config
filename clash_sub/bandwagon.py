@@ -3,11 +3,52 @@
 import http.client
 import json
 import math
+import threading
+import time
 from datetime import datetime
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from clash_sub.online import CREDENTIALS, read_credentials, save_credentials
+
+
+class UsageCache:
+    """On-demand five-minute cache; keep last success only for the same account."""
+
+    def __init__(self, *, credentials_reader=None, reader=None, clock=time.time):
+        self.credentials_reader = credentials_reader or load_credentials
+        self.reader = reader or query_usage
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.credentials = None
+        self.checked = None
+        self.usage = None
+        self.updated = None
+        self.error = False
+
+    def get(self):
+        with self.lock:
+            try:
+                credentials = self.credentials_reader()
+            except Exception:
+                self.credentials = self.usage = self.updated = self.checked = None
+                return {'usage': None, 'updated': None, 'status': 'error'}
+            if credentials != self.credentials:
+                self.credentials = credentials
+                self.usage = self.updated = self.checked = None
+            if credentials is None:
+                return {'usage': None, 'updated': None, 'status': 'unconfigured'}
+            now = self.clock()
+            if self.checked is None or now - self.checked >= 300:
+                try:
+                    self.usage = dict(self.reader(*credentials))
+                    self.updated = now
+                    self.error = False
+                except Exception:
+                    self.error = True
+                self.checked = self.clock()
+            return {'usage': dict(self.usage) if self.usage is not None else None,
+                    'updated': self.updated, 'status': 'error' if self.error else 'ok'}
 
 
 def validate_credentials(veid, api_key):

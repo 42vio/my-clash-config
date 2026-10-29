@@ -206,6 +206,14 @@ class ClashSubService:
         from clash_sub.backup_subscription import refresh
         with self._lock():refresh(self.config.private_root,url,download=self._download,validate=self._validate_backup_nodes,now=self._clock())
         return self._sync_backup_change()
+    def import_backup_nodes(self,text):
+        from clash_sub.backup_subscription import import_nodes
+        with self._lock():import_nodes(self.config.private_root,text,validate=self._validate_backup_nodes,now=self._clock())
+        return self._sync_backup_change()
+    def remove_manual_backup_nodes(self):
+        from clash_sub.backup_subscription import remove_manual
+        with self._lock():remove_manual(self.config.private_root)
+        return self._sync_backup_change()
     def refresh_backup(self):
         from clash_sub.backup_subscription import refresh
         with self._lock():refresh(self.config.private_root,download=self._download,validate=self._validate_backup_nodes,now=self._clock())
@@ -217,7 +225,7 @@ class ClashSubService:
     def refresh_backup_if_due(self):
         from clash_sub.backup_subscription import read, INTERVAL
         data=read(self.config.private_root)
-        if data and data['enabled'] and self._clock()-(data['last_success'] or 0)>=INTERVAL:
+        if data and data.get('url') and data['enabled'] and self._clock()-(data['last_success'] or 0)>=INTERVAL:
             return self.refresh_backup()
         return None
     def _sync_backup_change(self):
@@ -314,11 +322,11 @@ class ClashSubService:
             _provider_url(self.config, identity.token),
             _provider_url(self.config, airport_only_token(identity.token)),
         ) if owner else None
-        from clash_sub.backup_subscription import read as read_backup, eligible
+        from clash_sub.backup_subscription import read as read_backup, eligible, combined_nodes
         backup=read_backup(self.config.private_root)
-        nodes=backup['nodes'] if backup and backup['enabled'] and eligible(client.email) else None
+        nodes=combined_nodes(backup) if backup and backup['enabled'] and eligible(client.email) else None
         bundle=self._render(owner,xui,provider,self.config.template_root,**({'backup_nodes':nodes} if nodes else {})); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
-        if backup:forbidden+=(backup['url'],)
+        if backup and backup.get('url'):forbidden+=(backup['url'],)
         for variant,text in bundle.items():
             if variant == "nodes":
                 if text != render_node_subscription(merge_proxy_sources((("3x-ui",xui),))):

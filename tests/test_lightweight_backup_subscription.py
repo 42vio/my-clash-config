@@ -35,7 +35,7 @@ class BackupSubscriptionTests(unittest.TestCase):
         self.seed()
         self.assertEqual((self.root/backup.FILENAME).stat().st_mode & 0o777,0o600)
         status=backup.status(self.root)
-        self.assertEqual(status['nodes'],[n['name'] for n in NODES])
+        self.assertEqual(status['nodes'],[NODES[0]['name']])
         self.assertEqual(status['traffic']['total'],100)
         text=json.dumps(status)
         self.assertNotIn(SOURCE,text)
@@ -162,3 +162,59 @@ class BackupSubscriptionTests(unittest.TestCase):
         service._clock=lambda:100+86400
         ClashSubService.refresh_backup_if_due(service)
         service.refresh_backup.assert_called_once()
+
+
+class ManualBackupTests(unittest.TestCase):
+    setUp=BackupSubscriptionTests.setUp
+    seed=BackupSubscriptionTests.seed
+    LINK='trojan://placeholder-manual-password@192.0.2.30:443?sni=example.com#Manual'
+
+    def test_manual_and_subscription_can_be_changed_and_deleted_independently(self):
+        self.seed()
+        backup.import_nodes(self.root,self.LINK,now=200)
+        backup.refresh(self.root,SOURCE,download=lambda *_:download([dict(NODES[0],port=8443)]),now=300)
+        data=backup.read(self.root)
+        self.assertEqual(data['manual_updated'],200)
+        self.assertEqual(len(backup.combined_nodes(data)),2)
+        backup.remove(self.root)
+        data=backup.read(self.root)
+        self.assertIsNone(data['url'])
+        self.assertEqual(backup.status(self.root)['manual_nodes'],['Manual'])
+        from clash_sub.service import ClashSubService
+        service=SimpleNamespace(config=SimpleNamespace(private_root=self.root),_clock=lambda:9999999,refresh_backup=Mock())
+        ClashSubService.refresh_backup_if_due(service)
+        service.refresh_backup.assert_not_called()
+        backup.refresh(self.root,download=Mock(side_effect=AssertionError('must not download')))
+        backup.remove_manual(self.root)
+        self.assertFalse(backup.status(self.root)['configured'])
+
+    def test_remove_manual_retains_subscription_and_failed_import_preserves_both(self):
+        self.seed();backup.import_nodes(self.root,self.LINK,now=200)
+        previous=(self.root/backup.FILENAME).read_bytes()
+        with self.assertRaises(ServiceError):backup.import_nodes(self.root,self.LINK+'\ninvalid',now=300)
+        self.assertEqual((self.root/backup.FILENAME).read_bytes(),previous)
+        with self.assertRaises(ValueError):backup.import_nodes(self.root,self.LINK,validate=Mock(side_effect=ValueError('core rejected')))
+        self.assertEqual((self.root/backup.FILENAME).read_bytes(),previous)
+        backup.remove_manual(self.root)
+        self.assertEqual(backup.read(self.root)['url'],SOURCE)
+        self.assertEqual(backup.status(self.root)['manual_nodes'],[])
+
+    def test_merge_deduplicates_configuration_and_disambiguates_names(self):
+        first=dict(NODES[0],name='Same')
+        data={'nodes':[first,dict(first,name='Other')],'manual_nodes':[dict(first,port=8443)]}
+        merged=backup.combined_nodes(data)
+        self.assertEqual([n['name'] for n in merged],['Same','Same (2)'])
+        self.assertEqual(data['manual_nodes'][0]['name'],'Same')
+
+    def test_multiline_menu_import_and_separate_delete(self):
+        from clash_sub.cli import _backup_subscription_dispatch
+        service=Mock();report={'configured':True,'nodes':['Manual'],'last_success':None,'last_error':None}
+        service.import_backup_nodes.return_value=report
+        service.remove_manual_backup_nodes.return_value=report
+        out,err=io.StringIO(),io.StringIO()
+        value=self.LINK+'\n'+self.LINK.replace(':443',':8443')
+        self.assertEqual(_backup_subscription_dispatch('5',io.StringIO(value+'\n\n'),out,err,lambda:service),(0,False))
+        service.import_backup_nodes.assert_called_once_with(value)
+        self.assertNotIn('placeholder-manual-password',out.getvalue()+err.getvalue())
+        _backup_subscription_dispatch('6',io.StringIO('DELETE\n'),out,err,lambda:service)
+        service.remove_manual_backup_nodes.assert_called_once()

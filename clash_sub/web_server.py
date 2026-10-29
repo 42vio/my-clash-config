@@ -24,6 +24,7 @@ from clash_sub.state import airport_only_token, load_state
 from clash_sub.web_settings import admin_username, admin_prefix, page_path, read_settings, verify_password
 from clash_sub.xui import read_xui_snapshot, read_inbound_traffic, read_traffic_resets
 from clash_sub.online import OnlineCache, query_online
+from clash_sub.bandwagon import UsageCache
 
 
 # Confirmed by the owner; subscription headers do not expose the reset day.
@@ -61,7 +62,7 @@ def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unl
 
 
 class Portal:
-    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot, online_reader=None):
+    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot, online_reader=None, provider_cache=None):
         self.config = config
         self.clock = clock
         self.store = store or TrafficMetadataStore(config)
@@ -77,6 +78,7 @@ class Portal:
         self._inbound = None
         self._inbound_time = 0
         self.online = OnlineCache(online_reader if online_reader is not None else lambda:query_online(config.xui_database))
+        self.provider = provider_cache if provider_cache is not None else UsageCache(clock=clock)
         self._resets = None
         self._resets_time = 0
 
@@ -89,15 +91,41 @@ class Portal:
         labels = {'online':'在线','offline':'离线','unknown':'未知'}
         return '<span class="presence %s" title="来源：3x-ui 在线查询">%s%s</span>' % (status, '<span aria-hidden="true">—</span>' if status == 'unknown' else '<i aria-hidden="true"></i>', labels[status])
 
-    def inbound_card(self):
+    def inbound_traffic(self):
         with self._snapshot_lock:
             if self._inbound is None or self.clock() - self._inbound_time >= 300:
                 self._inbound = read_inbound_traffic(self.config.xui_database)
                 self._inbound_time = self.clock()
-            traffic = self._inbound
+            return self._inbound
+
+    def inbound_card(self):
+        traffic = self.inbound_traffic()
         if traffic is None:
             return '<h3>自建流量 · 3x-ui 入站</h3><p>暂无数据 · 入站统计读取失败</p>'
         return usage_card('自建流量 · 3x-ui 入站', Traffic(traffic['upload'], traffic['download'], traffic['total'] or 0, 0), '入站当前累计', compact=True, reset=self.reset_rule(), unlimited_label='入站总额度未设置')
+
+    def proxy_summary(self):
+        traffic = self.inbound_traffic()
+        if traffic is None:
+            return '<div class="proxy-usage-summary member-usage-summary">3x-ui · 入站统计读取失败，暂无数据</div>'
+        return '<div class="proxy-usage-summary member-usage-summary" aria-label="3x-ui 代理用量" title="入站当前累计，与搬瓦工套餐用量分别统计，不相加"><div class="proxy-usage-heading"><span>3x-ui</span><strong>%s</strong></div><div class="transfer"><span title="代理上传流量">↑ %s</span><span title="代理下载流量">↓ %s</span></div></div>' % (size(traffic['upload'] + traffic['download']), size(traffic['upload']), size(traffic['download']))
+
+    def provider_card(self):
+        result = self.provider.get()
+        usage = result['usage']
+        header = '<div class="card-head"><h3>搬瓦工 · 自建</h3>'
+        if usage is not None:
+            reset = datetime.fromtimestamp(usage['next_reset'], ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M')
+            header += '<span class="subtle reset-hint" title="北京时间">%s 重置</span>' % esc(reset)
+        body = '<div class="traffic-part provider-quota" id="provider-quota">' + header + '</div>'
+        if usage is None:
+            message = '未配置 · 请在终端「网页与 3x-ui 面板 → 搬瓦工 API 设置」添加凭据' if result['status'] == 'unconfigured' else '查询失败 · 请在终端验证搬瓦工 API 设置'
+            return body + '<p class="subtle">%s</p></div>' % message
+        ratio = min(100, usage['used'] / usage['total'] * 100)
+        body += '<div class="usage usage-linear"><div class="number">%s <small>/ %s</small></div><div class="bar" role="progressbar" aria-label="搬瓦工套餐流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%.1f"><i style="width:%.2f%%"></i></div><div class="usage-caption"><span class="provider-caption-note">套餐收发合计</span><span class="remaining">剩余 %s</span></div></div>' % (size(usage['used']), size(usage['total']), ratio, ratio, size(max(0, usage['total'] - usage['used'])))
+        stamp = datetime.fromtimestamp(result['updated'], ZoneInfo('Asia/Shanghai')).strftime('%m-%d %H:%M 北京时间')
+        status = '查询失败 · 保留上次成功数据' if result['status'] == 'error' else '服务商统计可能延迟'
+        return body + '<div class="provider-meta"><span class="provider-source">KiwiVM API</span><span>更新于 %s</span></div><p class="subtle provider-status">%s · 最多每 5 分钟查询一次</p></div>' % (esc(stamp), status)
 
     def refresh_overview_data(self):
         """Refresh local display data without fetching upstream subscriptions."""
@@ -273,12 +301,12 @@ class Portal:
             bar = '<div class="bar"><i style="width:%.2f%%"></i></div>' % metric['ratio'] if metric['ratio'] is not None else '<div class="metric-sampling">等待采样</div>' if name == 'CPU' else '<div class="metric-spacer"></div>'
             extra = '<p class="swap-usage">%s</p>' % esc(swap) if name == '内存' else ''
             cards.append('<div class="metric"><label>%s</label><strong>%s <small>%s</small></strong>%s<p>%s</p>%s</div>' % (esc(name), esc(metric['value']), esc(metric['unit']), bar, esc(metric['detail']), extra))
-        return '<section class="card server" id="server-overview"><div class="card-head"><div class="server-title"><h2>服务器概况</h2></div><div class="server-tools"><span class="badge"><i class="dot"></i>运行中</span></div></div><div class="metrics">%s</div><div class="server-footer"><span>已连续运行 %s · <span class="refresh-stamp">更新于 %s</span></span><div class="network">%s</div></div><p class="subtle server-sampling-note">进入页面刷新一次，之后手动刷新；CPU 与网速为两次采样间的平均值，网络配置不代表外部连通。</p></section>' % (''.join(cards), esc(uptime), datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M:%S 北京时间'), ''.join('<span><i class="dot"></i>%s</span>' % esc(label) for label in network))
+        return '<section class="card server" id="server-overview"><div class="card-head"><div class="server-title"><h2>服务器概况</h2></div><div class="server-tools"><span class="badge"><i class="dot"></i>运行中</span></div></div><div class="metrics">%s</div><div class="server-footer"><span>已连续运行 %s · <span class="refresh-stamp">更新于 %s</span></span><div class="network">%s</div></div><p class="subtle server-sampling-note">CPU 与网速为两次采样间的平均值，网络配置不代表外部连通。</p></section>' % (''.join(cards), esc(uptime), datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M:%S 北京时间'), ''.join('<span><i class="dot"></i>%s</span>' % esc(label) for label in network))
 
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
-        body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.inbound_card() + '<hr class="divider">'
-        body += usage_card("Amy 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=AMY_RESET_RULE) + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><h2>成员用量</h2><span class="subtle">在线来源：3x-ui · 进入页面及手动刷新</span></div><p class="mobile-member-note">重置规则和账号详情可点「详情」查看</p><table class="user-table has-presence"><thead><tr><th>用户</th><th>在线状态</th><th>已用 / 额度</th><th>流量重置时间</th><th>账号状态</th><th></th></tr></thead><tbody>'
+        body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.provider_card() + '<hr class="divider">'
+        body += usage_card("Amy 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=AMY_RESET_RULE) + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><h2>代理用量</h2><span class="subtle">在线来源：3x-ui</span></div>' + self.proxy_summary() + '<p class="mobile-member-note">重置规则和账号详情可点「详情」查看</p><table class="user-table has-presence"><thead><tr><th>用户</th><th>在线状态</th><th>已用 / 额度</th><th>流量重置时间</th><th>账号状态</th><th></th></tr></thead><tbody>'
         online = self.online_states(state)
         clients = {c.client_id: c for c in self.snapshot().clients}
         for client_id, user in sorted(state.users.items()):
@@ -338,7 +366,7 @@ class Portal:
 
     @staticmethod
     def backup_dialog():
-        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用线路</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用线路状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接在终端「机场订阅 → 自建备用订阅」中添加、更换或删除。客户端需更新标准订阅。</p></dialog>'
+        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用线路</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用线路状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「机场订阅 → 自建备用订阅」中分别添加、替换或删除。客户端需更新标准订阅。</p></dialog>'
 
     def user_links(self, state, settings, client_id):
         user = state.users.get(client_id)

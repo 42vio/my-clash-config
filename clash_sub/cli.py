@@ -100,6 +100,8 @@ _BACKUP_SUBSCRIPTION_ROWS = (
     ("option", "2", (("刷新备用订阅并生成配置", None),)),
     ("option", "3", (("删除备用订阅并生成配置", None),)),
     ("option", "4", (("查看备用状态", None),)),
+    ("option", "5", (("导入或替换手动节点链接", None),)),
+    ("option", "6", (("删除手动节点并生成配置", None),)),
     ("option", "0", (("返回", None),)),
 )
 
@@ -366,7 +368,7 @@ def _web_access_status():
 
 def _airport_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "6":
-        return _run_submenu(_BACKUP_SUBSCRIPTION_ROWS,4,_backup_subscription_dispatch,stdin,stdout,stderr,factory,_colors_for(stdout),name="自建备用订阅")
+        return _run_submenu(_BACKUP_SUBSCRIPTION_ROWS,6,_backup_subscription_dispatch,stdin,stdout,stderr,factory,_colors_for(stdout),name="自建备用订阅")
     if choice == "1":
         return _menu_airport_portal(stdin, stdout, stderr, factory)
     if choice == "2":
@@ -392,6 +394,21 @@ def _backup_subscription_dispatch(choice, stdin, stdout, stderr, factory):
         if answer!='DELETE':return 0,False
         return _call('backup-remove',None,stdout,stderr,factory),False
     if choice == '4':return _call('backup-status',None,stdout,stderr,factory),False
+    if choice == '5':
+        stdout.write('每行一个 VLESS、Trojan 或 Shadowsocks 链接，空行结束；替换现有手动节点，保留订阅来源。\n')
+        lines=[];length=0
+        while True:
+            line=stdin.readline(1048577)
+            if not line.strip():break
+            length+=len(line.encode())
+            if length>1048576 or len(lines)>=1000:return _error(stderr,'backup_nodes_invalid',1),False
+            lines.append(line.strip())
+        if not lines:return 0,False
+        return _call('backup-import','\n'.join(lines),stdout,stderr,factory),False
+    if choice == '6':
+        answer=_prompt(stdin,stdout,'仅删除手动节点，保留订阅来源。输入 DELETE 确认：')
+        if answer!='DELETE':return 0,False
+        return _call('backup-remove-manual',None,stdout,stderr,factory),False
     return None
 
 
@@ -951,6 +968,8 @@ def _call(operation, value, stdout, stderr, factory):
             elif operation=='backup-refresh':result=service.refresh_backup()
             elif operation=='backup-remove':result=service.remove_backup_source()
             elif operation=='backup-status':result=service.backup_status()
+            elif operation=='backup-import':result=service.import_backup_nodes(value)
+            elif operation=='backup-remove-manual':result=service.remove_manual_backup_nodes()
             else:return _error(stderr,'invalid_command',2)
             _write_backup_status(stdout,result)
         elif operation == "airport-replace":
@@ -1141,6 +1160,11 @@ def _looks_like_url(value):
 
 
 def _error(stderr, code, status):
+    if code.startswith('backup_node_line_') and code.endswith('_invalid_or_unsupported'):
+        number=code[len('backup_node_line_'):-len('_invalid_or_unsupported')]
+        if number.isdigit():
+            stderr.write('第 %s 行节点链接格式错误或含不支持的参数，未替换原节点。\n' % number)
+            return status
     stderr.write(_ERROR_TEMPLATE % code)
     return status
 
@@ -1334,10 +1358,13 @@ def _cert_command(parsed, stdout, stderr):
 
 def _write_backup_status(stdout, result):
     labels={None:'无','backup_download_failed':'下载失败，保留上次成功缓存','backup_source_invalid':'备用配置不可用'}
-    stdout.write('备用订阅：%s\n' % ('已配置' if result['configured'] else '未配置'))
-    stdout.write('缓存节点：%d 个\n' % len(result['nodes']))
+    stdout.write('备用线路：%s\n' % ('已配置' if result['configured'] else '未配置'))
+    stdout.write('合并节点：%d 个\n' % len(result['nodes']))
+    stdout.write('订阅来源：%d 个；手动导入：%d 个\n' % (len(result.get('subscription_nodes',result['nodes'])),len(result.get('manual_nodes',[]))))
     for name in result['nodes']:stdout.write('  %s\n' % name)
     stamp=result.get('last_success')
     stdout.write('最近成功刷新：%s\n' % (datetime.fromtimestamp(stamp,timezone.utc).astimezone().isoformat() if stamp else '暂无'))
+    updated=result.get('manual_updated')
+    stdout.write('手动节点修改时间：%s\n' % (datetime.fromtimestamp(updated,timezone.utc).astimezone().isoformat() if updated else '暂无'))
     stdout.write('最近错误：%s\n' % labels.get(result.get('last_error'),'状态不可用'))
     stdout.write('仅标准订阅包含备用；42vio、openwrt 除外。客户端需更新订阅。\n')
