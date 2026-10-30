@@ -53,6 +53,7 @@ dns:
   - "*.blzstatic.cn"
   - "*.battle.net"
   - "+.hitrontech.com"
+  - "+.hitroncloud.cn"
   - "+.42io.cc"
 
   # 用于解析 DoH 服务器自身域名等基础解析
@@ -69,7 +70,7 @@ dns:
 
   # 特定域名 DNS 分流
   nameserver-policy:
-    "+.hitrontech.com":
+    "+.hitrontech.com,+.hitroncloud.cn":
     - 172.28.30.211
     - 172.28.30.210
 
