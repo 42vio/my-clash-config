@@ -11,7 +11,7 @@ allow-lan: true      # 允许局域网连接
 bind-address: "*"    # 地址绑定
 mode: rule           # 规则模式
 log-level: info      # 日志级别
-ipv6: false          # IPV6开关
+ipv6: true           # IPV6开关
 external-controller: 127.0.0.1:9090
 
 # GEO 数据每 7 天自动更新（间隔单位：小时）
