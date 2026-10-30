@@ -52,6 +52,30 @@ class PortalTests(unittest.TestCase):
         self.assertIn(self.state.airport_token,page)
         self.assertNotIn(self.state.users[1].token,page)
 
+    def test_member_table_replaces_reset_with_cumulative_transfers(self):
+        from html.parser import HTMLParser
+        class Counter(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.headers=0
+                self.cells=[]
+            def handle_starttag(self,tag,attrs):
+                if tag=='th':self.headers+=1
+                if tag=='tr':self.cells.append(0)
+                if tag=='td':self.cells[-1]+=1
+        body=self.portal.admin(self.state,self.settings)
+        table=body.split('<table class="user-table',1)[1].split('</table>',1)[0]
+        parser=Counter();parser.feed('<table'+table+'</table>')
+        self.assertEqual(parser.headers,6)
+        self.assertTrue(all(count==6 for count in parser.cells[1:]))
+        self.assertNotIn('流量重置',table)
+        self.assertIn('上传 / 下载',table)
+        self.assertIn('member-transfer',table)
+        self.assertIn('title="累计上传"',table)
+        self.assertIn('title="累计下载"',table)
+        self.assertIn('管理链接',table)
+        self.assertIn('data-online-client=',table)
+
     def test_maintenance_uses_separate_actions_and_hides_idle_progress(self):
         body=self.portal.maintenance_card()
         self.assertIn('data-task="update"',body)

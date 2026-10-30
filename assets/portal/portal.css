@@ -250,3 +250,5 @@
 .maintenance-footer.task-failed .dot{background:#c49a55}
 @media(min-width:761px){.admin-overview>.maintenance{padding:20px 24px}}
 @media(max-width:760px){.maintenance>.card-head{margin-bottom:7px}.maintenance .maintenance-action{padding:11px 0;gap:8px}.maintenance-project>div:first-child{min-width:0}.maintenance-buttons{gap:5px}.maintenance .maintenance-buttons .button{font-size:10px;padding:6px 7px}}
+
+.member-transfer{display:flex;flex-direction:column;gap:2px;color:var(--muted);font-size:11px;white-space:nowrap}
