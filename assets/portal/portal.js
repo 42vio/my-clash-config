@@ -338,8 +338,9 @@ async function showBackupStatus() {
 document.addEventListener('click',event=>{document.querySelectorAll('.reset-info[open]').forEach(item=>{if(!item.contains(event.target))item.open=false;});});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.reset-info[open]').forEach(item=>item.open=false);});
 
-// Desktop-only, opt-in sampling; never updates while hidden or after leaving.
+// Desktop-only shared 3x-ui stream leases; never renew while hidden.
 const speedDesktop=matchMedia('(min-width:761px)');
+const speedViewer=crypto.randomUUID();
 let speedEnabled=false,speedTimer=null,speedController=null,speedGeneration=0,speedOriginals=[];
 function speedRows(){return [...document.querySelectorAll('#members tbody tr')].map(row=>({key:row.querySelector('[data-online-client]')?.dataset.onlineClient,cell:row.querySelector('td:nth-child(4)')}));}
 function rateText(value){
@@ -354,12 +355,18 @@ function paintSpeedValues(values){
     const block=document.createElement('div');block.className='member-transfer';
     for(const [field,arrow] of [['upload','↑'],['download','↓']]){
       const span=document.createElement('span');span.textContent=arrow+' '+rateText(values[key]?.[field]);
-      span.title=field==='upload'?'采样平均上传速度':'采样平均下载速度';block.append(span);
+      span.title=field==='upload'?'3x-ui 实时上传速度':'3x-ui 实时下载速度';block.append(span);
     }
     cell.replaceChildren(block);
   }
 }
-function pauseSpeedRequests(){
+function releaseSpeedViewer(){
+  if(!adminBase||!csrfToken)return;
+  const body=new URLSearchParams({csrf:csrfToken,viewer:speedViewer,active:'no'});
+  fetch(adminBase+'/speeds',{method:'POST',body,credentials:'same-origin',keepalive:true,redirect:'error'}).catch(()=>{});
+}
+function pauseSpeedRequests(release=false){
+  if(release&&speedEnabled)releaseSpeedViewer();
   clearTimeout(speedTimer);speedTimer=null;speedGeneration++;
   speedController?.abort();speedController=null;
 }
@@ -368,11 +375,14 @@ async function querySpeeds(){
   const generation=speedGeneration,controller=new AbortController();speedController=controller;
   const timeout=setTimeout(()=>controller.abort(),5000);
   try{
-    const response=await fetch(adminBase+'/speeds',{cache:'no-store',credentials:'same-origin',signal:controller.signal});
+    const body=new URLSearchParams({csrf:csrfToken,viewer:speedViewer,active:'yes'});
+    const response=await fetch(adminBase+'/speeds',{method:'POST',body,cache:'no-store',credentials:'same-origin',redirect:'error',signal:controller.signal});
     if(response.status===401){setSpeedMode(false);notify('登录已过期，请重新登录。');return;}
     if(!response.ok)throw new Error('unavailable');
     const data=await response.json();
-    if(generation===speedGeneration&&speedEnabled&&!document.hidden)paintSpeedValues(data.speeds||{});
+    if(generation!==speedGeneration||!speedEnabled||document.hidden)return;
+    if(data.status==='panel_login_required'){setSpeedMode(false);notify('请重新登录订阅网页，以相同账号密码建立 3x-ui 会话；若启用两步验证需另行配置。');return;}
+    paintSpeedValues(data.speeds||{});
   }catch{
     if(generation===speedGeneration&&speedEnabled&&!document.hidden)paintSpeedValues({});
   }finally{
@@ -381,24 +391,24 @@ async function querySpeeds(){
   }
 }
 function setSpeedMode(enabled){
-  pauseSpeedRequests();
+  pauseSpeedRequests(true);
   const button=document.querySelector('[data-speed-toggle]');
   speedEnabled=Boolean(enabled&&speedDesktop.matches&&button&&adminBase);
   if(!button)return;
   button.setAttribute('aria-pressed',String(speedEnabled));
   button.textContent=speedEnabled?'实时速度 ⇄':'上传 / 下载 ⇄';
-  button.title=speedEnabled?'点击恢复累计流量；速度由 3x-ui 累计流量差值计算，每 3 秒采样，受面板写入频率影响；后台暂停':'切换累计流量与采样平均速度';
+  button.title=speedEnabled?'点击恢复累计流量；直接读取 3x-ui 实时推送，与面板相同口径；后台断开':'切换累计流量与 3x-ui 实时速度';
   document.querySelector('#members .user-table')?.classList.toggle('live-speeds',speedEnabled);
   if(speedEnabled){speedOriginals=speedRows().map(({key,cell})=>({key,html:cell.innerHTML}));paintSpeedValues({});querySpeeds();}
   else{for(const {key,cell} of speedRows()){const original=speedOriginals.find(row=>row.key===key);if(original)cell.innerHTML=original.html;}speedOriginals=[];}
 }
 document.addEventListener('click',event=>{if(event.target.closest('[data-speed-toggle]'))setSpeedMode(!speedEnabled);});
 document.addEventListener('visibilitychange',()=>{
-  pauseSpeedRequests();
+  pauseSpeedRequests(true);
   if(speedEnabled){paintSpeedValues({});if(!document.hidden)querySpeeds();}
 });
 speedDesktop.addEventListener('change',()=>{if(!speedDesktop.matches)setSpeedMode(false);});
-window.addEventListener('pagehide',pauseSpeedRequests);
+window.addEventListener('pagehide',()=>pauseSpeedRequests(true));
 window.addEventListener('pageshow',event=>{if(event.persisted&&speedEnabled&&!document.hidden)querySpeeds();});
 
 refreshOverviewOnEntry();

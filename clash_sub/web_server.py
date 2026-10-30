@@ -24,7 +24,7 @@ from clash_sub.state import airport_only_token, airport_access_token, load_state
 from clash_sub.web_settings import admin_username, admin_prefix, page_path, read_settings, verify_password
 from clash_sub.xui import read_xui_snapshot, read_inbound_traffic, read_traffic_resets
 from clash_sub.online import OnlineCache, query_online
-from clash_sub.speeds import SpeedSamples
+from clash_sub.speeds import PanelSpeeds
 from clash_sub.bandwagon import UsageCache
 
 
@@ -84,7 +84,8 @@ class Portal:
         self.clock = clock
         self.store = store or TrafficMetadataStore(config)
         self.snapshot_reader = snapshot_reader
-        self.speeds = SpeedSamples(lambda:self.snapshot_reader(config.xui_database))
+        self.speed_logins = {}
+        self.speeds = PanelSpeeds(config.xui_database, self.take_speed_login)
         self.sessions = {}
         self.failures = deque()
         self.lock = threading.Lock()
@@ -99,6 +100,10 @@ class Portal:
         self.provider = provider_cache if provider_cache is not None else UsageCache(clock=clock)
         self._resets = None
         self._resets_time = 0
+
+    def take_speed_login(self, session):
+        with self.lock:
+            return self.speed_logins.pop(session, None)
 
     def online_states(self, state):
         names = self.online.get()
@@ -183,6 +188,9 @@ class Portal:
         prefix = admin_prefix(settings,state)
         if record and prefix and record[0] > self.clock() and secrets.compare_digest(record[1], settings.get("password_hash", "")) and record[2] == settings['admin']['binding'] and record[4] == settings['admin']['token'] and len(record) == 6 and record[5] == admin_username(settings):
             return record
+        if record:
+            with self.lock:self.speed_logins.pop(record[3], None)
+            self.speeds.revoke(record[3])
         return None
 
     def session(self, cookie, settings, state=None):
@@ -201,10 +209,17 @@ class Portal:
                 self.failures.append(now)
                 return None
             self.sessions = {key: value for key, value in self.sessions.items() if value[0] > now}
+            active = {record[3] for record in self.sessions.values()}
+            self.speed_logins = {key:value for key,value in self.speed_logins.items() if key in active}
             if len(self.sessions) >= 32:
+                for record in self.sessions.values():self.speeds.revoke(record[3])
                 self.sessions.clear()
+                self.speed_logins.clear()
             token = secrets.token_urlsafe(32)
             self.sessions[hashlib.sha256(token.encode()).hexdigest()] = (now + 8 * 3600, settings["password_hash"], settings["admin"]["binding"], secrets.token_urlsafe(32), settings["admin"]["token"], admin_username(settings))
+            record = self.sessions[hashlib.sha256(token.encode()).hexdigest()]
+            self.speed_logins[record[3]] = (username, password)
+            self.speeds.credentials_changed()
             return token
 
     def resolve_page(self, token, settings, state):
@@ -329,7 +344,7 @@ class Portal:
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
         body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.provider_card() + '<hr class="divider">'
-        body += usage_card("AmyTelecom 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知', header_action='<button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button>') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2>' + self.panel_shortcut(settings) + '</div><span class="subtle">' + datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M') + ' 更新</span></div>' + self.proxy_summary() + '<table class="user-table has-presence"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th><button class="transfer-mode-toggle" data-speed-toggle aria-pressed="false" title="切换累计流量与采样平均速度">上传 / 下载 <span aria-hidden="true">⇄</span></button></th><th>账号状态</th><th>操作</th></tr></thead><tbody>'
+        body += usage_card("AmyTelecom 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知', header_action='<button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button>') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2>' + self.panel_shortcut(settings) + '</div><span class="subtle">' + datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M') + ' 更新</span></div>' + self.proxy_summary() + '<table class="user-table has-presence"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th><button class="transfer-mode-toggle" data-speed-toggle aria-pressed="false" title="切换累计流量与 3x-ui 实时速度">上传 / 下载 <span aria-hidden="true">⇄</span></button></th><th>账号状态</th><th>操作</th></tr></thead><tbody>'
         online = self.online_states(state)
         clients = {c.client_id: c for c in self.snapshot().clients}
         for client_id, user in sorted(state.users.items()):
@@ -517,7 +532,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rest == '/server':
                 return self.respond(200,portal.system_card())
             if rest == '/speeds':
-                return self.respond(200,json.dumps({'speeds':portal.speeds.get(state)}),content_type='application/json')
+                return self.respond(405,'{}',content_type='application/json')
             if rest == '/onlines':
                 return self.respond(200,json.dumps({'states':portal.online_states(state)}),content_type='application/json')
             if rest == '/tasks':
@@ -571,7 +586,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.respond(401,'{}',content_type='application/json')
             if not secrets.compare_digest(payload.get('csrf',''),session[3]):
                 return self.respond(403,'请求无效')
+            if rest == '/speeds':
+                viewer = payload.get('viewer', '')
+                if not re.fullmatch(r'[A-Za-z0-9_-]{16,64}',viewer) or payload.get('active') not in {'yes','no'}:
+                    return self.respond(400,'{}',content_type='application/json')
+                if payload['active'] == 'no':
+                    portal.speeds.release(viewer,session[3])
+                    return self.respond(200,'{}',content_type='application/json')
+                try:result = portal.speeds.renew(viewer,session[3],state)
+                except ValueError:return self.respond(409,'{}',content_type='application/json')
+                return self.respond(200,json.dumps(result),content_type='application/json')
             if rest == '/logout':
+                with portal.lock:portal.speed_logins.pop(session[3],None)
+                portal.speeds.revoke(session[3])
                 cookie = http.cookies.SimpleCookie(self.headers.get('Cookie',''))
                 if 'portal_session' in cookie:
                     with portal.lock:
@@ -621,4 +648,5 @@ def serve(config, listener):
     try:
         server.serve_forever()
     finally:
+        server.portal.speeds.close()
         server.server_close()

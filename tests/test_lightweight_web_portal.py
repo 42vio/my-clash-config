@@ -52,24 +52,50 @@ class PortalTests(unittest.TestCase):
         self.assertIn(self.state.airport_token,page)
         self.assertNotIn(self.state.users[1].token,page)
 
-    def test_speed_samples_are_admin_only_and_do_not_fetch_upstream(self):
-        from clash_sub.speeds import SpeedSamples
-        calls=[]
-        self.portal.speeds=SpeedSamples(lambda:(calls.append('read') or SimpleNamespace(clients=self.clients)))
+    def test_realtime_view_requires_session_csrf_and_explicit_post(self):
+        from unittest.mock import Mock
+        hub=Mock()
+        hub.renew.return_value={'speeds':{'1':{'upload':20,'download':40}},'status':'ok'}
+        self.portal.speeds=hub
         self.assertEqual(self.request('/admin/speeds')[0],401)
-        self.assertEqual(calls,[])
-        status,headers,body=self.request('/admin/speeds',cookie=self.login())
+        cookie=self.login()
+        hub.renew.assert_not_called()
+        self.assertEqual(self.request('/admin/speeds',cookie=cookie)[0],405)
+        session=self.portal.session_record(cookie,self.settings,self.state)
+        fields={'csrf':session[3],'viewer':'viewer-aaaaaaaaaaaaaaaa','active':'yes'}
+        self.assertEqual(self.request('/admin/speeds',method='POST',fields=fields,cookie=cookie)[0],403)
+        self.assertEqual(self.request('/admin/speeds',method='POST',fields={**fields,'csrf':'wrong'},cookie=cookie,origin='https://sub.example.com')[0],403)
+        hub.renew.assert_not_called()
+        status,headers,body=self.request('/admin/speeds',method='POST',fields=fields,cookie=cookie,origin='https://sub.example.com')
         self.assertEqual(status,200)
         self.assertIn('no-store',headers)
-        self.assertEqual(calls,['read'])
-        payload=json.loads(body)
-        self.assertEqual(set(payload),{'speeds'})
-        for rates in payload['speeds'].values():
-            self.assertEqual(rates,{'upload':None,'download':None})
-        for user in self.state.users.values():self.assertNotIn(user.token,body)
+        hub.renew.assert_called_once_with(fields['viewer'],session[3],self.state)
+        self.assertEqual(json.loads(body)['speeds']['1']['upload'],20)
+        status,_,_=self.request('/admin/speeds',method='POST',fields={**fields,'active':'no'},cookie=cookie,origin='https://sub.example.com')
+        self.assertEqual(status,200)
+        hub.release.assert_called_once_with(fields['viewer'],session[3])
         token=self.settings['pages']['2']['token']
         self.assertEqual(self.request('/p/'+token+'/speeds')[0],404)
-        self.assertEqual(calls,['read'])
+        for bad in ('x','a'*65):
+            self.assertEqual(self.request('/admin/speeds',method='POST',fields={**fields,'viewer':bad},cookie=cookie,origin='https://sub.example.com')[0],400)
+
+    def test_shared_login_is_kept_only_in_memory_and_consumed_once(self):
+        cookie=self.login()
+        record=self.portal.session_record(cookie,self.settings,self.state)
+        self.assertIsNone(self.portal.speeds.thread)
+        self.assertEqual(self.portal.take_speed_login(record[3]),('owner','a-strong-test-password'))
+        self.assertIsNone(self.portal.take_speed_login(record[3]))
+        self.assertNotIn('a-strong-test-password',(self.root/'web-settings.json').read_text())
+
+    def test_logout_clears_pending_panel_login_and_releases_viewers(self):
+        from unittest.mock import Mock
+        cookie=self.login()
+        record=self.portal.session_record(cookie,self.settings,self.state)
+        self.portal.speeds=Mock()
+        status,_,_=self.request('/admin/logout',method='POST',fields={'csrf':record[3]},cookie=cookie,origin='https://sub.example.com')
+        self.assertEqual(status,303)
+        self.assertIsNone(self.portal.take_speed_login(record[3]))
+        self.portal.speeds.revoke.assert_called_once_with(record[3])
 
     def test_member_table_replaces_reset_with_cumulative_transfers(self):
         from html.parser import HTMLParser

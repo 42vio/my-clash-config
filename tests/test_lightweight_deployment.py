@@ -343,7 +343,7 @@ class LightweightDeploymentTests(unittest.TestCase):
     def test_requirements_are_the_approved_pins(self):
         self.assertEqual(
             REQUIREMENTS.read_text(encoding="utf-8").splitlines(),
-            ["Jinja2==3.1.6", "PyYAML==6.0.3", "ruamel.yaml==0.19.1"],
+            ["Jinja2==3.1.6", "PyYAML==6.0.3", "ruamel.yaml==0.19.1", "websocket-client==1.9.0"],
         )
 
 
