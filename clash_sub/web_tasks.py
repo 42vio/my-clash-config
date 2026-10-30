@@ -16,7 +16,7 @@ from clash_sub.operation import _OperationLock, ServiceError
 from clash_sub.state import load_state
 from clash_sub.web_settings import admin_prefix, read_settings, write_settings
 
-ACTIONS = {'rotate-page':'更换网页链接', 'rotate-sub':'更换订阅链接', 'refresh-airport':'刷新 Amy 订阅', 'update-sync':'更新代码并生成配置'}
+ACTIONS = {'rotate-page':'更换网页链接', 'rotate-sub':'更换订阅链接', 'refresh-airport':'刷新 AmyTelecom 订阅', 'update':'更新代码', 'sync':'生成配置', 'update-sync':'更新代码并生成配置'}
 STATUSES = {'queued':'等待执行', 'running':'执行中', 'success':'成功', 'failed':'失败', 'interrupted':'执行中断，请检查'}
 
 
@@ -91,7 +91,7 @@ def enqueue(config, action, target, request_id, actor, *, runner=subprocess.run,
     if not secrets.compare_digest(actor,authorization(settings,state)):
         raise ValueError('owner_authorization_invalid')
     if action in {'rotate-page','rotate-sub'}:
-        if target not in {str(k) for k in state.users} | ({'airport','admin'} if action == 'rotate-page' else set()):
+        if target not in {str(k) for k in state.users} | ({'airport','admin'} if action == 'rotate-page' else {'airport'}):
             raise ValueError('invalid_task_target')
     elif target is not None:
         raise ValueError('invalid_task_target')
@@ -107,7 +107,7 @@ def enqueue(config, action, target, request_id, actor, *, runner=subprocess.run,
         row = {'id':secrets.token_hex(16),'request_id':request_id,'authorization':actor,'action':action,'target':target,'status':'queued','created_at':now,'updated_at':now,'phase':'等待后台任务启动','boot_id':_boot_id()}
         identity = state.users[state.owner_client_id if target in {'airport','admin'} else int(target)] if target is not None else None
         row['target_binding'] = hashlib.sha256(identity.token.encode()).hexdigest() if identity else None
-        row['target_label'] = identity.email + ('（机场专用）' if target=='airport' else '（管理员入口）' if target=='admin' else '') if identity else 'AmyTelecom' if action=='refresh-airport' else '全部用户'
+        row['target_label'] = '机场链接' if target=='airport' else identity.email + ('（管理员入口）' if target=='admin' else '') if identity else 'AmyTelecom' if action=='refresh-airport' else '项目' if action=='update' else '全部用户'
         _write(config.private_root,[row]+rows[:29])
     try:
         result = runner([str(config.systemctl_binary),'start','--no-block','clash-sub-task@%s.service'%row['id']],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=5,check=False)
@@ -202,20 +202,29 @@ def run(config, root, task_id, *, service_factory=None, runner=subprocess.run, s
             execute(root,'rotate-page',target=target,runner=runner,actor=task['authorization'],authorize=check_authorization)
         elif action=='rotate-sub':
             update(config,task_id,'running','更换订阅链接')
-            service_factory().rotate_link(int(target))
-            after=load_state(Path(config.private_root)/'state.json')
-            _rebind_rotated(config,before,after,int(target))
+            if target=='airport':
+                service_factory().rotate_airport_link()
+            else:
+                service_factory().rotate_link(int(target))
+                after=load_state(Path(config.private_root)/'state.json')
+                _rebind_rotated(config,before,after,int(target))
         elif action=='refresh-airport':
-            update(config,task_id,'running','开启机场订阅并刷新 Amy')
+            update(config,task_id,'running','开启机场订阅并刷新 AmyTelecom')
             result = service_factory().auto_refresh_airport()
             if result.get('skipped'):
                 raise ServiceError('airport_portal_unavailable')
-        elif action=='update-sync':
+        elif action=='sync':
+            update(config,task_id,'running','正在生成全部用户配置')
+            result=service_factory().sync_all()
+            if result.get('errors'):raise ValueError('sync_failed')
+        elif action in {'update','update-sync'}:
             update(config,task_id,'running','更新代码与服务，网页可能短暂中断')
             run_update(root,runner,authorize=check_authorization)
-            update(config,task_id,'running','代码更新成功，正在生成配置')
-            result=runner([str(Path(root)/'.venv/bin/python'),str(Path(root)/'bin/clash-sub'),'web-task',task_id,'--sync-only'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=900,check=False)
-            if result.returncode:raise ValueError('sync_failed')
+            # Retain support for queued jobs from versions with a combined button.
+            if action=='update-sync':
+                update(config,task_id,'running','代码更新成功，正在生成配置')
+                result=runner([str(Path(root)/'.venv/bin/python'),str(Path(root)/'bin/clash-sub'),'web-task',task_id,'--sync-only'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=900,check=False)
+                if result.returncode:raise ValueError('sync_failed')
         with _OperationLock(Path(config.private_root)/'operation.lock'):
             from clash_sub.web_settings import provision_pages
             settings = read_settings(config.private_root)

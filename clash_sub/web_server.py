@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from clash_sub.domain import PROFILE_FILENAMES, Traffic
 from clash_sub.metadata import TrafficMetadataStore
-from clash_sub.state import airport_only_token, load_state
+from clash_sub.state import airport_only_token, airport_access_token, load_state
 from clash_sub.web_settings import admin_username, admin_prefix, page_path, read_settings, verify_password
 from clash_sub.xui import read_xui_snapshot, read_inbound_traffic, read_traffic_resets
 from clash_sub.online import OnlineCache, query_online
@@ -29,6 +29,9 @@ from clash_sub.bandwagon import UsageCache
 
 # Confirmed by the owner; subscription headers do not expose the reset day.
 AMY_RESET_RULE = "每月 19 日"
+
+COPY_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="copy-symbol"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></g><path class="copy-done" d="m5 12 4 4L19 6"/></svg>'
+REVEAL_ICON = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="eye-show"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></g><g class="eye-hide"><path d="m3 3 18 18M10.6 5.1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.5 6.5A20 20 0 0 0 2 12s3.5 7 10 7a11 11 0 0 0 5.5-1.5M9.9 9.9a3 3 0 0 0 4.2 4.2"/></g></svg>'
 
 
 def esc(value):
@@ -52,12 +55,13 @@ def airport_reset_date(now):
     return '%d 月 19 日重置' % month
 
 
-def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unlimited_label="不限额", reset_detail=None):
+def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unlimited_label="不限额", reset_detail=None, header_action=""):
     tag, kind, heading = ('div', 'traffic-part', 'h3') if compact else ('section', 'card usage-card', 'h2')
     reset_label = reset + '重置' if reset.startswith('每') else '重置时间待确认' if reset == '待确认' else reset
-    header = '<div class="card-head"><%s>%s</%s><span class="subtle reset-hint" title="%s">%s</span></div>' % (heading, esc(title), heading, esc(note), esc(reset_label))
-    if reset_detail is not None:
-        header = '<div class="card-head"><%s>%s</%s>%s</div>' % (heading, esc(title), heading, reset_hint(reset_label, reset_detail))
+    title_html='<%s>%s</%s>' % (heading,esc(title),heading)
+    if header_action:title_html='<div class="traffic-title-tools">%s%s</div>' % (title_html,header_action)
+    hint=reset_hint(reset_label,reset_detail) if reset_detail is not None else '<span class="subtle reset-hint" title="%s">%s</span>' % (esc(note),esc(reset_label))
+    header='<div class="card-head">%s%s</div>' % (title_html,hint)
     if traffic is None:
         return '<%s class="%s">%s<p>暂无数据</p></%s>' % (tag, kind, header, tag)
     used = traffic.upload + traffic.download
@@ -121,12 +125,12 @@ class Portal:
         if traffic is None:
             return '<div class="proxy-usage-summary member-usage-summary">3x-ui · 入站统计读取失败，暂无数据</div>'
         total,unit=size(traffic['upload'] + traffic['download']).split()
-        return '<div class="proxy-usage-summary member-usage-summary" aria-label="3x-ui 代理用量" title="入站当前累计，与搬瓦工套餐用量分别统计，不相加"><div class="proxy-usage-heading"><span>3x-ui</span><strong>%s <small>%s</small></strong></div><div class="transfer"><span title="代理上传流量">↑ %s</span><span title="代理下载流量">↓ %s</span></div></div>' % (total,unit,size(traffic['upload']),size(traffic['download']))
+        return '<div class="proxy-usage-summary member-usage-summary" aria-label="3x-ui 代理用量" title="入站当前累计，与搬瓦工套餐用量分别统计，不相加"><div class="proxy-usage-heading"><strong>%s <small>%s</small></strong></div><div class="transfer"><span title="代理上传流量">↑ %s</span><span title="代理下载流量">↓ %s</span></div></div>' % (total,unit,size(traffic['upload']),size(traffic['download']))
 
     def provider_card(self):
         result = self.provider.get()
         usage = result['usage']
-        header = '<div class="card-head"><h3>搬瓦工 · 自建</h3>'
+        header = '<div class="card-head"><div class="traffic-title-tools"><h3>搬瓦工服务器</h3><a class="section-shortcut" href="https://bandwagonhost.com/services" target="_blank" rel="noopener noreferrer">服务管理 ↗</a></div>'
         if usage is not None:
             reset = datetime.fromtimestamp(usage['next_reset'], ZoneInfo('Asia/Shanghai'))
             label = '%d 月 %d 日重置' % (reset.month, reset.day)
@@ -210,15 +214,17 @@ class Portal:
                 return key
         return None
 
-    def shell(self, title, body, *, admin=False, prefix='', csrf=''):
+    def shell(self, title, body, *, admin=False, prefix='', csrf='', navigation=None):
         top = '<a href="%s/">管理总览</a>' % esc(prefix) if admin else "只读订阅中心"
+        if navigation is not None:
+            top = navigation
         logout = '<form method="post" action="%s/logout"><input type="hidden" name="csrf" value="%s"><button class="button">退出登录</button></form>' % (esc(prefix),esc(csrf)) if admin else ''
         metadata = '<meta name="csrf-token" content="%s">' % esc(csrf) if admin else ''
         return '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="strict-origin"><title>42 / %s</title>%s<link rel="stylesheet" href="/portal-assets/portal.css"><script src="/portal-assets/portal.js" defer></script></head><body><header><div class="nav"><div class="brand"><div class="logo">42</div> CONNECT</div><div class="subtle">%s</div></div></header><main data-admin-base="%s"><div class="heading"><div><div class="eyebrow">42 CONNECT</div><h1>%s</h1></div>%s</div>%s<footer><span>订阅中心 · 请妥善保管页面与订阅链接</span><span>访问时间 %s 北京时间 · 用量按缓存展示</span></footer></main><div id="toast" role="status" hidden></div></body></html>' % (esc(title),metadata,top,esc(prefix) if admin else '',esc(title),logout,body,datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M'))
 
     def links(self, state, user, *, airport=False):
-        token = airport_only_token(user.token, schema_version=state.schema_version) if airport else user.token
-        variants = ["airport"] if airport else ["compat", "balance", "airport", "nodes"] if user.client_id == state.owner_client_id else ["compat", "nodes"]
+        token = airport_access_token(state) if airport else user.token
+        variants = ["airport"] if airport else ["compat", "balance", "nodes"] if user.client_id == state.owner_client_id else ["compat", "nodes"]
         titles = {"compat": "标准订阅", "balance": "Balance 订阅", "airport": "机场专用订阅", "nodes": "仅节点订阅"}
         parts = []
         for variant in variants:
@@ -226,9 +232,9 @@ class Portal:
             path = Path(self.config.public_root) / "releases" / str(user.client_id) / str(user.current_release) / filename
             if not path.is_file():
                 continue
-            link_token = airport_only_token(user.token, schema_version=state.schema_version) if variant == "airport" else token
+            link_token = airport_access_token(state) if variant == "airport" else token
             url = "https://%s/s/%s/%s" % (self.config.subscription_authority, link_token, filename)
-            parts.append('''<div class="subscription-block"><div class="subscription-label"><div class="label">%s</div>%s</div><div class="linkbox"><code data-hidden="https://%s/s/••••••••/%s" data-url="%s">https://%s/s/••••••••/%s</code><button class="icon-btn" data-action="reveal" aria-label="显示或隐藏订阅链接" aria-pressed="false">◉</button><button class="icon-btn copy-icon" data-action="copy" title="复制链接" aria-label="复制%s">⧉</button></div></div>''' % (titles[variant], '<button class="import-small" data-action="import">导入 Clash Verge ↗</button>' if variant != "nodes" else "", esc(self.config.subscription_authority), filename, esc(url), esc(self.config.subscription_authority), filename, titles[variant]))
+            parts.append('''<div class="subscription-block"><div class="subscription-label"><div class="label">%s</div>%s</div><div class="linkbox"><code data-hidden="https://%s/s/••••••••/%s" data-url="%s">https://%s/s/••••••••/%s</code><button class="icon-btn reveal-icon" data-action="reveal" title="显示链接" aria-label="显示链接" aria-pressed="false">%s</button><button class="icon-btn copy-icon" data-action="copy" title="复制链接" aria-label="复制%s">%s</button></div></div>''' % (titles[variant], '<button class="import-small" data-action="import">导入 Clash Verge ↗</button>' if variant != "nodes" else "", esc(self.config.subscription_authority), filename, esc(url), esc(self.config.subscription_authority), filename, REVEAL_ICON, titles[variant], COPY_ICON))
         return ''.join(parts) or '<p>暂无已发布订阅，请联系管理员。</p>'
 
     def account(self, key, state, *, admin=False, prefix='', csrf=''):
@@ -240,7 +246,7 @@ class Portal:
         traffic = self.store.airport_traffic() if airport else self.store.traffic_for(user.client_id)
         links = self.links(state, user, airport=airport) if user.active and client.enabled and user.current_release else '<p>当前账户未启用，暂无可用订阅。</p>'
         note = self.freshness_note("airport" if airport else "users")
-        body = '<div class="grid">' + usage_card("Amy 用量" if airport else "个人用量", traffic, note, reset=AMY_RESET_RULE if airport else self.reset_rule(user.client_id)) + '<section class="card"><div class="card-head"><h2>订阅连接</h2></div>' + links + '''<div class="subscription-help"><details class="help"><summary>如何导入订阅？</summary><p>Clash Verge Rev：在「订阅」中粘贴标准订阅链接。Clash Mi：添加远程配置并粘贴链接。</p><p>仅节点订阅供不支持 Clash / Mihomo 配置、但支持通用节点订阅的客户端使用；不包含机场节点、DNS、策略组和分流规则。</p></details><a class="client-shortcut" href="/clients/">下载客户端 ↗</a></div><p class="privacy">订阅链接包含访问凭据，请勿转发。</p></section></div>'''
+        body = '<div class="grid">' + usage_card("AmyTelecom 用量" if airport else "个人用量", traffic, note, reset=AMY_RESET_RULE if airport else self.reset_rule(user.client_id)) + '<section class="card"><div class="card-head"><h2>订阅连接</h2></div>' + links + '''<div class="subscription-help"><details class="help"><summary>如何导入订阅？</summary><p>Clash Verge Rev：在「订阅」中粘贴标准订阅链接。Clash Mi：添加远程配置并粘贴链接。</p><p>仅节点订阅供不支持 Clash / Mihomo 配置、但支持通用节点订阅的客户端使用；不包含机场节点、DNS、策略组和分流规则。</p></details><a class="client-shortcut" href="/clients/">下载客户端 ↗</a></div><p class="privacy">订阅链接包含访问凭据，请勿转发。</p></section></div>'''
         return self.shell("机场订阅" if airport else user.email + " · 我的订阅", body, admin=admin, prefix=prefix, csrf=csrf)
 
     def freshness_note(self, kind):
@@ -321,7 +327,7 @@ class Portal:
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
         body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.provider_card() + '<hr class="divider">'
-        body += usage_card("Amy 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><h2>代理用量</h2><span class="subtle">在线来源：3x-ui</span></div>' + self.proxy_summary() + '<p class="mobile-member-note">重置规则和账号详情可点「详情」查看</p><table class="user-table has-presence"><thead><tr><th>用户</th><th>在线状态</th><th>已用 / 额度</th><th>流量重置时间</th><th>账号状态</th><th></th></tr></thead><tbody>'
+        body += usage_card("AmyTelecom 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知', header_action='<button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button>') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2>' + self.panel_shortcut(settings) + '</div><span class="subtle">' + datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M') + ' 更新</span></div>' + self.proxy_summary() + '<table class="user-table has-presence"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th>流量重置</th><th>账号状态</th><th>操作</th></tr></thead><tbody>'
         online = self.online_states(state)
         clients = {c.client_id: c for c in self.snapshot().clients}
         for client_id, user in sorted(state.users.items()):
@@ -337,14 +343,44 @@ class Portal:
             record = settings['pages'].get(str(client_id))
             detail = '<span class="subtle">网页未启用</span>'
             if record and self.resolve_page(record['token'],settings,state) == str(client_id):
-                detail = '<a class="detail" target="_blank" rel="noopener noreferrer" href="%s">查看详情 ↗</a>' % esc(page_path(record['token'],user.email))
-            body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span>%s</td><td>%s</td><td>%s</td><td><div class="user-actions">%s<button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email),client_id,self.presence(online[str(client_id)]),used,total,progress,esc(self.reset_rule(client_id)),status,detail,client_id,esc(user.email))
+                detail = '<a class="user-page-icon" target="_blank" rel="noopener noreferrer" href="%s" title="打开个人网页" aria-label="打开个人网页"><span aria-hidden="true">↗</span></a>' % esc(page_path(record['token'],user.email))
+            body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span>%s</td><td>%s</td><td><span class="%s">%s</span></td><td><div class="user-actions">%s<button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email)+('<small>管理员</small>' if client_id==state.owner_client_id else '<small>成员</small>'),client_id,self.presence(online[str(client_id)]),used,total,progress,esc(self.reset_rule(client_id)),'account-normal' if status=='有效' else 'badge muted-badge',status,detail,client_id,esc(user.email))
 
         body += '</tbody></table></section>' + self.task_history() + self.backup_dialog() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新全部页面数据" title="刷新全部页面数据"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
-        return self.shell(state.users[state.owner_client_id].email + " · 管理总览", body, admin=True,prefix=prefix,csrf=csrf)
+        shortcuts=[]
+        owner=state.users[state.owner_client_id]
+        for key,label in ((str(owner.client_id),'个人网页'),('airport','机场订阅')):
+            record=settings['pages'].get(key)
+            if record and self.resolve_page(record['token'],settings,state)==key:
+                shortcuts.append('<a href="%s" target="_blank" rel="noopener noreferrer">%s ↗</a>' % (esc(page_path(record['token'],owner.email)),label))
+        navigation='<nav class="nav-shortcuts" aria-label="订阅快捷入口">%s</nav>' % ''.join(shortcuts)
+        return self.shell("管理总览", body, admin=True,prefix=prefix,csrf=csrf,navigation=navigation)
+
+    def panel_shortcut(self, settings):
+        if settings['panel_public']:
+            try:
+                from clash_sub.xui import read_panel_settings
+                _,base,_=read_panel_settings(self.config.xui_database)
+                return '<a class="section-shortcut" href="https://%s%s" target="_blank" rel="noopener noreferrer">3x-ui ↗</a>' % (esc(self.config.subscription_authority),esc(base))
+            except Exception:
+                return '<button class="section-shortcut" data-panel-entry data-panel-state="unknown" title="无法读取面板入口">3x-ui ↗</button>'
+        return '<button class="section-shortcut" data-panel-entry title="公网访问已关闭，请通过 SSH 隧道访问">3x-ui ↗</button>'
+
+    def airport_links(self, state, settings):
+        owner=state.users[state.owner_client_id]
+        base='https://'+self.config.subscription_authority
+        links=[]
+        record=settings['pages'].get('airport')
+        if record and self.resolve_page(record['token'],settings,state)=='airport':
+            links.append({'title':'机场订阅网页','url':base+page_path(record['token'],owner.email),'rotate':'rotate-page','target':'airport'})
+        filename=PROFILE_FILENAMES['airport']
+        if owner.current_release and (Path(self.config.public_root)/'releases'/str(owner.client_id)/owner.current_release/filename).is_file():
+            token=airport_access_token(state)
+            links.append({'title':'机场专用订阅','url':base+'/s/'+token+'/'+filename,'rotate':'rotate-sub','target':'airport','composition':'仅机场节点'})
+        return {'email':'机场链接','scope':'airport','links':links}
 
     def maintenance_card(self):
-        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="button history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><div class="backup-access"><div><span>备用节点</span><span class="backup-entry-state">%s</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div><p class="subtle" id="task-progress" role="status">任务在后台执行，执行期间请勿重复操作。</p></section>' % esc(self.backup_summary()['label'])
+        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="section-shortcut history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><div class="maintenance-action"><div><strong>AmyTelecom 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action maintenance-project"><div><strong>项目维护</strong></div><div class="maintenance-buttons"><button class="button" data-task="update">更新代码 ↗</button><button class="button" data-task="sync">生成配置 ↻</button></div></div><div class="backup-access"><div><span>备用节点</span><span class="backup-entry-state">%s</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div><div class="maintenance-footer" hidden><span class="dot"></span><span id="task-progress" role="status"></span></div></section>' % esc(self.backup_summary()['label'])
 
     def task_history(self):
         from clash_sub.web_tasks import history
@@ -354,7 +390,7 @@ class Portal:
 
     @staticmethod
     def management_dialogs():
-        return '<dialog id="manage-dialog" aria-labelledby="manage-title"><div class="dialog-head"><h2 id="manage-title">用户链接</h2><button class="close-dialog" data-close="manage-dialog" aria-label="关闭">×</button></div><p class="dialog-note">网页与订阅链接独立管理，请勿公开分享。</p><div id="user-links"></div></dialog><dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-head"><h2 id="confirm-title">确认操作</h2><button class="close-dialog" data-close="confirm-dialog" aria-label="取消">×</button></div><p class="confirm-text" id="confirm-text"></p><div class="dialog-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button primary" id="confirm-action">确认执行</button></div></dialog>'
+        return '<dialog id="manage-dialog" aria-labelledby="manage-title"><div class="dialog-head"><h2 id="manage-title">用户链接</h2><button class="close-dialog" data-close="manage-dialog" aria-label="关闭">×</button></div><p class="dialog-note">网页用浏览器打开，网页内的订阅链接用于客户端导入。</p><div id="user-links"></div></dialog><dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-head"><h2 id="confirm-title">确认操作</h2><button class="close-dialog" data-close="confirm-dialog" aria-label="取消">×</button></div><p class="confirm-text" id="confirm-text"></p><div class="dialog-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button primary" id="confirm-action">确认执行</button></div></dialog>'
 
     def published_composition(self, user):
         if not user.current_release:return None
@@ -393,12 +429,8 @@ class Portal:
             record = settings['pages'].get(key)
             if record and record['binding'] == hashlib.sha256(user.token.encode()).hexdigest():
                 result.append({'title':title,'url':base+page_path(record['token'],user.email),'rotate':'rotate-page','target':key})
-        if client_id == state.owner_client_id:
-            result.append({'title':'管理员入口','url':base+admin_prefix(settings,state)+'/','rotate':None,'target':None})
         add_page(str(client_id),'个人网页')
-        if client_id == state.owner_client_id:
-            add_page('airport','机场专用网页')
-        variants = ['compat','balance','airport','nodes'] if client_id==state.owner_client_id else ['compat','nodes']
+        variants = ['compat','balance','nodes'] if client_id==state.owner_client_id else ['compat','nodes']
         titles = {'compat':'标准订阅','balance':'Balance 订阅','airport':'机场专用订阅','nodes':'仅节点'}
         for variant in variants:
             filename = PROFILE_FILENAMES[variant]
@@ -469,7 +501,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = '<section class="card login-card"><form method="post" action="%s/login"><label for="username">管理员账号</label><input id="username" name="username" autocomplete="username" required maxlength="254"><label for="password">管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="8" maxlength="256"><button class="button primary">登录</button></form></section>' % esc(prefix)
                 return self.respond(200,portal.shell('owner 登录',body))
             if not session:
-                if rest in {'/onlines','/tasks','/server','/backup','/overview','/overview/refresh'} or rest.endswith('/links'):
+                if rest in {'/onlines','/tasks','/server','/backup','/overview','/overview/refresh','/airport/links'} or rest.endswith('/links'):
                     return self.respond(401,'{}',content_type='application/json')
                 return self.respond(303,headers=(('Location',prefix+'/login'),))
             if rest == '/':
@@ -487,6 +519,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rest == '/tasks':
                 from clash_sub.web_tasks import history
                 return self.respond(200,json.dumps({'tasks':history(portal.config)}),content_type='application/json')
+            if rest == '/airport/links':
+                return self.respond(200,json.dumps(portal.airport_links(state,settings)),content_type='application/json')
             if rest == '/airport/':
                 return self.respond(200,portal.account('airport',state,admin=True,prefix=prefix,csrf=session[3]))
             match = re.fullmatch(r'/user/([1-9][0-9]{0,18})/(links)?',rest)

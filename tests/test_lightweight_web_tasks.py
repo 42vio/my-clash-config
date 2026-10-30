@@ -30,9 +30,20 @@ class TaskTests(unittest.TestCase):
         return enqueue(self.config,action,target,key,self.actor,runner=self.runner)
 
     def test_allowlist_and_target_validation_precede_any_command(self):
-        for action,target in [('shell',None),('update-sync',';reboot'),('rotate-sub','airport'),('rotate-sub','999')]:
+        for action,target in [('shell',None),('update','1'),('sync','1'),('update-sync',';reboot'),('rotate-sub','admin'),('rotate-sub','999')]:
             with self.subTest(action=action,target=target),self.assertRaises(ValueError):self.queue(action,target)
         self.runner.assert_not_called()
+
+    def test_airport_subscription_rotation_is_an_authorized_distinct_target(self):
+        task=self.queue('rotate-sub','airport')
+        item=history(self.config)[0]
+        self.assertEqual(item['id'],task)
+        self.assertEqual(item['target'],'airport')
+        service=Mock()
+        run(self.config,self.root,task,service_factory=lambda:service)
+        service.rotate_airport_link.assert_called_once_with()
+        service.rotate_link.assert_not_called()
+        self.assertEqual(history(self.config)[0]['status'],'success')
 
     def test_history_deletion_clears_finished_records_and_preserves_pending(self):
         task=self.queue()
@@ -104,6 +115,62 @@ class TaskTests(unittest.TestCase):
         service.auto_refresh_airport.side_effect=ServiceError('airport_download_failed')
         run(self.config,self.root,task,service_factory=lambda:service)
         self.assertIn('下载失败',history(self.config)[0]['phase'])
+
+    def test_update_only_never_generates_or_refreshes_subscriptions(self):
+        task=self.queue('update')
+        self.assertEqual(history(self.config)[0]['target_label'],'项目')
+        self.runner.reset_mock()
+        service=Mock()
+        with patch('clash_sub.manage.run_update') as updater:
+            run(self.config,self.root,task,service_factory=lambda:service,runner=self.runner)
+        updater.assert_called_once()
+        self.assertTrue(callable(updater.call_args.kwargs['authorize']))
+        self.runner.assert_not_called()
+        service.sync_all.assert_not_called()
+        service.auto_refresh_airport.assert_not_called()
+        self.assertEqual(history(self.config)[0]['status'],'success')
+
+    def test_generate_only_uses_current_code_without_upstream_refresh(self):
+        task=self.queue('sync')
+        self.runner.reset_mock()
+        service=Mock();service.sync_all.return_value={'errors':()}
+        with patch('clash_sub.manage.run_update') as updater:
+            run(self.config,self.root,task,service_factory=lambda:service,runner=self.runner)
+        service.sync_all.assert_called_once_with()
+        service.auto_refresh_airport.assert_not_called()
+        updater.assert_not_called()
+        self.runner.assert_not_called()
+        self.assertEqual(history(self.config)[0]['status'],'success')
+
+    def test_partial_generation_failure_is_not_reported_as_success(self):
+        task=self.queue('sync')
+        service=Mock();service.sync_all.return_value={'errors':('member_update_failed',)}
+        run(self.config,self.root,task,service_factory=lambda:service)
+        service.sync_all.assert_called_once_with()
+        self.assertEqual(history(self.config)[0]['status'],'failed')
+
+    def test_update_only_failure_is_recorded_without_generating(self):
+        task=self.queue('update')
+        service=Mock()
+        with patch('clash_sub.manage.run_update',side_effect=RuntimeError('private-value')):
+            run(self.config,self.root,task,service_factory=lambda:service)
+        service.sync_all.assert_not_called()
+        self.assertEqual(history(self.config)[0]['status'],'failed')
+        self.assertNotIn('private-value',(self.root/'web-tasks.json').read_text())
+
+    def test_split_tasks_cannot_run_after_owner_authority_is_revoked(self):
+        for index,action in enumerate(('sync','update')):
+            task=self.queue(action,key='request-revoked-0000'+str(index))
+            original=read_settings(self.root)
+            settings=dict(original,password_hash=password_hash('revoked-password'))
+            write_settings(self.root,settings)
+            service=Mock()
+            with patch('clash_sub.manage.run_update') as updater:
+                run(self.config,self.root,task,service_factory=lambda:service)
+            updater.assert_not_called()
+            service.sync_all.assert_not_called()
+            self.assertEqual(history(self.config)[0]['status'],'failed')
+            write_settings(self.root,original)
 
     def test_update_failure_never_runs_sync(self):
         task=self.queue('update-sync')

@@ -133,9 +133,9 @@ class AcceptanceHarness:
         self.airport_body = (
             b"# AmyTelecom upstream snapshot\n"
             b"proxies:\n"
-            b"- {name: 'Amy HK 01', type: ss, server: amy-1.example.test, port: 443,"
+            b"- {name: 'AmyTelecom HK 01', type: ss, server: amy-1.example.test, port: 443,"
             b" cipher: aes-128-gcm, password: airport-old}\n"
-            b"- name: Amy HK 02\n"
+            b"- name: AmyTelecom HK 02\n"
             b"  type: trojan\n"
             b"  server: amy-2.example.test\n"
             b"  port: 443\n"
@@ -443,7 +443,7 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertNotIn("/s/%s/" % old_token, harness.route_text())
         self.assertIn("/s/%s/" % new_token, harness.route_text())
 
-    def test_owner_rename_updates_profile_and_airport_provider_urls(self):
+    def test_owner_rename_updates_personal_urls_and_preserves_airport_address(self):
         harness = self.make_harness()
         harness.import_airport()
         harness.service.sync_all()
@@ -454,12 +454,33 @@ class LightweightEndToEndAcceptanceTests(unittest.TestCase):
         self.assertEqual(new_token, old_token[:22] + "-Owner-Dev@Example.com")
         for variant, path in harness.release(7).public_paths.items():
             url = yaml.safe_load(path.read_text())["proxy-providers"]["AmyTelecom"]["url"]
-            self.assertTrue(url.endswith("-Owner-Dev@Example.com/AmyTelecom.yaml"))
             self.assertNotIn(old_token, url)
             if variant == "airport":
+                self.assertIn(airport_only_token(old_token), url)
                 self.assertNotIn(new_token, url)
             else:
+                self.assertTrue(url.endswith("-Owner-Dev@Example.com/AmyTelecom.yaml"))
                 self.assertIn(new_token, url)
+
+    def test_airport_rotation_updates_real_routes_and_only_airport_profile(self):
+        from clash_sub.state import airport_access_token
+        harness=self.make_harness()
+        harness.import_airport()
+        harness.service.sync_all()
+        before=harness.state()
+        old=airport_access_token(before)
+        personal={kind:path.read_bytes() for kind,path in harness.release(7).public_paths.items() if kind!='airport'}
+        harness.service.rotate_airport_link()
+        after=harness.state()
+        new=airport_access_token(after)
+        self.assertNotEqual(old,new)
+        self.assertEqual({i:u.token for i,u in before.users.items()},{i:u.token for i,u in after.users.items()})
+        self.assertNotIn('/s/'+old+'/',harness.route_text())
+        self.assertIn('/s/'+new+'/Clash-Airport.yaml',harness.route_text())
+        self.assertIn('/s/'+new+'/AmyTelecom.yaml',harness.route_text())
+        for kind,path in harness.release(7).public_paths.items():
+            if kind=='airport':self.assertIn(new,path.read_text())
+            else:self.assertEqual(path.read_bytes(),personal[kind])
 
     def test_owner_rollback_rejects_old_provider_url(self):
         harness = self.make_harness()

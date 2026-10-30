@@ -30,21 +30,40 @@
 :is(.usage-card,.traffic-part) .transfer{gap:12px}
 :is(.usage-card,.traffic-part) .usage-caption .remaining{font-weight:400}
 @media(max-width:760px){.grid{grid-template-columns:minmax(0,1fr)}.grid>.card{min-width:0}:is(.usage-card,.traffic-part) .usage-linear .number{font-size:23px!important}:is(.usage-card,.traffic-part) .usage-linear .number small{font-size:11px}:is(.usage-card,.traffic-part) .usage-linear .bar{height:4px;margin:9px 0 7px}:is(.usage-card,.traffic-part) .usage-caption{font-size:11px}:is(.usage-card,.traffic-part) .transfer{gap:8px}:is(.usage-card,.traffic-part) .reset-hint{font-size:10px}}
+
+.linkbox .reveal-icon,.linkbox .copy-icon,.linkbox .relation-copy{display:inline-flex;align-items:center;justify-content:center;width:32px;min-width:32px;height:32px;padding:6px;border:0;border-radius:6px;background:transparent;color:var(--muted);flex-shrink:0;cursor:pointer}
+.linkbox .reveal-icon:hover,.linkbox .copy-icon:hover,.linkbox .relation-copy:hover{background:#e8eee9;color:var(--green)}
+.linkbox .reveal-icon[aria-pressed="true"],.linkbox .is-copied{color:var(--green)}
+.reveal-icon .eye-hide,.copy-done{display:none}
+.reveal-icon[aria-pressed="true"] .eye-show{display:none}
+.reveal-icon[aria-pressed="true"] .eye-hide,.is-copied .copy-done{display:inline}
+.is-copied .copy-symbol{display:none}
+.linkbox .reveal-icon svg,.linkbox .copy-icon svg,.linkbox .relation-copy svg{width:17px;height:17px;pointer-events:none}
 </style>
 </head>
 <body>
 <header><div class="nav"><div class="brand"><div class="logo">42</div> CONNECT <small>机场订阅中心</small></div><div class="avatar"><span>A</span> Alex</div></div></header>
 <main>
-<div class="heading"><div><div class="eyebrow">AMY TELECOM · AIRPORT ONLY</div><h1>机场订阅</h1><p>查看 Amy 用量与机场专用订阅。</p></div><span class="badge"><i class="dot"></i>订阅有效</span></div>
+<div class="heading"><div><div class="eyebrow">AmyTelecom · AIRPORT ONLY</div><h1>机场订阅</h1><p>查看 AmyTelecom 用量与机场专用订阅。</p></div><span class="badge"><i class="dot"></i>订阅有效</span></div>
 <div class="demo">设计预览 · 所有数据和链接均为示例；本页面仅展示机场订阅。</div>
 <div class="grid">
 <section class="card usage-card"><div class="card-head"><h2>本期用量</h2><span class="subtle reset-hint" title="AmyTelecom">每月 19 日重置</span></div><div class="usage usage-linear"><div class="number">186.4 GB <small>/ 1000.0 GB</small></div><div class="bar" role="progressbar" aria-label="流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18.6"><i style="width:18.64%"></i></div><div class="usage-caption"><span class="transfer"><span class="upload" title="上传流量">↑ 26.4 GB</span><span class="download" title="下载流量">↓ 160.0 GB</span></span><span class="remaining">剩余 813.6 GB</span></div></div></section>
-<section class="card"><div class="card-head"><h2>订阅连接</h2><span class="subtle">Clash / Mihomo</span></div><p class="subscription-note">独立机场订阅，不包含自建节点。</p><div class="subscription-label"><div class="label">机场专用订阅</div><button class="import-small" id="import" title="导入 Clash Verge Rev">导入 Clash Verge ↗</button></div><div class="linkbox"><code id="link">https://sub.example.com/s/••••••••/Clash-Airport.yaml</code><button class="icon-btn" id="reveal" aria-label="显示示例订阅链接" title="显示或隐藏">◉</button><button class="icon-btn copy-icon" id="copy" aria-label="复制机场专用订阅链接" title="复制机场专用订阅链接"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg></button></div><div class="subscription-help"><details class="help"><summary>如何导入订阅？</summary><p>Clash Verge Rev：进入「订阅」，粘贴机场专用订阅链接并导入。<br>Clash Mi：在配置管理中添加远程配置，粘贴机场专用订阅链接。<br>机场专用订阅仅包含 Amy 节点及配套分流规则，不包含自建节点。<br>本页为样式预览，示例链接无法用于连接。</p></details><a class="client-shortcut" href="clients.html">下载客户端 ↗</a></div><div class="privacy"><span aria-hidden="true">♧</span> 订阅链接包含访问凭据，请勿转发或公开分享。</div></section>
+<section class="card"><div class="card-head"><h2>订阅连接</h2><span class="subtle">Clash / Mihomo</span></div><p class="subscription-note">独立机场订阅，不包含自建节点。</p><div class="subscription-label"><div class="label">机场专用订阅</div><button class="import-small" id="import" title="导入 Clash Verge Rev">导入 Clash Verge ↗</button></div><div class="linkbox"><code id="link">https://sub.example.com/s/••••••••/Clash-Airport.yaml</code><button class="icon-btn reveal-icon" id="reveal" aria-label="显示示例订阅链接" title="显示链接" aria-pressed="false"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="eye-show"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></g><g class="eye-hide"><path d="m3 3 18 18M10.6 5.1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.5 6.5A20 20 0 0 0 2 12s3.5 7 10 7a11 11 0 0 0 5.5-1.5M9.9 9.9a3 3 0 0 0 4.2 4.2"/></g></svg></button><button class="icon-btn copy-icon" id="copy" aria-label="复制机场专用订阅链接" title="复制机场专用订阅链接"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="copy-symbol"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></g><path class="copy-done" d="m5 12 4 4L19 6"/></svg></button></div><div class="subscription-help"><details class="help"><summary>如何导入订阅？</summary><p>Clash Verge Rev：进入「订阅」，粘贴机场专用订阅链接并导入。<br>Clash Mi：在配置管理中添加远程配置，粘贴机场专用订阅链接。<br>机场专用订阅仅包含 AmyTelecom 节点及配套分流规则，不包含自建节点。<br>本页为样式预览，示例链接无法用于连接。</p></details><a class="client-shortcut" href="clients.html">下载客户端 ↗</a></div><div class="privacy"><span aria-hidden="true">♧</span> 订阅链接包含访问凭据，请勿转发或公开分享。</div></section>
 </div>
 
 
 <footer><span>42 CONNECT · 机场专用订阅</span><span>示例数据 · 更新于 14:32</span></footer>
 </main><div id="toast" role="status" hidden></div>
 <script>
-const example='https://sub.example.com/s/airport-demo-preview/Clash-Airport.yaml';let visible=false,timer;const toast=document.querySelector('#toast');function notify(message){toast.textContent=message;toast.hidden=false;clearTimeout(timer);timer=setTimeout(()=>toast.hidden=true,3200)}document.querySelector('#reveal').onclick=function(){visible=!visible;document.querySelector('#link').textContent=visible?example:'https://sub.example.com/s/••••••••/Clash-Airport.yaml';this.setAttribute('aria-label',visible?'隐藏机场示例链接':'显示机场示例链接');this.setAttribute('aria-pressed',visible)};document.querySelector('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(example);notify('已复制机场专用示例链接')}catch{notify('请展开链接后手动复制')}};document.querySelector('#import').onclick=()=>notify('设计预览：正式接入后可一键导入客户端');
+
+const copiedFeedbackTimers=new WeakMap();
+function markLinkCopied(button){
+  if(!button)return;
+  clearTimeout(copiedFeedbackTimers.get(button));
+  if(!button.dataset.copyLabel){button.dataset.copyLabel=button.getAttribute('aria-label')||button.title||'复制链接';button.dataset.copyTitle=button.title||'复制链接';}
+  button.classList.add('is-copied');button.title='已复制';button.setAttribute('aria-label','已复制');
+  copiedFeedbackTimers.set(button,setTimeout(()=>{button.classList.remove('is-copied');button.title=button.dataset.copyTitle;button.setAttribute('aria-label',button.dataset.copyLabel);},1600));
+}
+
+const example='https://sub.example.com/s/airport-demo-preview/Clash-Airport.yaml';let visible=false,timer;const toast=document.querySelector('#toast');function notify(message){toast.textContent=message;toast.hidden=false;clearTimeout(timer);timer=setTimeout(()=>toast.hidden=true,3200)}document.querySelector('#reveal').onclick=function(){visible=!visible;document.querySelector('#link').textContent=visible?example:'https://sub.example.com/s/••••••••/Clash-Airport.yaml';this.setAttribute('aria-label',visible?'隐藏机场示例链接':'显示机场示例链接');this.setAttribute('aria-pressed',visible);this.title=visible?'隐藏链接':'显示链接';this.setAttribute('aria-label',this.title)};document.querySelector('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(example);markLinkCopied(document.querySelector('#copy'));notify('已复制机场专用示例链接')}catch{notify('请展开链接后手动复制')}};document.querySelector('#import').onclick=()=>notify('设计预览：正式接入后可一键导入客户端');
 </script></body></html>

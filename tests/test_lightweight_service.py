@@ -165,6 +165,55 @@ class FakeActivator:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_airport_rotation_is_independent_persistent_and_keeps_legacy_until_rotation(self):
+        from clash_sub.state import airport_access_token, airport_only_token, reconcile_state, rotate_user_token, save_state, load_state
+        self.bootstrap()
+        self.service._reconcile=reconcile_state
+        self.service._rotate=rotate_user_token
+        old=airport_access_token(self.state)
+        self.assertEqual(old,airport_only_token(self.state.users[7].token))
+        self.service.sync_all()
+        self.assertEqual(airport_access_token(self.state),old)
+        users={key:value.token for key,value in self.state.users.items()}
+        self.service.rotate_airport_link()
+        new=airport_access_token(self.state)
+        self.assertNotEqual(new,old)
+        self.assertEqual(users,{key:value.token for key,value in self.state.users.items()})
+        self.assertTrue(self.generator_calls[-1][1].airport_only_url.endswith('/'+new+'/AmyTelecom.yaml'))
+        path=self.config.private_root/'airport-state-test.json'
+        save_state(path,self.state)
+        self.assertEqual(airport_access_token(load_state(path)),new)
+        self.service.sync_all()
+        self.assertEqual(airport_access_token(self.state),new)
+        self.service.rotate_link(7)
+        self.assertEqual(airport_access_token(self.state),new)
+        self.assertNotEqual(self.state.users[7].token,users[7])
+
+    def test_owner_rotation_before_first_airport_rotation_keeps_airport_address(self):
+        from clash_sub.state import airport_access_token,reconcile_state,rotate_user_token
+        self.bootstrap()
+        self.service._reconcile=reconcile_state;self.service._rotate=rotate_user_token
+        old=airport_access_token(self.state)
+        self.service.rotate_link(7)
+        self.assertEqual(airport_access_token(self.state),old)
+
+    def test_owner_reinitialization_preserves_existing_airport_address(self):
+        from clash_sub.state import airport_access_token,reinitialize_owner
+        self.bootstrap()
+        old=airport_access_token(self.state)
+        changed=reinitialize_owner(self.state,(self.member,),self.member.email,self.member.client_id)
+        self.assertEqual(airport_access_token(changed),old)
+
+    def test_airport_rotation_activation_failure_preserves_old_state(self):
+        from clash_sub.state import airport_access_token
+        self.bootstrap()
+        old=self.state
+        self.activator.fail=True
+        with self.assertRaisesRegex(ServiceError,'rotation_activation_failed'):
+            self.service.rotate_airport_link()
+        self.assertEqual(self.state,old)
+        self.assertEqual(airport_access_token(self.state),airport_access_token(old))
+
     def setUp(self):
         self.owner = client(7, "owner@example.test", upload=11)
         self.member = client(8, "member@example.test", upload=22)

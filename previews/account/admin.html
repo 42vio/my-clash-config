@@ -41,12 +41,12 @@
 /* Give traffic the main share of each desktop member row. */
 @media(min-width:761px){
 .user-table{table-layout:fixed}
-.user-table th:nth-child(1){width:14%}
-.user-table th:nth-child(2){width:9%}
-.user-table th:nth-child(3){width:34%}
-.user-table th:nth-child(4){width:14%}
-.user-table th:nth-child(5){width:9%}
-.user-table th:nth-child(6){width:20%}
+.user-table th:nth-child(1){width:108px}
+.user-table th:nth-child(2){width:82px}
+.user-table th:nth-child(3){width:auto}
+.user-table th:nth-child(4){width:120px}
+.user-table th:nth-child(5){width:82px}
+.user-table th:nth-child(6){width:122px}
 .user-table td:first-child{overflow-wrap:anywhere}
 .user-table td:nth-child(3){padding-right:28px}
 .user-table td:nth-child(3)>.subtle{white-space:nowrap}
@@ -57,15 +57,15 @@
 
 /* Prioritize the usage column on narrow member lists as well. */
 @media(max-width:760px){
-.user-table tr{grid-template-columns:clamp(60px,18vw,76px) minmax(0,1fr) 76px;column-gap:12px}
+.user-table tr{grid-template-columns:52px minmax(0,1fr) 88px;column-gap:12px}
 .user-table td:nth-child(3){overflow-wrap:anywhere}
-.user-table .user-actions{align-items:stretch;gap:6px}
+.user-table .user-actions{align-items:flex-end;gap:0}
 .user-table .mini-bar{width:100%;max-width:none;margin:6px 0 0}
 }
 
 .server-tools{display:flex;align-items:center;gap:10px}.server-refresh{padding:4px 9px;font-size:11px;white-space:nowrap;color:var(--green)}.server-refresh:disabled{opacity:.55;cursor:wait}
 
-.maintenance .history-toggle{font-size:11px;padding:5px 9px;color:var(--green);white-space:nowrap}#history-dialog{max-height:80dvh;overflow-y:auto}#history-dialog .history-row>div{min-width:0;overflow-wrap:anywhere}#history-dialog .history-row>.badge,#history-dialog .history-row>time{flex-shrink:0}@media(max-width:480px){#history-dialog .history-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}#history-dialog .history-row>div{grid-row:span 2}#history-dialog .history-row>time{text-align:right}}
+.maintenance .history-toggle{font-size:11px;padding:0;color:var(--green);white-space:nowrap}#history-dialog{max-height:80dvh;overflow-y:auto}#history-dialog .history-row>div{min-width:0;overflow-wrap:anywhere}#history-dialog .history-row>.badge,#history-dialog .history-row>time{flex-shrink:0}@media(max-width:480px){#history-dialog .history-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}#history-dialog .history-row>div{grid-row:span 2}#history-dialog .history-row>time{text-align:right}}
 
 .history-delete{border:0;background:transparent;color:var(--muted);font-size:11px;padding:6px;white-space:nowrap}.history-delete:hover{color:#a14d42}
 
@@ -97,8 +97,8 @@
 @media(max-width:420px){.proxy-usage-summary .transfer{flex-basis:100%;padding-left:0;border-left:0}}
 
 /* Put proxy totals next to their member breakdown. */
-.users>.card-head{margin-bottom:12px}.member-usage-summary{margin:0 0 20px;padding:0 0 14px;border-bottom:1px solid var(--line)}
-@media(max-width:760px){.users>.card-head{margin-bottom:9px}.member-usage-summary{margin:0 0 10px;padding-bottom:10px}}
+.users>.card-head{margin-bottom:8px}.member-usage-summary{margin:0 0 16px;padding:0 0 12px;border-bottom:1px solid var(--line)}
+@media(max-width:760px){.users>.card-head{margin-bottom:7px}.member-usage-summary{margin:0 0 8px;padding-bottom:8px}}
 
 /* Mobile: put proxy usage ahead of subscription maintenance. */
 @media(max-width:760px){
@@ -116,19 +116,184 @@
 .reset-info summary::-webkit-details-marker{display:none}
 .reset-info summary:focus-visible{outline:2px solid var(--green);outline-offset:4px;border-radius:3px}
 .reset-tooltip{position:absolute;right:0;top:calc(100% + 9px);z-index:10;width:max-content;max-width:min(260px,80vw);padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);box-shadow:0 6px 20px #20283014;font-size:11px;line-height:1.6;text-align:left;font-weight:400}
+
+.nav-shortcuts{display:flex;align-items:center;gap:20px;font-size:12px;white-space:nowrap}
+.nav-shortcuts a{color:var(--green);text-decoration:none;padding:8px 0}
+.nav-shortcuts a:hover{text-decoration:underline;text-underline-offset:4px}
+@media(max-width:760px){.nav-shortcuts{gap:12px;font-size:11px}}
+/* Link management preview: pages contain subscription links. */
+#manage-dialog{width:min(660px,calc(100% - 32px));max-height:90dvh;overflow-y:auto;padding:24px}
+#manage-dialog>.dialog-note{margin:6px 0 18px;font-size:12px;line-height:1.7}
+#manage-dialog .dialog-head h2{font-size:17px}
+.link-relation{padding:0;border:0;border-radius:0;background:transparent}
+.link-relation+.link-relation{margin-top:20px;padding-top:20px;border-top:1px solid var(--line)}
+.relation-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:10px}
+.relation-heading h3{font-size:14px;font-weight:600;margin:0 0 2px}
+.relation-heading p{font-size:11px;line-height:1.6}
+.relation-heading .rotate-link{flex-shrink:0;color:var(--muted);padding-top:2px}
+.relation-heading .rotate-link:hover,.relation-child-heading .rotate-link:hover{color:var(--green)}
+.relation-linkbox{padding:3px 7px 3px 10px;background:#f7f8fa;border-color:#e9ecf0;gap:8px;min-width:0;border-radius:7px}
+.relation-linkbox input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;flex:1;min-width:0;width:0;padding:5px 0;border:0;outline:none;background:transparent;color:#7a828e;overflow:hidden;text-overflow:ellipsis}
+.relation-linkbox .page-open{font-size:11px;text-decoration:none;color:var(--green);white-space:nowrap;padding:5px 0}
+.relation-linkbox .relation-copy{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:6px;border:0;border-radius:5px;background:transparent;color:var(--green);flex-shrink:0}
+.relation-copy svg{width:16px;height:16px}
+.relation-linkbox .relation-copy:hover{background:#e8eee9}
+.relation-children{margin:14px 0 0 5px;padding:0 0 0 14px;border-left:2px solid #e0eae5}
+.relation-child-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--muted);font-size:11px;margin-bottom:8px}
+.relation-child-heading .rotate-link{color:var(--muted);font-size:10px}
+.relation-subscription+.relation-subscription{margin-top:12px}
+.relation-subtitle{display:flex;align-items:baseline;justify-content:flex-start;flex-wrap:wrap;gap:2px 8px;margin-bottom:5px}
+.relation-subtitle strong{font-size:12px;font-weight:500}
+.relation-composition{font-size:10px;color:var(--muted);text-align:left}.relation-composition::before{content:"·";margin-right:8px;color:#a4abb4}
+.relation-shared{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 8px;margin-top:12px;font-size:11px}
+.relation-shared>span{color:var(--ink)}
+.relation-jump{border:0;padding:3px 0;background:transparent;color:var(--green);font-size:10px}
+.relation-shared-note{font-size:10px;line-height:1.7;margin-top:9px}
+#manage-dialog>.warning-note{font-size:10px;margin-top:14px;padding-top:0;border-top:0}
+#airport-link-group{scroll-margin:16px}
+@media(max-width:760px){#manage-dialog{padding:18px;width:calc(100% - 24px);max-height:90dvh}#manage-dialog .dialog-head h2{font-size:15px}#manage-dialog>.dialog-note{font-size:11px;margin-bottom:14px}.link-relation{padding:0}.relation-heading{gap:8px}.relation-heading h3{font-size:13px}.relation-heading p{font-size:10px}.relation-heading .rotate-link{font-size:10px}.relation-children{margin-left:2px;padding-left:11px}.relation-composition{font-size:9px}.relation-shared{font-size:10px}.relation-linkbox input{font-size:10px}.relation-linkbox .page-open{font-size:10px}.relation-linkbox .relation-copy{width:28px;height:30px;padding:6px}.relation-child-heading{font-size:10px}.relation-shared-note{font-size:9px}}
+
+.linkbox .reveal-icon,.linkbox .copy-icon,.linkbox .relation-copy{display:inline-flex;align-items:center;justify-content:center;width:32px;min-width:32px;height:32px;padding:6px;border:0;border-radius:6px;background:transparent;color:var(--muted);flex-shrink:0;cursor:pointer}
+.linkbox .reveal-icon:hover,.linkbox .copy-icon:hover,.linkbox .relation-copy:hover{background:#e8eee9;color:var(--green)}
+.linkbox .reveal-icon[aria-pressed="true"],.linkbox .is-copied{color:var(--green)}
+.reveal-icon .eye-hide,.copy-done{display:none}
+.reveal-icon[aria-pressed="true"] .eye-show{display:none}
+.reveal-icon[aria-pressed="true"] .eye-hide,.is-copied .copy-done{display:inline}
+.is-copied .copy-symbol{display:none}
+.linkbox .reveal-icon svg,.linkbox .copy-icon svg,.linkbox .relation-copy svg{width:17px;height:17px;pointer-events:none}
+
+#manage-dialog .rotate-link[data-rotate]{color:#a07139;font-weight:500}
+#manage-dialog .rotate-link[data-rotate]:hover{color:#865a28;text-decoration:underline;text-underline-offset:3px}
+
+.user-name .user-page{display:inline-flex;align-items:baseline;gap:5px;color:var(--ink);text-decoration:none;font-weight:inherit}
+.user-name .user-page>span{font-size:10px;font-weight:400;color:var(--muted)}
+.user-name .user-page:hover,.user-name .user-page:hover>span{color:var(--green)}
+.user-name .user-page:focus-visible{outline:2px solid var(--green);outline-offset:4px;border-radius:3px}
+
+@media(max-width:760px){.user-table .user-actions .manage-link{width:auto;min-width:52px;min-height:30px;padding:3px 5px;font-size:10px;line-height:1.5}}
+.relation-shared>strong{font-size:12px;font-weight:500;color:var(--ink)}
+@media(max-width:760px){.user-name .user-page{max-width:100%}.user-name .user-page>span{flex-shrink:0}}
+
+.user-table .user-actions{flex-direction:row;align-items:center;justify-content:flex-end;gap:6px}
+.user-page-icon{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:30px;height:30px;border-radius:6px;color:var(--green);text-decoration:none;font-size:17px;line-height:1}
+.user-page-icon:hover{background:var(--soft)}
+.user-page-icon:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+@media(max-width:760px){.user-table .user-actions{flex-direction:row;align-items:center;justify-content:flex-end;gap:4px}.user-page-icon{width:30px;height:32px;font-size:16px}.user-table .user-actions .manage-link{min-width:52px;min-height:30px}}
+
+.traffic-title-tools,.proxy-heading-tools{display:flex;align-items:center;gap:12px;min-width:0}
+.traffic-title-tools h3{margin:0}
+.section-shortcut{border:0;background:transparent;text-decoration:none;padding:3px 0;color:var(--green);font-size:11px;line-height:1.6;white-space:nowrap}
+.section-shortcut:hover{text-decoration:underline;text-underline-offset:3px}
+.panel-shortcut{display:inline-flex;align-items:center;gap:6px}
+.panel-closed{font-size:9px;padding:1px 5px;border-radius:4px;color:var(--muted);background:#f1f3f5}
+.users>.card-head{flex-wrap:wrap;gap:6px 12px}
+.users>.card-head>.subtle{margin-left:auto}
+@media(max-width:760px){.traffic-title-tools,.proxy-heading-tools{gap:8px}.section-shortcut{font-size:10px}.panel-shortcut{gap:4px}.panel-closed{font-size:9px;padding:1px 4px}}
+
+@media(min-width:761px){.user-table th{padding-top:0;padding-bottom:8px}.user-table th:last-child{text-align:right;padding-right:0}.member-usage-summary{margin-bottom:12px}}
+
+.member-usage-summary{border-bottom:0;padding-bottom:0}
+.user-table .account-normal{color:var(--muted);font-size:12px;font-weight:400}
+@media(max-width:760px){.member-usage-summary{padding-bottom:0}}
+
+/* Align the usage heading and table labels with their content. */
+.users>.card-head{align-items:baseline;margin-bottom:10px}
+.proxy-heading-tools{align-items:baseline}
+.proxy-heading-tools .section-shortcut{padding-top:0;padding-bottom:0}
+.member-usage-summary{margin-bottom:16px}
+@media(min-width:761px){
+ .user-table th{padding-top:0;padding-bottom:10px;vertical-align:bottom}
+ .user-table th:nth-child(2){padding-left:25px}
+ .user-table th:last-child{text-align:left;padding-left:12px;padding-right:0}
+ .user-table td{padding-top:14px;padding-bottom:14px;vertical-align:middle}
+ .user-table td:last-child .user-actions{justify-content:flex-start}
+ .user-table .account-normal{font-size:13px}
+}
+.presence.unknown>span[aria-hidden]{display:inline-flex;justify-content:center;width:6px;flex-shrink:0}
+@media(max-width:760px){.users>.card-head{margin-bottom:8px}.member-usage-summary{margin-bottom:10px}}
+
+.maintenance{align-self:stretch}
+.maintenance>.card-head{margin-bottom:8px}
+.maintenance>p{margin-top:0;margin-bottom:6px}
+.maintenance .maintenance-action{padding:13px 0;gap:12px}
+.maintenance-buttons{display:flex;align-items:center;gap:7px;flex-shrink:0}
+.maintenance .maintenance-buttons .button{padding:6px 9px}
+.maintenance .backup-access{padding-top:10px}
+.maintenance .maintenance-footer{padding-top:14px}
+@media(max-width:760px){.maintenance>.card-head{margin-bottom:7px}.maintenance>p{margin-bottom:4px}.maintenance .maintenance-action{padding:11px 0;gap:8px}.maintenance-project>div:first-child{min-width:0}.maintenance-project p{font-size:10px}.maintenance-buttons{gap:5px}.maintenance .maintenance-buttons .button{font-size:10px;padding:6px 7px}}
+
+@media(min-width:761px){.admin-overview>.maintenance{padding:20px 24px}}
 </style>
 </head>
 <body>
-<header><div class="nav"><div class="brand"><div class="logo">42</div> CONNECT <small>管理总览</small></div><div class="avatar"><span>R</span> Ren · owner</div></div></header>
-<main><div class="heading"><div><div class="eyebrow">ADMIN OVERVIEW</div><h1>管理总览</h1><p>查看服务器额度与每位成员的使用情况。</p></div><span class="badge"><i class="dot"></i>服务运行正常</span></div><div class="demo">设计预览 · 搬瓦工套餐、代理入站与机场用量均为示例，未接入真实 API；所有操作仅在本地演示。</div><div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2><span class="subtle">自建套餐与机场分别统计</span></div><div class="traffic-part provider-quota" id="provider-quota"><div class="card-head"><h3>搬瓦工 · 自建</h3><details class="reset-info subtle reset-hint"><summary>11 月 17 日重置</summary><div class="reset-tooltip">11 月 17 日 14:33（北京时间）</div></details></div><div class="usage usage-linear"><div class="number" title="搬瓦工 API 返回的套餐用量">512.8 GB <small>/ 1000.0 GB</small></div><div class="bar" role="progressbar" aria-label="搬瓦工套餐流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="51.28"><i style="width:51.28%"></i></div><div class="usage-caption"><span class="provider-caption-note">套餐收发合计</span><span class="remaining">剩余 487.2 GB</span></div></div><div class="provider-meta"><span class="provider-source"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7l8-4Z"/><path d="m8 12 3 3 5-6"/></svg>KiwiVM API</span><span title="服务商统计可能延迟更新；此处为本地示例">更新于 10:50 · 示例</span></div></div><hr class="divider"><div class="traffic-part"><div class="card-head"><h3>Amy 机场</h3><details class="reset-info subtle reset-hint"><summary>11 月 19 日重置</summary><div class="reset-tooltip">每月 19 日重置，具体时刻未知</div></details></div><div class="usage usage-linear"><div class="number">186.4 GB <small>/ 1000.0 GB</small></div><div class="bar" role="progressbar" aria-label="流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18.6"><i style="width:18.64%"></i></div><div class="usage-caption"><span class="transfer"><span class="upload" title="上传流量">↑ 26.4 GB</span><span class="download" title="下载流量">↓ 160.0 GB</span></span><span class="remaining">剩余 813.6 GB</span></div></div></div></section><section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="button history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><p class="subtle">更新订阅内容，保留现有链接。</p><div class="maintenance-action"><div><strong>刷新 Amy 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="airport">刷新订阅 ↻</button></div><div class="maintenance-action"><div><strong>更新代码并生成配置</strong><p>先更新项目，再生成所有用户的订阅配置</p></div><button class="button" data-task="update-sync">更新并生成 ↗</button></div><div class="backup-access" id="backup-overview"><div><span>备用节点</span><span class="backup-entry-state" id="backup-entry-status">已启用</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div><div class="maintenance-footer"><span class="dot"></span> 当前无执行中的任务<span class="subtle">仅本地演示</span></div></section></div><section class="card users" id="members"><div class="card-head"><h2>代理用量</h2><span class="subtle">在线来源：3x-ui</span></div><div class="proxy-usage-summary member-usage-summary" aria-label="3x-ui 代理用量" title="代理入站统计，与上方搬瓦工套餐用量分别统计，不相加"><div class="proxy-usage-heading"><span>3x-ui</span><strong>238.0 <small>GB</small></strong></div><div class="transfer"><span title="代理上传流量">↑ <b>38.0 GB</b></span><span title="代理下载流量">↓ <b>200.0 GB</b></span></div></div><p class="mobile-member-note">重置规则和账号详情可点「详情」查看</p><table class="user-table"><thead><tr><th>用户</th><th>在线状态</th><th>已用 / 额度</th><th>流量重置时间</th><th>账号状态</th><th></th></tr></thead><tbody><tr><td class="user-name">42vio<small>管理员 · 我的账户</small></td><td><span class="mobile-label">在线状态</span><span class="presence online" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>在线</span></td><td><span class="mobile-label">已用 / 额度</span>238.0 GB <span class="subtle">/ 不限额</span></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="badge ">有效</span></td><td><div class="user-actions"><a class="detail" target="_blank" rel="noopener noreferrer" href="index.html?user=ren">查看详情 ↗</a><button class="manage-link" data-user="ren">管理链接</button></div></td></tr><tr><td class="user-name">Alex<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence online" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>在线</span></td><td><span class="mobile-label">已用 / 额度</span>119.0 GB <span class="subtle">/ 500 GB</span><div class="mini-bar"><i style="width:23.8%;"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="badge ">有效</span></td><td><div class="user-actions"><a class="detail" target="_blank" rel="noopener noreferrer" href="index.html?user=alex">查看详情 ↗</a><button class="manage-link" data-user="alex">管理链接</button></div></td></tr><tr><td class="user-name">Bella<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence offline" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>离线</span></td><td><span class="mobile-label">已用 / 额度</span>72.6 GB <span class="subtle">/ 300 GB</span><div class="mini-bar"><i style="width:24.2%;"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="badge ">有效</span></td><td><div class="user-actions"><a class="detail" target="_blank" rel="noopener noreferrer" href="index.html?user=bella">查看详情 ↗</a><button class="manage-link" data-user="bella">管理链接</button></div></td></tr><tr><td class="user-name">Chris<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence unknown" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><span aria-hidden="true">—</span>未知</span></td><td><span class="mobile-label">已用 / 额度</span>186.2 GB <span class="subtle">/ 200 GB</span><div class="mini-bar"><i style="width:93.1%;background:#c49a55"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="badge ">有效</span></td><td><div class="user-actions"><a class="detail" target="_blank" rel="noopener noreferrer" href="index.html?user=chris">查看详情 ↗</a><button class="manage-link" data-user="chris">管理链接</button></div></td></tr><tr data-expired="true"><td class="user-name">Dana<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence offline" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>离线</span></td><td><span class="mobile-label">已用 / 额度</span>18.4 GB <span class="subtle">/ 100 GB</span><div class="mini-bar"><i style="width:18.4%;"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="badge muted-badge">已到期</span></td><td><div class="user-actions"><a class="detail" target="_blank" rel="noopener noreferrer" href="index.html?user=dana">查看详情 ↗</a><button class="manage-link" data-user="dana">管理链接</button></div></td></tr></tbody></table></section><section class="card server" id="server-overview"><div class="card-head"><div class="server-title"><h2>服务器概况</h2><span>Los Angeles · US</span></div><div class="server-tools"><span class="badge"><i class="dot"></i>运行中</span></div></div><div class="metrics"><div class="metric"><label>CPU</label><strong>4.4 <small>%</small></strong><div class="bar"><i style="width:4.4%"></i></div><p>负载 0.03 / 0.06 / 0.02</p></div><div class="metric"><label>内存</label><strong>28.6 <small>%</small></strong><div class="bar"><i style="width:28.6%"></i></div><p>286 MB / 1.0 GB</p><p class="swap-usage">Swap 5.8 MB / 511 MB</p></div><div class="metric"><label>磁盘</label><strong>24.7 <small>%</small></strong><div class="bar"><i style="width:24.7%"></i></div><p>4.9 GB / 20.0 GB</p></div><div class="metric"><label>平均网速</label><strong>3.2 <small>MB/s ↓</small></strong><div class="bar"><i style="width:32%"></i></div><p>↑ 128 KB/s · ↓ 3.2 MB/s</p></div></div><div class="server-footer"><span>已连续运行 12 天 8 小时 · <span class="refresh-stamp" id="refresh-stamp">更新于 14:32</span></span><div class="network"><span><i class="dot"></i>IPv4 已配置</span><span><i class="dot"></i>IPv6 已配置</span></div></div></section><div class="preview-navigation">预览模板：<a href="admin.html">管理员总览</a> · <a href="index.html">个人页面</a> · <a href="airport.html">机场订阅</a></div><footer><span>42 CONNECT · owner 管理中心</span><span>示例数据 · 更新于 14:32</span></footer></main><button class="floating-refresh" data-action="refresh-overview" aria-label="刷新全部页面数据" title="刷新全部页面数据"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button><dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div class="backup-dialog-bar"><span class="badge" id="backup-badge">已启用</span><label class="backup-demo">示例状态<select id="backup-demo-state" aria-label="切换备用节点示例状态"><option value="enabled">已启用</option><option value="error">刷新失败</option><option value="disabled">已停用</option><option value="empty">未配置</option></select></label></div><div id="backup-content"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用<br>此处展示订阅配置状态，无法判断客户端当前是否正在使用备用。</p><p class="backup-terminal-note">订阅链接与手动节点在终端菜单中分别添加、替换或删除，网页仅展示状态。全部来源删除并重新生成后，用户更新订阅即可移除备用节点。</p></dialog><dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><h2 id="history-title">执行记录</h2><div class="history-tools"><button class="history-delete" data-clear-history>删除全部</button><button class="close-dialog" data-close="history-dialog" aria-label="关闭执行记录">×</button></div></div><p class="dialog-note">本地演示记录</p><div id="operation-list"><div class="history-row"><div><strong>配置生成</strong><span class="subtle">全部用户 · 示例记录</span></div><span class="badge">成功</span><time>14:28</time></div><div class="history-row"><div><strong>Amy 订阅刷新</strong><span class="subtle">保留现有订阅地址 · 示例记录</span></div><span class="badge">成功</span><time>14:25</time></div></div></dialog><dialog id="manage-dialog" aria-labelledby="manage-title"><div class="dialog-head"><h2 id="manage-title">用户链接</h2><button class="close-dialog" data-close="manage-dialog" aria-label="关闭链接管理">×</button></div><p class="dialog-note">页面链接与订阅链接分别管理，独立更换。</p><div id="user-links"></div><p class="warning-note">示例链接仅用于预览。正式链接包含访问凭据，请勿公开分享。</p></dialog><dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-head"><h2 id="confirm-title">确认操作</h2><button class="close-dialog" data-close="confirm-dialog" aria-label="取消操作">×</button></div><p class="confirm-text" id="confirm-text"></p><div class="dialog-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button primary" id="confirm-action">确认演示</button></div></dialog><div id="admin-toast" role="status" hidden></div><script>
+<header><div class="nav"><div class="brand"><div class="logo">42</div> CONNECT <small>管理总览</small></div><nav class="nav-shortcuts" aria-label="订阅快捷入口"><a href="index.html" target="_blank" rel="noopener noreferrer">个人网页 ↗</a><a href="airport.html" target="_blank" rel="noopener noreferrer">机场订阅 ↗</a></nav></div></header>
+<main><div class="heading"><div><div class="eyebrow">ADMIN OVERVIEW</div><h1>管理总览</h1><p>查看服务器额度与每位成员的使用情况。</p></div><span class="badge"><i class="dot"></i>服务运行正常</span></div><div class="demo">设计预览 · 搬瓦工套餐、代理入站与机场用量均为示例，未接入真实 API；所有操作仅在本地演示。</div><div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2><span class="subtle">服务器套餐与机场分别统计</span></div><div class="traffic-part provider-quota" id="provider-quota"><div class="card-head"><div class="traffic-title-tools"><h3>搬瓦工服务器</h3><a class="section-shortcut" href="https://bandwagonhost.com/services" target="_blank" rel="noopener noreferrer" title="打开搬瓦工服务管理">服务管理 ↗</a></div><details class="reset-info subtle reset-hint"><summary>11 月 17 日重置</summary><div class="reset-tooltip">11 月 17 日 14:33（北京时间）</div></details></div><div class="usage usage-linear"><div class="number" title="搬瓦工 API 返回的套餐用量">512.8 GB <small>/ 1000.0 GB</small></div><div class="bar" role="progressbar" aria-label="搬瓦工套餐流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="51.28"><i style="width:51.28%"></i></div><div class="usage-caption"><span class="provider-caption-note">套餐收发合计</span><span class="remaining">剩余 487.2 GB</span></div></div><div class="provider-meta"><span class="provider-source"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7l8-4Z"/><path d="m8 12 3 3 5-6"/></svg>KiwiVM API</span><span title="服务商统计可能延迟更新；此处为本地示例">更新于 10:50 · 示例</span></div></div><hr class="divider"><div class="traffic-part"><div class="card-head"><div class="traffic-title-tools"><h3>AmyTelecom 机场</h3><button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button></div><details class="reset-info subtle reset-hint"><summary>11 月 19 日重置</summary><div class="reset-tooltip">每月 19 日重置，具体时刻未知</div></details></div><div class="usage usage-linear"><div class="number">186.4 GB <small>/ 1000.0 GB</small></div><div class="bar" role="progressbar" aria-label="流量使用比例" aria-valuemin="0" aria-valuemax="100" aria-valuenow="18.6"><i style="width:18.64%"></i></div><div class="usage-caption"><span class="transfer"><span class="upload" title="上传流量">↑ 26.4 GB</span><span class="download" title="下载流量">↓ 160.0 GB</span></span><span class="remaining">剩余 813.6 GB</span></div></div></div></section><section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="section-shortcut history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><div class="maintenance-action"><div><strong>AmyTelecom 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="airport">刷新订阅 ↻</button></div><div class="maintenance-action maintenance-project"><div><strong>项目维护</strong></div><div class="maintenance-buttons"><button class="button" data-task="update">更新代码 ↗</button><button class="button" data-task="sync">生成配置 ↻</button></div></div><div class="backup-access" id="backup-overview"><div><span>备用节点</span><span class="backup-entry-state" id="backup-entry-status">已启用</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div></section></div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2><button class="section-shortcut panel-shortcut" data-panel-entry title="公网访问已关闭，请通过 SSH 隧道访问" aria-label="查看 3x-ui 访问说明">3x-ui ↗</button></div><span class="subtle">在线来源：3x-ui</span></div><div class="proxy-usage-summary member-usage-summary" aria-label="3x-ui 代理用量" title="代理入站统计，与上方搬瓦工套餐用量分别统计，不相加"><div class="proxy-usage-heading"><strong>238.0 <small>GB</small></strong></div><div class="transfer"><span title="代理上传流量">↑ <b>38.0 GB</b></span><span title="代理下载流量">↓ <b>200.0 GB</b></span></div></div><table class="user-table"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th>流量重置</th><th>账号状态</th><th>操作</th></tr></thead><tbody><tr><td class="user-name">42vio<small>管理员</small></td><td><span class="mobile-label">在线状态</span><span class="presence online" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>在线</span></td><td><span class="mobile-label">已用 / 额度</span>238.0 GB <span class="subtle">/ 不限额</span></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="account-normal">有效</span></td><td><div class="user-actions"><a class="user-page-icon" href="index.html?user=ren" target="_blank" rel="noopener noreferrer" title="打开个人网页" aria-label="打开 42vio 的个人网页"><span aria-hidden="true">↗</span></a><button class="manage-link" data-user="ren">管理链接</button></div></td></tr><tr><td class="user-name">Alex<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence online" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>在线</span></td><td><span class="mobile-label">已用 / 额度</span>119.0 GB <span class="subtle">/ 500 GB</span><div class="mini-bar"><i style="width:23.8%;"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="account-normal">有效</span></td><td><div class="user-actions"><a class="user-page-icon" href="index.html?user=alex" target="_blank" rel="noopener noreferrer" title="打开个人网页" aria-label="打开 Alex 的个人网页"><span aria-hidden="true">↗</span></a><button class="manage-link" data-user="alex">管理链接</button></div></td></tr><tr><td class="user-name">Bella<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence offline" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>离线</span></td><td><span class="mobile-label">已用 / 额度</span>72.6 GB <span class="subtle">/ 300 GB</span><div class="mini-bar"><i style="width:24.2%;"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="account-normal">有效</span></td><td><div class="user-actions"><a class="user-page-icon" href="index.html?user=bella" target="_blank" rel="noopener noreferrer" title="打开个人网页" aria-label="打开 Bella 的个人网页"><span aria-hidden="true">↗</span></a><button class="manage-link" data-user="bella">管理链接</button></div></td></tr><tr><td class="user-name">Chris<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence unknown" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><span aria-hidden="true">—</span>未知</span></td><td><span class="mobile-label">已用 / 额度</span>186.2 GB <span class="subtle">/ 200 GB</span><div class="mini-bar"><i style="width:93.1%;background:#c49a55"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="account-normal">有效</span></td><td><div class="user-actions"><a class="user-page-icon" href="index.html?user=chris" target="_blank" rel="noopener noreferrer" title="打开个人网页" aria-label="打开 Chris 的个人网页"><span aria-hidden="true">↗</span></a><button class="manage-link" data-user="chris">管理链接</button></div></td></tr><tr data-expired="true"><td class="user-name">Dana<small>成员</small></td><td><span class="mobile-label">在线状态</span><span class="presence offline" title="正式接入后与 3x-ui 在线查询同步；当前为示例"><i aria-hidden="true"></i>离线</span></td><td><span class="mobile-label">已用 / 额度</span>18.4 GB <span class="subtle">/ 100 GB</span><div class="mini-bar"><i style="width:18.4%;"></i></div></td><td><span class="mobile-label">流量重置</span>每月 17 日</td><td><span class="badge muted-badge">已到期</span></td><td><div class="user-actions"><a class="user-page-icon" href="index.html?user=dana" target="_blank" rel="noopener noreferrer" title="打开个人网页" aria-label="打开 Dana 的个人网页"><span aria-hidden="true">↗</span></a><button class="manage-link" data-user="dana">管理链接</button></div></td></tr></tbody></table></section><section class="card server" id="server-overview"><div class="card-head"><div class="server-title"><h2>服务器概况</h2><span>Los Angeles · US</span></div><div class="server-tools"><span class="badge"><i class="dot"></i>运行中</span></div></div><div class="metrics"><div class="metric"><label>CPU</label><strong>4.4 <small>%</small></strong><div class="bar"><i style="width:4.4%"></i></div><p>负载 0.03 / 0.06 / 0.02</p></div><div class="metric"><label>内存</label><strong>28.6 <small>%</small></strong><div class="bar"><i style="width:28.6%"></i></div><p>286 MB / 1.0 GB</p><p class="swap-usage">Swap 5.8 MB / 511 MB</p></div><div class="metric"><label>磁盘</label><strong>24.7 <small>%</small></strong><div class="bar"><i style="width:24.7%"></i></div><p>4.9 GB / 20.0 GB</p></div><div class="metric"><label>平均网速</label><strong>3.2 <small>MB/s ↓</small></strong><div class="bar"><i style="width:32%"></i></div><p>↑ 128 KB/s · ↓ 3.2 MB/s</p></div></div><div class="server-footer"><span>已连续运行 12 天 8 小时 · <span class="refresh-stamp" id="refresh-stamp">更新于 14:32</span></span><div class="network"><span><i class="dot"></i>IPv4 已配置</span><span><i class="dot"></i>IPv6 已配置</span></div></div></section><div class="preview-navigation">预览模板：<a href="admin.html">管理员总览</a> · <a href="index.html">个人页面</a> · <a href="airport.html">机场订阅</a></div><footer><span>42 CONNECT · owner 管理中心</span><span>示例数据 · 更新于 14:32</span></footer></main><button class="floating-refresh" data-action="refresh-overview" aria-label="刷新全部页面数据" title="刷新全部页面数据"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button><dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div class="backup-dialog-bar"><span class="badge" id="backup-badge">已启用</span><label class="backup-demo">示例状态<select id="backup-demo-state" aria-label="切换备用节点示例状态"><option value="enabled">已启用</option><option value="error">刷新失败</option><option value="disabled">已停用</option><option value="empty">未配置</option></select></label></div><div id="backup-content"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用<br>此处展示订阅配置状态，无法判断客户端当前是否正在使用备用。</p><p class="backup-terminal-note">订阅链接与手动节点在终端菜单中分别添加、替换或删除，网页仅展示状态。全部来源删除并重新生成后，用户更新订阅即可移除备用节点。</p></dialog><dialog id="history-dialog" aria-labelledby="history-title"><div class="dialog-head"><h2 id="history-title">执行记录</h2><div class="history-tools"><button class="history-delete" data-clear-history>删除全部</button><button class="close-dialog" data-close="history-dialog" aria-label="关闭执行记录">×</button></div></div><p class="dialog-note">本地演示记录</p><div id="operation-list"><div class="history-row"><div><strong>配置生成</strong><span class="subtle">全部用户 · 示例记录</span></div><span class="badge">成功</span><time>14:28</time></div><div class="history-row"><div><strong>AmyTelecom 订阅刷新</strong><span class="subtle">保留现有订阅地址 · 示例记录</span></div><span class="badge">成功</span><time>14:25</time></div></div></dialog><dialog id="manage-dialog" aria-labelledby="manage-title"><div class="dialog-head"><h2 id="manage-title">用户链接</h2><button class="close-dialog" data-close="manage-dialog" aria-label="关闭链接管理">×</button></div><p class="dialog-note">网页用浏览器打开，网页内的订阅链接用于客户端导入。</p><div id="user-links"></div><p class="warning-note">更换网页链接不影响已导入的订阅。示例链接仅用于预览，正式链接请勿公开分享。</p></dialog><dialog id="confirm-dialog" aria-labelledby="confirm-title"><div class="dialog-head"><h2 id="confirm-title">确认操作</h2><button class="close-dialog" data-close="confirm-dialog" aria-label="取消操作">×</button></div><p class="confirm-text" id="confirm-text"></p><div class="dialog-actions"><button class="button" data-close="confirm-dialog">取消</button><button class="button primary" id="confirm-action">确认演示</button></div></dialog><div id="admin-toast" role="status" hidden></div><script>
 const names={ren:'42vio',alex:'Alex',bella:'Bella',chris:'Chris',dana:'Dana'};const state={};let activeUser,pending,toastTimer;
 const manage=document.querySelector('#manage-dialog'),confirmDialog=document.querySelector('#confirm-dialog');
-function userLinks(user){if(!state[user])state[user]={page:'preview-page-token',sub:'preview-sub-token',airport:'preview-airport-token'};const tokens=state[user];const list=[{title:user==='ren'?'管理员入口':'个人网页',url:'https://sub.example.com/'+(user==='ren'?'admin/':'p/')+tokens.page+'-'+user+'/',rotate:'page'},{title:'标准订阅',url:'https://sub.example.com/s/'+tokens.sub+'-'+user+'/Clash-Compat.yaml',rotate:'sub'}];if(user==='ren'){list.push({title:'Balance 订阅',url:'https://sub.example.com/s/'+tokens.sub+'-'+user+'/Clash-Balance.yaml'},{title:'机场专用网页',url:'https://sub.example.com/p/'+tokens.airport+'-'+user+'/'},{title:'机场专用订阅',url:'https://sub.example.com/s/preview-airport-sub-'+user+'/Clash-Airport.yaml'});}list.push({title:'仅节点',url:'https://sub.example.com/s/'+tokens.sub+'-'+user+'/Nodes.txt'});return list;}
-function drawLinks(){document.querySelector('#manage-title').textContent=names[activeUser]+' · 链接管理';const root=document.querySelector('#user-links');root.replaceChildren();for(const item of userLinks(activeUser)){const block=document.createElement('div');block.className='modal-link';const label=document.createElement('div');label.className='label';label.textContent=item.title;if(item.rotate){const button=document.createElement('button');button.className='rotate-link';button.textContent=item.rotate==='page'?'更换网页链接':'更换订阅链接';button.dataset.rotate=item.rotate;label.append(button);}const box=document.createElement('div');box.className='linkbox';const input=document.createElement('input');input.readOnly=true;input.value=item.url;input.setAttribute('aria-label',item.title+'示例地址');const copy=document.createElement('button');copy.textContent='复制';copy.dataset.copy=item.url;box.append(input,copy);block.append(label);if(item.title==='标准订阅'){const note=document.createElement('p');const included=!['ren','42vio','openwrt'].includes(activeUser)&&['enabled','error'].includes(document.querySelector('#backup-demo-state').value);const owner=activeUser==='ren';note.className='subscription-backup-note'+(owner||included?' with-backup':'');note.textContent=owner?'自建节点 + 机场':included?'自建节点 + 备用节点':'仅自建节点';block.append(note);}block.append(box);root.append(block);}}
+let activeLinkScope='user';
+const airportLinkState={page:'preview-airport-page',sub:'preview-airport-sub'};
+const copyLinkIcon='<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="copy-symbol"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></g><path class="copy-done" d="m5 12 4 4L19 6"/></svg>';
+
+const copiedFeedbackTimers=new WeakMap();
+function markLinkCopied(button){
+  if(!button)return;
+  clearTimeout(copiedFeedbackTimers.get(button));
+  if(!button.dataset.copyLabel){button.dataset.copyLabel=button.getAttribute('aria-label')||button.title||'复制链接';button.dataset.copyTitle=button.title||'复制链接';}
+  button.classList.add('is-copied');button.title='已复制';button.setAttribute('aria-label','已复制');
+  copiedFeedbackTimers.set(button,setTimeout(()=>{button.classList.remove('is-copied');button.title=button.dataset.copyTitle;button.setAttribute('aria-label',button.dataset.copyLabel);},1600));
+}
+
+function userLinks(user){
+  if(!state[user])state[user]={page:'preview-page-token',sub:'preview-sub-token'};
+  const tokens=state[user],slug=user==='ren'?'42vio':user;
+  const base='https://sub.example.com/';
+  const included=!['ren','42vio','openwrt'].includes(user)&&['enabled','error'].includes(document.querySelector('#backup-demo-state').value);
+  const personal={title:'个人网页',url:base+'p/'+tokens.page+'-'+slug+'/',rotate:'page',open:'index.html?user='+user};
+  const subscriptions=[
+    {title:'标准订阅',url:base+'s/'+tokens.sub+'-'+slug+'/Clash-Compat.yaml',note:user==='ren'?'自建节点 + 机场':included?'自建节点 + 备用节点':'仅自建节点'},
+    ...(user==='ren'?[{title:'Balance 订阅',url:base+'s/'+tokens.sub+'-'+slug+'/Clash-Balance.yaml'}]:[]),
+    {title:'仅节点订阅',url:base+'s/'+tokens.sub+'-'+slug+'/Nodes.txt',note:'仅自建节点'}
+  ];
+  return {personal,subscriptions};
+}
+function drawLinks(scope='user'){
+  activeLinkScope=scope;const isAirport=scope==='airport';
+  document.querySelector('#manage-title').textContent=isAirport?'机场链接':names[activeUser]+' · 链接管理';
+  const root=document.querySelector('#user-links');root.replaceChildren();
+  const links=isAirport?{personal:{title:'机场订阅网页',url:'https://sub.example.com/p/'+airportLinkState.page+'/',rotate:'airport-page',open:'airport.html'},subscriptions:[{title:'机场专用订阅',url:'https://sub.example.com/s/'+airportLinkState.sub+'/Clash-Airport.yaml',note:'仅机场节点'}]}:userLinks(activeUser);
+  const make=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text)el.textContent=text;return el;};
+  function rotate(kind,label){const button=make('button','rotate-link',label);button.dataset.rotate=kind;return button;}
+  function address(item,page=false){
+    const box=make('div','linkbox relation-linkbox');
+    const input=make('input');input.readOnly=true;input.value=item.url;input.setAttribute('aria-label',item.title+'示例地址');box.append(input);
+    if(page){const open=make('a','page-open','打开 ↗');open.href=item.open;open.target='_blank';open.rel='noopener noreferrer';box.append(open);}
+
+    const copy=make('button','relation-copy copy-icon');copy.dataset.copy=item.url;copy.title='复制'+item.title+'链接';copy.setAttribute('aria-label',copy.title);
+    copy.innerHTML=copyLinkIcon;
+    box.append(copy);return box;
+  }
+  function pageGroup(item,id){
+    const group=make('section','link-relation');if(id)group.id=id;
+    const head=make('div','relation-heading');const title=make('div');title.append(make('h3','',item.title));
+    head.append(title,rotate(item.rotate,'更换网页链接'));group.append(head,address(item,true));root.append(group);return group;
+  }
+  function subscriptionRow(item){
+    const row=make('div','relation-subscription');const heading=make('div','relation-subtitle');heading.append(make('strong','',item.title));
+    if(item.note)heading.append(make('span','relation-composition',item.note));
+    row.append(heading,address(item));return row;
+  }
+  const personal=pageGroup(links.personal);
+  const children=make('div','relation-children');
+  const subscriptionHeading=make('div','relation-child-heading');
+  const replaceSubscription=rotate(isAirport?'airport-sub':'sub','更换订阅链接');replaceSubscription.title=isAirport?'更换机场专用订阅链接，旧地址失效':'更换该用户的全部个人订阅链接，旧地址失效';
+  subscriptionHeading.append(make('span','','订阅链接'),replaceSubscription);children.append(subscriptionHeading);
+  links.subscriptions.forEach(item=>children.append(subscriptionRow(item)));
+  personal.append(children);
+}
 function notify(message){const toast=document.querySelector('#admin-toast');toast.textContent=message;toast.hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.hidden=true,3500);}
 function record(title,target){const row=document.createElement('div');row.className='history-row';const info=document.createElement('div');const heading=document.createElement('strong');heading.textContent=title;const description=document.createElement('span');description.className='subtle';description.textContent=target+' · 仅本地演示，未修改服务器';info.append(heading,description);const badge=document.createElement('span');badge.className='badge';badge.textContent='演示完成';const time=document.createElement('time');time.textContent=new Date().toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit'});row.append(info,badge,time);if(!document.querySelector('#operation-list .history-row'))document.querySelector('#operation-list').textContent='';document.querySelector('#operation-list').prepend(row);}
 function ask(title,text,action,danger=false){document.querySelector('#confirm-title').textContent=title;document.querySelector('#confirm-text').textContent=text;const button=document.querySelector('#confirm-action');button.className='button '+(danger?'danger':'primary');button.textContent=danger?'确认更换（演示）':'确认执行（演示）';pending=action;confirmDialog.showModal();}
-document.addEventListener('click',async event=>{const button=event.target.closest('button');if(!button)return;if(button.dataset.action==='refresh-overview'){refreshOverview(true);return;}if(button.hasAttribute('data-clear-history')){ask('删除全部执行记录','清空全部示例执行记录，不会撤销操作。',()=>{document.querySelector('#operation-list').textContent='暂无执行记录';notify('示例执行记录已清空');});return;}if(button.hasAttribute('data-backup-details')){document.getElementById('backup-dialog').showModal();return;}if(button.dataset.history){document.getElementById('history-dialog').showModal();return;}if(button.dataset.close){document.getElementById(button.dataset.close).close();return;}if(button.dataset.user){activeUser=button.dataset.user;drawLinks();manage.showModal();return;}if(button.dataset.copy){try{await navigator.clipboard.writeText(button.dataset.copy);notify('已复制示例链接');}catch{notify('请选中地址手动复制');}return;}if(button.dataset.rotate){const kind=button.dataset.rotate;ask(kind==='page'?'更换网页链接':'更换订阅链接',kind==='page'?'旧网页链接将失效。已导入客户端的订阅不受影响。本地预览只更换示例地址。':'旧订阅地址将失效，用户需要重新导入新链接。个人网页地址不受影响。本地预览不会改变真实订阅。',()=>{state[activeUser][kind]='preview-'+kind+'-'+Math.random().toString(36).slice(2,9);drawLinks();record(kind==='page'?'更换网页链接':'更换订阅链接',names[activeUser]);notify('示例地址已更换，服务器未发生修改');},true);return;}if(button.dataset.task){const tasks={airport:{title:'刷新 Amy 订阅',text:'重新获取机场节点与流量信息，保留现有订阅地址。本次只演示执行结果。',record:'Amy 订阅刷新',target:'AmyTelecom'},'update-sync':{title:'更新代码并生成配置',text:'先获取最新项目代码并更新服务配置，成功后再生成所有用户的订阅配置；更新失败则停止，不继续生成。现有订阅地址保持不变。正式执行时管理网页可能短暂中断。本次仅本地演示，不会修改服务器。',record:'更新代码并生成配置',target:'项目与全部用户'}};const task=tasks[button.dataset.task];if(!task)return;ask(task.title,task.text,()=>{record(task.record,task.target);notify('演示完成，未向服务器发送请求');});return;}if(button.id==='confirm-action'&&pending){const action=pending;pending=null;confirmDialog.close();action();}});
+document.addEventListener('click',async event=>{const button=event.target.closest('button');if(!button)return;if(button.dataset.action==='refresh-overview'){refreshOverview(true);return;}if(button.hasAttribute('data-clear-history')){ask('删除全部执行记录','清空全部示例执行记录，不会撤销操作。',()=>{document.querySelector('#operation-list').textContent='暂无执行记录';notify('示例执行记录已清空');});return;}if(button.hasAttribute('data-backup-details')){document.getElementById('backup-dialog').showModal();return;}if(button.dataset.history){document.getElementById('history-dialog').showModal();return;}if(button.dataset.close){document.getElementById(button.dataset.close).close();return;}if(button.hasAttribute('data-panel-entry')){notify('3x-ui 面板公网访问已关闭，请通过 SSH 隧道访问。终端菜单可查看使用说明。');return;}if(button.hasAttribute('data-airport-links')){drawLinks('airport');manage.showModal();return;}if(button.dataset.user){activeUser=button.dataset.user;drawLinks();manage.showModal();return;}if(button.dataset.copy){try{await navigator.clipboard.writeText(button.dataset.copy);markLinkCopied(button);notify('已复制示例链接');}catch{notify('请选中地址手动复制');}return;}if(button.dataset.rotate){const kind=button.dataset.rotate,isAirport=activeLinkScope==='airport',isPage=kind==='page'||kind==='airport-page';ask(isPage?'更换网页链接':'更换订阅链接',isPage?'旧网页链接将失效。已导入客户端的订阅不受影响。本地预览只更换示例地址。':isAirport?'旧机场专用订阅地址将失效，使用它的客户端需要重新导入。成员个人网页及订阅地址保留。本地预览不会改变真实订阅。':'该用户的全部个人订阅地址将失效，用户需要重新导入。独立机场链接和个人网页地址保留。本地预览不会改变真实订阅。',()=>{if(isAirport){airportLinkState[isPage?'page':'sub']='preview-airport-'+(isPage?'page':'sub')+'-'+Math.random().toString(36).slice(2,9);}else{state[activeUser][kind]='preview-'+kind+'-'+Math.random().toString(36).slice(2,9);}drawLinks(isAirport?'airport':'user');record(isPage?'更换网页链接':'更换订阅链接',isAirport?'机场链接':names[activeUser]);notify('示例地址已更换，服务器未发生修改');},true);return;}if(button.dataset.task){const tasks={airport:{title:'刷新 AmyTelecom 订阅',text:'重新获取机场节点与流量信息，保留现有订阅地址。本次只演示执行结果。',record:'AmyTelecom 订阅刷新',target:'AmyTelecom'},'update':{title:'更新代码',text:'只更新项目代码与服务配置，不生成用户订阅。正式执行时管理网页可能短暂中断。本次仅本地演示，不会修改服务器。',record:'更新项目代码',target:'项目'},'sync':{title:'生成配置',text:'使用当前项目代码生成全部用户的订阅配置，保留现有订阅地址。本次仅本地演示，不会修改服务器。',record:'生成订阅配置',target:'全部用户'}};const task=tasks[button.dataset.task];if(!task)return;ask(task.title,task.text,()=>{record(task.record,task.target);notify('演示完成，未向服务器发送请求');});return;}if(button.id==='confirm-action'&&pending){const action=pending;pending=null;confirmDialog.close();action();}});
 
 let overviewRefreshing=false;
 async function refreshOverview(manual=false){
@@ -141,7 +306,7 @@ async function refreshOverview(manual=false){
     const stamp=new Date().toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit'});
     document.querySelector('#refresh-stamp').textContent='更新于 '+stamp;
     document.querySelector('.provider-meta>span:last-child').textContent='更新于 '+stamp+' · 示例';
-    document.querySelector('#members>.card-head>.subtle').textContent='更新于 '+stamp+' · 示例数据';
+    document.querySelector('#members>.card-head>.subtle').textContent=stamp.slice(0,5)+' 更新';
     if(manual)notify('页面数据已刷新（示例数据）');
   }finally{
     overviewRefreshing=false;button.disabled=false;button.removeAttribute('aria-busy');button.querySelector('.refresh-label').textContent='刷新';
@@ -161,7 +326,7 @@ function renderBackupPreview(state){
   const badge=document.querySelector('#backup-badge'),root=document.querySelector('#backup-content');
   const labels={enabled:'已启用',error:'刷新异常',disabled:'已停用',empty:'未配置'};
   document.querySelector('#backup-entry-status').textContent=labels[state];
-  if(manage.open&&activeUser)drawLinks();
+  if(manage.open)drawLinks(activeLinkScope);
   badge.textContent=labels[state];badge.className='badge'+(state==='error'?' backup-error-badge':['disabled','empty'].includes(state)?' backup-neutral-badge':'');
   if(state==='empty'){
     root.innerHTML='<p class="backup-empty">尚未设置备用订阅链接或手动节点。所有用户的自建组只包含主节点，策略组仍然保留。</p>';
@@ -177,4 +342,11 @@ renderBackupPreview('enabled');
 
 document.addEventListener('click',event=>{document.querySelectorAll('.reset-info[open]').forEach(item=>{if(!item.contains(event.target))item.open=false;});});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.reset-info[open]').forEach(item=>item.open=false);});
+
+const linkPreviewUser=new URLSearchParams(location.search).get('links');
+const selectedPreviewUser=linkPreviewUser==='42vio'?'ren':linkPreviewUser;
+if(linkPreviewUser==='airport'){drawLinks('airport');manage.showModal();}
+else if(selectedPreviewUser&&Object.prototype.hasOwnProperty.call(names,selectedPreviewUser)){
+  activeUser=selectedPreviewUser;drawLinks();manage.showModal();
+}
 </script></body></html>

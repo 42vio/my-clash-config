@@ -88,6 +88,18 @@ def _location_blocks(text):
 
 
 class LightweightNginxTests(unittest.TestCase):
+    def test_independent_airport_token_routes_replace_only_airport_capabilities(self):
+        from clash_sub.state import airport_access_token,generate_token
+        from dataclasses import replace
+        old=airport_access_token(self.state)
+        token=generate_token('airport')
+        changed=replace(self.state,airport_token=token)
+        text=render_routes(self.config,changed,(self.owner,self.member,self.disabled))
+        self.assertIn('/s/'+token+'/Clash-Airport.yaml',text)
+        self.assertIn('/s/'+token+'/AmyTelecom.yaml',text)
+        self.assertNotIn('/s/'+old+'/',text)
+        self.assertIn('/s/'+self.state.users[7].token+'/Clash-Compat.yaml',text)
+
     def test_identical_runtime_does_not_rewrite_or_reload(self):
         activate_runtime(self.config,self.state,'same routes\n',FakeRunner())
         paths=(self.routes,self.private_root/'state.json')
@@ -156,7 +168,7 @@ class LightweightNginxTests(unittest.TestCase):
                 os.chmod(path, 0o640)
         provider_path = self.public_root / "provider" / "AmyTelecom.yaml"
         provider_path.parent.mkdir(parents=True)
-        provider_path.write_text("proxies:\n- name: Amy\n", encoding="utf-8")
+        provider_path.write_text("proxies:\n- name: AmyTelecom\n", encoding="utf-8")
         os.chmod(provider_path, 0o640)
         public_gid = grp.getgrnam("www-data").gr_gid if os.geteuid() == 0 else os.getegid()
         for directory in (self.public_root, *self.public_root.rglob("*")):

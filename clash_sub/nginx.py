@@ -20,7 +20,7 @@ from clash_sub.domain import (
     ServiceConfig,
     XuiClient,
 )
-from clash_sub.state import TOKEN_RE, LEGACY_TOKEN_RE, _state_to_payload, airport_only_token
+from clash_sub.state import TOKEN_RE, LEGACY_TOKEN_RE, _state_to_payload, airport_only_token, airport_access_token
 
 
 _RELEASE_ID_RE = re.compile(r"^[0-9TZ-]+-[a-f0-9]{8}$")
@@ -128,11 +128,11 @@ def render_routes(config, state, clients):
         if client_id == state.owner_client_id:
             for variant in OWNER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)
-                token = airport_only_token(user.token, schema_version=state.schema_version) if variant == "airport" else user.token
+                token = airport_access_token(state) if variant == "airport" else user.token
                 blocks.append(_route_block(token, client_id, variant, alias))
             provider_alias = _provider_path(public_root)
             blocks.append(_provider_route_block(user.token, provider_alias))
-            blocks.append(_provider_route_block(airport_only_token(user.token, schema_version=state.schema_version), provider_alias, include_internal=False))
+            blocks.append(_provider_route_block(airport_access_token(state), provider_alias, include_internal=False))
         else:
             for variant in MEMBER_VARIANTS:
                 alias = _release_path(public_root, client_id, release_id, variant)

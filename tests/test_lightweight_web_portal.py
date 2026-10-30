@@ -32,6 +32,58 @@ class Request:
 
 
 class PortalTests(unittest.TestCase):
+    def test_airport_link_manager_is_separate_authenticated_and_uses_independent_token(self):
+        from clash_sub.state import generate_token
+        self.assertEqual(self.request('/admin/airport/links')[0],401)
+        self.state=replace(self.state,airport_token=generate_token('airport'))
+        save_state(self.root/'state.json',self.state)
+        status,_,body=self.request('/admin/airport/links',cookie=self.login())
+        self.assertEqual(status,200)
+        data=json.loads(body)
+        self.assertEqual(data['scope'],'airport')
+        self.assertIn(self.state.airport_token,body)
+        self.assertNotIn(self.state.users[1].token,body)
+        self.assertEqual(data['links'][-1]['target'],'airport')
+        self.assertEqual(data['links'][-1]['rotate'],'rotate-sub')
+        personal=self.portal.user_links(self.state,self.settings,1)
+        self.assertEqual([item['title'] for item in personal['links']],['个人网页','标准订阅','Balance 订阅','仅节点'])
+        self.assertNotIn(self.state.airport_token,json.dumps(personal))
+        page=self.portal.account('airport',self.state)
+        self.assertIn(self.state.airport_token,page)
+        self.assertNotIn(self.state.users[1].token,page)
+
+    def test_maintenance_uses_separate_actions_and_hides_idle_progress(self):
+        body=self.portal.maintenance_card()
+        self.assertIn('data-task="update"',body)
+        self.assertIn('data-task="sync"',body)
+        self.assertNotIn('data-task="update-sync"',body)
+        self.assertIn('class="maintenance-buttons"',body)
+        self.assertIn('class="section-shortcut history-toggle"',body)
+        self.assertIn('class="maintenance-footer" hidden',body)
+        self.assertIn('<strong>AmyTelecom 订阅</strong>',body)
+        self.assertNotIn('当前无执行中的任务',body)
+        self.assertNotIn('更新订阅内容，保留现有链接',body)
+
+    def test_admin_header_links_to_owners_independent_pages_in_new_tabs(self):
+        body=self.portal.admin(self.state,self.settings)
+        header=body.split('</header>',1)[0]
+        self.assertIn('<h1>管理总览</h1>',body)
+        self.assertIn('<title>42 / 管理总览</title>',body)
+        for key,label in (('1','个人网页'),('airport','机场订阅')):
+            path=page_path(self.settings['pages'][key]['token'],'owner')
+            self.assertIn('href="%s" target="_blank" rel="noopener noreferrer">%s ↗' % (path,label),header)
+        self.assertNotIn(self.settings['pages']['2']['token'],header)
+        self.assertNotIn('>管理总览</a>',header)
+
+    def test_admin_shortcuts_omit_unavailable_pages_and_are_not_on_member_pages(self):
+        self.settings['pages'].pop('airport')
+        self.settings['pages']['1']['binding']='invalid-binding'
+        header=self.portal.admin(self.state,self.settings).split('</header>',1)[0]
+        self.assertNotIn('个人网页 ↗',header)
+        self.assertNotIn('机场订阅 ↗',header)
+        member=self.portal.account('2',self.state)
+        self.assertNotIn('nav-shortcuts',member)
+
     def test_airport_reset_date_uses_beijing_day_and_handles_year_boundary(self):
         from datetime import datetime
         from zoneinfo import ZoneInfo
@@ -56,7 +108,7 @@ class PortalTests(unittest.TestCase):
         with patch('clash_sub.web_server.read_inbound_traffic',return_value={'upload':10,'download':20,'total':100}):
             code, _, body = self.request('/admin/',cookie=cookie)
             self.assertEqual(code, 200)
-            self.assertIn('搬瓦工 · 自建',body)
+            self.assertIn('搬瓦工服务器',body)
             self.assertIn('200.0 GB <small>/ 1000.0 GB',body)
             self.assertIn('剩余 800.0 GB',body)
             self.assertIn('套餐收发合计',body)
@@ -333,7 +385,7 @@ class PortalTests(unittest.TestCase):
     def test_online_column_is_immediately_after_username(self):
         self.portal.online=OnlineCache(lambda:frozenset({'member'}))
         _,_,body=self.request('/admin/',cookie=self.login())
-        self.assertIn('<th>用户</th><th>在线状态</th><th>已用 / 额度</th>',body)
+        self.assertIn('<th>用户</th><th>在线</th><th>已用 / 额度</th>',body)
         self.assertIn('presence online',body)
         self.assertIn('presence offline',body)
 
@@ -341,7 +393,7 @@ class PortalTests(unittest.TestCase):
         _,_,body=self.request('/admin/',cookie=self.login())
         for key in ('1','2'):
             path=page_path(self.settings['pages'][key]['token'],self.state.users[int(key)].email)
-            self.assertIn('class="detail" target="_blank" rel="noopener noreferrer" href="'+path+'"',body)
+            self.assertIn('class="user-page-icon" target="_blank" rel="noopener noreferrer" href="'+path+'"',body)
             status,_,personal=self.request(path)
             self.assertEqual(status,200)
             self.assertNotIn('data-admin-base="/admin/',personal)

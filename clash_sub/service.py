@@ -17,7 +17,7 @@ from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
 from clash_sub.sources import SourceError, merge_proxy_sources, normalize_xui_endpoints
 from clash_sub.node_subscription import NodeSubscriptionError, render_node_subscription
-from clash_sub.state import StateError, airport_only_token, prepare_link_update
+from clash_sub.state import StateError, airport_only_token, airport_access_token, generate_token, prepare_link_update
 from clash_sub.operation import ServiceError, _OperationLock
 
 _AIRPORT_STORE_CODES = frozenset({"airport_source_missing", "airport_source_invalid", "airport_provider_invalid", "airport_provider_write_failed"})
@@ -38,9 +38,9 @@ class ClashSubService:
                 user=proposed.users.get(client.client_id); owner=client.client_id==state.owner_client_id
                 if not user or not client.enabled: continue
                 try:
-                    release=self._prepare(client,owner,snapshot.source_url(client),user,tokens,candidates=candidates)
+                    release=self._prepare(client,owner,snapshot.source_url(client),user,tokens,candidates=candidates,airport_token=airport_access_token(proposed))
                     users=dict(next_state.users); users[client.client_id]=user
-                    next_state=RuntimeState(2,next_state.owner_client_id,users)
+                    next_state=replace(next_state,schema_version=2,users=users)
                     if release: next_state=_with_release(next_state,client.client_id,release.release_id); updated.append(_result(client,release))
                 except Exception as error:
                     code = "node_subscription_export_failed" if isinstance(error,NodeSubscriptionError) else "owner_update_failed" if owner else "member_update_failed"
@@ -249,12 +249,32 @@ class ClashSubService:
                 if client_id==state.owner_client_id:
                     for variant,path in verified.public_paths.items():
                         if variant == "nodes": continue
-                        expected=_provider_url(self.config,airport_only_token(identity.token, schema_version=state.schema_version) if variant=="airport" else identity.token)
+                        expected=_provider_url(self.config,airport_access_token(state) if variant=="airport" else identity.token)
                         if yaml.safe_load(path.read_text())["proxy-providers"]["AmyTelecom"]["url"] != expected:
                             raise ValueError("stale provider")
                 next_state=_with_release(state,client_id,verified.release_id); self._activate(snapshot.clients,next_state,[(client_id,verified)])
             except Exception: raise ServiceError("rollback_release_invalid") from None
             self._observe(next_state); return _result(client,verified)
+    def rotate_airport_link(self):
+        with self._lock():
+            self._recover()
+            snapshot,state=self._reconciled()
+            if state.schema_version!=2:raise ServiceError('link_sync_required')
+            owner=state.users[state.owner_client_id]
+            client=_find(snapshot.clients,owner.client_id)
+            if not owner.active or not owner.current_release or not client or not client.enabled:raise ServiceError('rotation_not_allowed')
+            next_state=replace(state,airport_token=generate_token('airport'))
+            candidates=[]
+            try:
+                release=self._prepare(client,True,snapshot.source_url(client),owner,tuple(u.token for u in state.users.values()),candidates=candidates,airport_token=airport_access_token(next_state))
+                if release:next_state=_with_release(next_state,owner.client_id,release.release_id)
+                self._activate(snapshot.clients,next_state,candidates)
+            except Exception:
+                self._discard(candidates)
+                raise ServiceError('rotation_activation_failed') from None
+            self._observe(next_state)
+            return {'updated':True}
+
     def rotate_link(self,user):
         with self._lock():
             self._recover()
@@ -265,7 +285,7 @@ class ClashSubService:
             try:
                 next_state=self._rotate(state,client_id)
                 if client_id==state.owner_client_id:
-                    release=self._prepare(client,True,snapshot.source_url(client),next_state.users[client_id],tuple(u.token for u in next_state.users.values()),candidates=candidates)
+                    release=self._prepare(client,True,snapshot.source_url(client),next_state.users[client_id],tuple(u.token for u in next_state.users.values()),candidates=candidates,airport_token=airport_access_token(next_state))
                     if release: next_state=_with_release(next_state,client_id,release.release_id)
                 self._activate(snapshot.clients,next_state,candidates)
             except Exception:
@@ -279,7 +299,7 @@ class ClashSubService:
                 rebind_subscription(self.config.private_root,state,next_state,client_id)
             except Exception:
                 pass
-            self._observe(next_state); rotated=next_state.users[client_id]; return {"client_id":client_id,"token":rotated.token,"urls":tuple(_urls(self.config,rotated.token,client_id==next_state.owner_client_id,nodes=_has_nodes(self.config,rotated)))}
+            self._observe(next_state); rotated=next_state.users[client_id]; return {"client_id":client_id,"token":rotated.token,"urls":tuple(_urls(self.config,rotated.token,client_id==next_state.owner_client_id,nodes=_has_nodes(self.config,rotated),airport_token=airport_access_token(next_state)))}
     def links(self):
         with self._lock():
             self._recover()
@@ -292,7 +312,7 @@ class ClashSubService:
             if state.owner_client_id not in clients: raise ServiceError("owner_reinitialization_required")
             return tuple({"client_id":u.client_id,"email":u.email,
                           "sync_required":state.schema_version==1 or u.email!=clients[u.client_id].email,
-                          "urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id,state.schema_version,nodes=_has_nodes(self.config,u)))}
+                          "urls":tuple(_urls(self.config,u.token,u.client_id==state.owner_client_id,state.schema_version,nodes=_has_nodes(self.config,u),airport_token=airport_access_token(state)))}
                          for u in sorted(state.users.values(),key=lambda u:u.client_id)
                          if u.active and u.current_release and clients.get(u.client_id) and clients[u.client_id].enabled)
     def status(self):
@@ -316,11 +336,11 @@ class ClashSubService:
                 raise ServiceError("owner_reinitialization_failed") from None
             self._observe(next_state); self._journal(self._clock(),())
             return {"owner_client_id":client_id}
-    def _prepare(self,client,owner,url,identity,tokens,transient=None,candidates=None):
+    def _prepare(self,client,owner,url,identity,tokens,transient=None,candidates=None,airport_token=None):
         xui=normalize_xui_endpoints(self._fetch(url,self.config.max_source_bytes),self.config.xui_public_endpoint)
         provider=AirportProvider(
             _provider_url(self.config, identity.token),
-            _provider_url(self.config, airport_only_token(identity.token)),
+            _provider_url(self.config, airport_token or airport_only_token(identity.token)),
         ) if owner else None
         from clash_sub.backup_subscription import read as read_backup, eligible, combined_nodes
         backup=read_backup(self.config.private_root)
@@ -440,8 +460,8 @@ class ClashSubService:
     def _lock(self):return self._lock_factory(Path(self.config.private_root)/"operation.lock")
 
 def _with_release(s,i,r):
-    users=dict(s.users); users[i]=replace(users[i],current_release=r); return RuntimeState(s.schema_version,s.owner_client_id,users)
-def _routable(s):return RuntimeState(s.schema_version,s.owner_client_id,{i:replace(u,active=False) if u.active and not u.current_release else u for i,u in s.users.items()})
+    users=dict(s.users); users[i]=replace(users[i],current_release=r); return replace(s,users=users)
+def _routable(s):return replace(s,users={i:replace(u,active=False) if u.active and not u.current_release else u for i,u in s.users.items()})
 def _shape(b,owner):
     base=OWNER_VARIANTS if owner else MEMBER_VARIANTS
     if tuple(b) not in (base,base+("nodes",)):raise ValueError
@@ -460,9 +480,9 @@ def _client_id(i):
     return i
 def _has_nodes(c,u):
     return bool(u.current_release and (Path(c.public_root)/"releases"/str(u.client_id)/u.current_release/PROFILE_FILENAMES["nodes"]).is_file())
-def _urls(c,t,o,schema_version=2,*,nodes=False):
+def _urls(c,t,o,schema_version=2,*,nodes=False,airport_token=None):
     variants=(OWNER_VARIANTS if o else MEMBER_VARIANTS)+(("nodes",) if nodes else ())
-    urls=["https://%s/s/%s/%s"%(c.subscription_authority,airport_only_token(t, schema_version=schema_version) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in variants]
+    urls=["https://%s/s/%s/%s"%(c.subscription_authority,(airport_token or airport_only_token(t, schema_version=schema_version)) if v=="airport" else t,PROFILE_FILENAMES[v]) for v in variants]
     if o: urls.append(_provider_url(c,t))
     return urls
 def _result(c,r):return {"client_id":c.client_id,"email":c.email,"release_id":r.release_id,"variants":tuple(r.public_paths)}

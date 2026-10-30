@@ -1,4 +1,15 @@
 'use strict';
+const copyLinkIcon='<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g class="copy-symbol"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></g><path class="copy-done" d="m5 12 4 4L19 6"/></svg>';
+
+const copiedFeedbackTimers=new WeakMap();
+function markLinkCopied(button){
+  if(!button)return;
+  clearTimeout(copiedFeedbackTimers.get(button));
+  if(!button.dataset.copyLabel){button.dataset.copyLabel=button.getAttribute('aria-label')||button.title||'复制链接';button.dataset.copyTitle=button.title||'复制链接';}
+  button.classList.add('is-copied');button.title='已复制';button.setAttribute('aria-label','已复制');
+  copiedFeedbackTimers.set(button,setTimeout(()=>{button.classList.remove('is-copied');button.title=button.dataset.copyTitle;button.setAttribute('aria-label',button.dataset.copyLabel);},1600));
+}
+
 let timer;
 function notify(message) {
   const toast = document.querySelector('#toast');
@@ -18,9 +29,11 @@ document.addEventListener('click', async (event) => {
     const visible = button.getAttribute('aria-pressed') !== 'true';
     code.textContent = visible ? code.dataset.url : code.dataset.hidden;
     button.setAttribute('aria-pressed', String(visible));
+    button.title=visible?'隐藏链接':'显示链接';button.setAttribute('aria-label',button.title);
   } else if (button.dataset.action === 'copy') {
     try {
       await navigator.clipboard.writeText(code.dataset.url);
+      markLinkCopied(button);
       notify('已复制订阅链接');
     } catch {
       notify('无法访问剪贴板，请显示链接后手动复制');
@@ -65,7 +78,7 @@ async function refreshPageData(manual) {
     });
     if (!response.ok) throw new Error('unavailable');
     const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const selectors = ['.traffic-card', '#members', '#server-overview', '.backup-entry-state'];
+    const selectors = ['.traffic-card', '#members', '#server-overview', '.backup-entry-state', '.nav-shortcuts'];
     const regions = selectors.map(selector => [document.querySelector(selector), doc.querySelector(selector)]);
     if (regions.some(([current, next]) => !current || !next)) throw new Error('unavailable');
     if (document.hidden) return false;
@@ -124,50 +137,66 @@ let taskRequestPending = false;
 let completedTask = null;
 
 async function fetchLinks(userId) {
-  const response = await fetch(adminBase + '/user/' + encodeURIComponent(userId) + '/links', {cache:'no-store', credentials:'same-origin'});
+  const response = await fetch(adminBase + (userId==='airport'?'/airport/links':'/user/'+encodeURIComponent(userId)+'/links'), {cache:'no-store', credentials:'same-origin'});
   if (!response.ok) throw new Error('unavailable');
   return response.json();
 }
 function drawUserLinks(data) {
-  selectedName = data.email;
-  document.querySelector('#manage-title').textContent = data.email + ' · 链接管理';
-  const root = document.querySelector('#user-links');
-  root.replaceChildren();
-  for (const item of data.links) {
-    const block = document.createElement('div'); block.className = 'modal-link';
-    const label = document.createElement('div'); label.className = 'label'; label.textContent = item.title;
-    if (item.rotate) {
-      const button = document.createElement('button'); button.className = 'rotate-link';
-      button.textContent = item.rotate === 'rotate-page' ? '更换网页链接' : '更换订阅链接';
-      button.dataset.rotate = item.rotate; button.dataset.target = item.target;
-      label.append(button);
-    }
-    block.append(label);
-    if (item.composition) { const note = document.createElement('p'); note.className = 'subscription-backup-note'; note.textContent = item.composition; block.append(note); }
-    if (item.url) {
-      const box = document.createElement('div'); box.className = 'linkbox';
-      const input = document.createElement('input'); input.readOnly = true; input.value = item.url; input.setAttribute('aria-label', item.title);
-      const button = document.createElement('button'); button.textContent = '复制'; button.dataset.copy = item.url;
-      box.append(input, button); block.append(box);
-    }
-    root.append(block);
+  selectedName=data.email;
+  const airport=data.scope==='airport';
+  document.querySelector('#manage-title').textContent=airport?'机场链接':data.email+' · 链接管理';
+  const root=document.querySelector('#user-links');root.replaceChildren();
+  const make=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text)el.textContent=text;return el;};
+  const page=data.links.find(item=>item.rotate==='rotate-page');
+  const subscriptions=data.links.filter(item=>item.url&&item!==page);
+  const rotateItem=subscriptions.find(item=>item.rotate==='rotate-sub');
+  function rotate(item,text){const b=make('button','rotate-link',text);b.dataset.rotate=item.rotate;b.dataset.target=item.target;return b;}
+  function address(item,isPage){
+    const box=make('div','linkbox relation-linkbox');
+    const input=make('input');input.readOnly=true;input.value=item.url;input.setAttribute('aria-label',item.title);box.append(input);
+    if(isPage){const open=make('a','page-open','打开 ↗');open.href=item.url;open.target='_blank';open.rel='noopener noreferrer';box.append(open);}
+    const copy=make('button','copy-icon relation-copy');copy.innerHTML=copyLinkIcon;copy.dataset.copy=item.url;copy.title='复制'+item.title+'链接';copy.setAttribute('aria-label',copy.title);box.append(copy);return box;
   }
+  const section=make('section','link-relation');const heading=make('div','relation-heading');
+  heading.append(make('h3','',page?.title||(airport?'机场订阅网页':'个人网页')));
+  if(page?.rotate)heading.append(rotate(page,'更换网页链接'));
+  section.append(heading);
+  if(page?.url)section.append(address(page,true));else section.append(make('p','subtle','网页尚未生成'));
+  const children=make('div','relation-children');
+  const childHeading=make('div','relation-child-heading');childHeading.append(make('span','','订阅链接'));
+  if(rotateItem)childHeading.append(rotate(rotateItem,'更换订阅链接'));
+  children.append(childHeading);
+  for(const item of subscriptions){const row=make('div','relation-subscription');const label=make('div','relation-subtitle');label.append(make('strong','',item.title==='仅节点'?'仅节点订阅':item.title));const composition=item.composition||(item.title==='仅节点'?'仅自建节点':'');if(composition)label.append(make('span','relation-composition',composition));row.append(label,address(item,false));children.append(row);}
+  if(!subscriptions.length)children.append(make('p','subtle','暂无已发布订阅'));
+  section.append(children);root.append(section);
+  root.append(make('p','warning-note','更换网页链接不影响已导入的订阅。请勿公开分享这些链接。'));
 }
 function askTask(action, target) {
   const descriptions = {
     'delete-history':['删除全部执行记录','删除全部已结束的执行记录，保留等待中和执行中的任务。不会撤销操作或更改订阅配置。删除后无法恢复。'],
     'rotate-page':['更换网页链接','旧网页链接将立即失效，已导入客户端的订阅不受影响。请确认目标用户。'],
     'rotate-sub':['更换订阅链接','该用户的旧订阅地址将失效，所有客户端需要重新导入。其个人网页地址保留。owner 操作后可能需要重新登录。'],
-    'refresh-airport':['刷新 Amy 订阅','获取最新机场节点与流量信息，保留现有订阅地址。'],
-    'update-sync':['更新代码并生成配置','先更新代码与服务，成功后生成全部用户配置；更新失败则停止。订阅地址保留。网页可能短暂中断并要求重新登录。']
+    'refresh-airport':['刷新 AmyTelecom 订阅','获取最新机场节点与流量信息，保留现有订阅地址。'],
+    'update':['更新代码','更新项目代码与服务配置，不生成用户订阅。网页可能短暂中断并要求重新登录。'],
+    'sync':['生成配置','使用当前项目代码生成全部用户订阅配置，保留现有订阅地址。']
   };
   if (!(action in descriptions)) return;
-  const [title, detail] = descriptions[action];
+  const [title, defaultDetail] = descriptions[action];
+  const detail=action==='rotate-sub'&&target==='airport'?'旧机场专用订阅地址将失效，使用它的客户端需要重新导入。成员个人网页及个人订阅保持不变。':defaultDetail;
   confirmation = {action, target, request_id: crypto.randomUUID()};
-  document.querySelector('#confirm-title').textContent = target && action !== 'delete-history' && selectedName ? selectedName + (target === 'airport' ? ' · 机场网页' : '') + ' · ' + title : title;
+  document.querySelector('#confirm-title').textContent = target && action !== 'delete-history' && selectedName ? selectedName + ' · ' + title : title;
   document.querySelector('#confirm-text').textContent = detail;
   document.querySelector('#confirm-action').textContent = '确认执行';
   confirmDialog.showModal();
+}
+
+function showTaskProgress(message, failed=false) {
+  const status=document.querySelector('#task-progress');
+  if(!status)return;
+  status.textContent=message;
+  const footer=status.closest('.maintenance-footer');
+  footer.hidden=!message;
+  footer.classList.toggle('task-failed',failed);
 }
 
 async function refreshTasks() {
@@ -199,14 +228,15 @@ async function refreshTasks() {
     }
     if (!rows.length) root.textContent = '暂无执行记录';
     const current = rows.find(row => row.status === 'queued' || row.status === 'running');
-    document.querySelector('#task-progress').textContent = current ? current.phase : '当前无执行中的任务';
+    const failed=!current && rows[0] && ['failed','interrupted'].includes(rows[0].status);
+    showTaskProgress(current ? current.phase : failed ? rows[0].phase || rows[0].label : '',Boolean(failed));
     for (const button of document.querySelectorAll('button[data-task],button[data-rotate]')) button.disabled = tasksPending;
     if (rows[0] && rows[0].status === 'success' && completedTask !== rows[0].id) {
       completedTask = rows[0].id;
       if (manageDialog.open && selectedUser) drawUserLinks(await fetchLinks(selectedUser));
     }
   } catch {
-    document.querySelector('#task-progress').textContent = '暂时无法取得结果，更新期间请稍后重试或重新登录。';
+    showTaskProgress('暂时无法取得结果，更新期间请稍后重试或重新登录。',true);
     return false;
   } finally {
     taskRequestPending = false;
@@ -222,8 +252,9 @@ document.addEventListener('click', async event => {
   if (button.hasAttribute('data-backup-details')) { await showBackupStatus(); return; }
   if (button.dataset.history) { document.querySelector('#history-dialog').showModal(); refreshTasks(); return; }
   if (button.hasAttribute('data-clear-history')) { askTask('delete-history', null); return; }
-  if (button.dataset.user) {
-    selectedUser = button.dataset.user;
+  if(button.hasAttribute('data-panel-entry')){notify(button.dataset.panelState==='unknown'?'无法读取面板入口，请到终端检查设置。':'3x-ui 面板公网访问已关闭，请通过 SSH 隧道访问；终端菜单可查看使用说明。');return;}
+  if (button.dataset.user || button.hasAttribute('data-airport-links')) {
+    selectedUser = button.hasAttribute('data-airport-links')?'airport':button.dataset.user;
     document.querySelector('#manage-title').textContent = '读取用户链接';
     document.querySelector('#user-links').textContent = '正在读取…';
     manageDialog.showModal();
@@ -232,7 +263,7 @@ document.addEventListener('click', async event => {
     return;
   }
   if (button.dataset.copy) {
-    try { await navigator.clipboard.writeText(button.dataset.copy); notify('已复制链接'); }
+    try { await navigator.clipboard.writeText(button.dataset.copy); markLinkCopied(button); notify('已复制链接'); }
     catch { notify('请选中链接手动复制'); }
     return;
   }
@@ -274,39 +305,30 @@ if (adminBase && manageDialog) {
 }
 
 async function showBackupStatus() {
-  const dialog = document.querySelector('#backup-dialog');
-  const root = document.querySelector('#backup-content');
-  if (!adminBase || !dialog || !root) return;
-  root.textContent = '正在读取…'; dialog.showModal();
-  try {
-    const response = await fetch(adminBase + '/backup', {cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(5000)});
-    if (!response.ok) throw new Error('unavailable');
-    const data = await response.json(); root.replaceChildren();
-    const badge=document.createElement('span');badge.className='badge';badge.textContent=data.label;root.append(badge);
+  const dialog=document.querySelector('#backup-dialog'),root=document.querySelector('#backup-content');
+  root.textContent='正在读取…';dialog.showModal();
+  try{
+    const response=await fetch(adminBase+'/backup',{cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(5000)});
+    if(!response.ok)throw new Error('unavailable');
+    const data=await response.json();root.replaceChildren();
+    const make=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text)el.textContent=text;return el;};
+    const stamp=value=>value?new Date(value*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 北京时间':'暂无';
+    const badge=make('span','badge',data.label);if(data.last_error)badge.classList.add('backup-error-badge');else if(!data.enabled)badge.classList.add('backup-neutral-badge');root.append(badge);
     const entry=document.querySelector('.backup-entry-state');if(entry)entry.textContent=data.label;
-    function row(title,value) {
-      const line=document.createElement('p');line.className='backup-status-row';
-      const label=document.createElement('span');label.textContent=title;
-      const text=document.createElement('span');text.textContent=value;
-      line.append(label,text);root.append(line);
-    }
-    row('合并节点',data.nodes.length+' 个');
-    row('订阅来源',(data.subscription_nodes||[]).join('、')||'暂无');
-    row('手动导入',(data.manual_nodes||[]).join('、')||'暂无');
-    row('手动节点修改',data.manual_updated ? new Date(data.manual_updated*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 北京时间' : '暂无');
-    row('节点名称',data.nodes.join('、')||'暂无');
-    row('最近成功刷新',data.last_success ? new Date(data.last_success*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 北京时间' : '暂无');
-    const errors={backup_download_failed:'下载失败；保留上次成功缓存',backup_source_invalid:'备用配置不可用，请到终端检查'};
-    row('最近错误',errors[data.last_error]||'无');
-    row('已发布备用的用户',data.users.join('、')||'无');
-    row('固定排除',data.excluded.join('、'));
-    if(data.traffic) {
-      const size=bytes=>{let n=bytes,unit='B';for(const u of ['KB','MB','GB','TB']){if(n<1024)break;n/=1024;unit=u;}return n.toFixed(1)+' '+unit;};
-      const t=data.traffic,used=t.upload+t.download;
-      row('来源流量',size(used)+' / '+(t.total?size(t.total):'不限额'));
-      if(t.total)row('剩余流量',size(Math.max(0,t.total-used)));
-    } else row('来源流量','来源未提供');
-  } catch { root.textContent='无法取得备用状态，请稍后重试或重新登录。'; }
+    if(!data.configured){root.append(make('p','backup-empty',data.last_error?'备用配置不可用，请到终端检查。':'尚未设置备用订阅链接或手动节点。自建策略组仍保留，只包含实际主节点。'));return;}
+    const summary=make('div','backup-summary');
+    const size=value=>{let n=value,unit='B';for(const next of ['KB','MB','GB','TB']){if(n<1024)break;n/=1024;unit=next;}return n.toFixed(1)+' '+unit;};
+    const quota=data.traffic?size(data.traffic.upload+data.traffic.download)+' / '+(data.traffic.total?size(data.traffic.total)+' · 剩余 '+size(Math.max(0,data.traffic.total-data.traffic.upload-data.traffic.download)):'不限额'):'来源未提供';
+    for(const [label,value]of [['合并节点',data.nodes.length+' 个节点'],['订阅最近刷新',stamp(data.last_success)],['订阅来源额度',quota]]){const item=make('div');item.append(make('label','',label),make('strong','',value));summary.append(item);}root.append(summary);
+    if(data.last_error)root.append(make('p','backup-notice','订阅刷新失败，保留上次成功缓存；手动节点不受影响。'));
+    if(!data.enabled)root.append(make('p','backup-notice','备用分发已停用，当前仅保留缓存供查看。'));
+    const details=make('details','backup-details');details.open=true;details.append(make('summary','','节点与适用用户'));
+    const grid=make('div','backup-detail-grid'),sources=make('div');
+    for(const [label,nodes]of [['订阅来源',data.subscription_nodes||[]],['手动导入',data.manual_nodes||[]]]){sources.append(make('h3','',label+' · '+nodes.length+' 个'));const list=make('ul','backup-node-list');for(const name of nodes)list.append(make('li','',name));if(!nodes.length)list.append(make('li','subtle','暂无节点'));sources.append(list);}
+    sources.append(make('p','backup-exclusions','手动节点最近修改：'+stamp(data.manual_updated)));
+    const users=make('div');users.append(make('h3','','已发布备用的用户'));const names=make('div','backup-users');for(const name of data.users)names.append(make('span','backup-user',name));if(!data.users.length)names.append(make('span','subtle','无'));users.append(names,make('p','backup-exclusions','固定排除：'+data.excluded.join('、')));
+    grid.append(sources,users);details.append(grid);root.append(details);
+  }catch{root.textContent='无法取得备用状态，请稍后重试或重新登录。';}
 }
 
 refreshOverviewOnEntry();

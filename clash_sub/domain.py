@@ -83,6 +83,7 @@ class RuntimeState:
     schema_version: int
     owner_client_id: int
     users: Mapping[int, UserState]
+    airport_token: str | None = None
 
     def __post_init__(self):
         object.__setattr__(self, "users", MappingProxyType(dict(self.users)))

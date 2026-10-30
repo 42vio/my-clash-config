@@ -39,6 +39,11 @@ def airport_only_token(owner_token, *, schema_version=2):
     return core + owner_token[43 if legacy else 22:]
 
 
+def airport_access_token(state):
+    """Use the independent capability, falling back to the existing derived address."""
+    return state.airport_token or airport_only_token(state.users[state.owner_client_id].token,schema_version=state.schema_version)
+
+
 def generate_token(email: str, *, random_bytes=secrets.token_bytes) -> str:
     validate_email(email)
     try:
@@ -164,7 +169,7 @@ def reconcile_state(previous, clients, owner_email):
                 active=client.enabled,
                 current_release=existing.current_release,
             )
-    return RuntimeState(version, owner_client_id, users)
+    return RuntimeState(version, owner_client_id, users,previous.airport_token if previous else None)
 
 
 def reinitialize_owner(previous, clients, owner_email, owner_client_id):
@@ -217,7 +222,7 @@ def reinitialize_owner(previous, clients, owner_email, owner_client_id):
                 active=client.enabled,
                 current_release=existing.current_release,
             )
-    return RuntimeState(previous.schema_version, owner_client_id, users)
+    return RuntimeState(previous.schema_version, owner_client_id, users,previous.airport_token or (airport_access_token(previous) if previous.schema_version==2 else None))
 
 
 def rotate_user_token(state, client_id):
@@ -238,7 +243,7 @@ def rotate_user_token(state, client_id):
         active=user.active,
         current_release=user.current_release,
     )
-    return RuntimeState(state.schema_version, state.owner_client_id, users)
+    return RuntimeState(state.schema_version, state.owner_client_id, users,state.airport_token or (airport_access_token(state) if client_id==state.owner_client_id and state.schema_version==2 else None))
 
 
 def prepare_link_update(state: RuntimeState, clients: tuple) -> RuntimeState:
@@ -260,7 +265,7 @@ def prepare_link_update(state: RuntimeState, clients: tuple) -> RuntimeState:
         users[client_id] = UserState(
             user.client_id, email, token, None, user.active, user.current_release
         )
-    return RuntimeState(2, state.owner_client_id, users)
+    return RuntimeState(2, state.owner_client_id, users,state.airport_token or (airport_access_token(state) if state.schema_version==2 and users[state.owner_client_id].token!=state.users[state.owner_client_id].token else None))
 
 
 def _validate_clients(clients):
@@ -297,6 +302,7 @@ def _state_to_payload(state):
     return {
         "schema_version": state.schema_version,
         "owner_client_id": state.owner_client_id,
+        **({"airport_token":state.airport_token} if state.airport_token is not None else {}),
         "users": [
             ({
                 "client_id": user.client_id,
@@ -357,6 +363,7 @@ def _validate_runtime_state(state):
     payload = {
         "schema_version": state.schema_version,
         "owner_client_id": state.owner_client_id,
+        **({"airport_token":state.airport_token} if state.airport_token is not None else {}),
         "users": [
             ({
                 "client_id": user.client_id,
@@ -374,7 +381,7 @@ def _validate_runtime_state(state):
 
 
 def _state_from_payload_unowned(payload):
-    if not isinstance(payload, dict) or set(payload) != {"schema_version", "owner_client_id", "users"}:
+    if not isinstance(payload, dict) or not {"schema_version", "owner_client_id", "users"}.issubset(payload) or set(payload)-{"schema_version", "owner_client_id", "users", "airport_token"}:
         raise StateError("invalid state")
     schema_version = payload["schema_version"]
     owner_client_id = payload["owner_client_id"]
@@ -397,7 +404,12 @@ def _state_from_payload_unowned(payload):
         users[user.client_id] = user
         if user.readable_code is not None:
             codes.add(user.readable_code)
-    return RuntimeState(schema_version, owner_client_id, users)
+    airport_token=payload.get('airport_token')
+    if airport_token is not None:
+        if schema_version!=2 or not isinstance(airport_token,str):raise StateError('invalid state')
+        _user_from_payload({'client_id':1,'email':airport_token[23:],'token':airport_token,'active':True,'current_release':None},2)
+        if airport_token in {u.token for u in users.values()}:raise StateError('invalid state')
+    return RuntimeState(schema_version, owner_client_id, users,airport_token)
 
 
 def _fsync_directory(directory):
