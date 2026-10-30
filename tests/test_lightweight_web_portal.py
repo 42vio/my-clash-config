@@ -52,6 +52,25 @@ class PortalTests(unittest.TestCase):
         self.assertIn(self.state.airport_token,page)
         self.assertNotIn(self.state.users[1].token,page)
 
+    def test_speed_samples_are_admin_only_and_do_not_fetch_upstream(self):
+        from clash_sub.speeds import SpeedSamples
+        calls=[]
+        self.portal.speeds=SpeedSamples(lambda:(calls.append('read') or SimpleNamespace(clients=self.clients)))
+        self.assertEqual(self.request('/admin/speeds')[0],401)
+        self.assertEqual(calls,[])
+        status,headers,body=self.request('/admin/speeds',cookie=self.login())
+        self.assertEqual(status,200)
+        self.assertIn('no-store',headers)
+        self.assertEqual(calls,['read'])
+        payload=json.loads(body)
+        self.assertEqual(set(payload),{'speeds'})
+        for rates in payload['speeds'].values():
+            self.assertEqual(rates,{'upload':None,'download':None})
+        for user in self.state.users.values():self.assertNotIn(user.token,body)
+        token=self.settings['pages']['2']['token']
+        self.assertEqual(self.request('/p/'+token+'/speeds')[0],404)
+        self.assertEqual(calls,['read'])
+
     def test_member_table_replaces_reset_with_cumulative_transfers(self):
         from html.parser import HTMLParser
         class Counter(HTMLParser):

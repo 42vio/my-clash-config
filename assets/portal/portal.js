@@ -98,7 +98,10 @@ async function refreshOverview(manual = false, fresh = manual) {
   button.disabled = true; button.setAttribute('aria-busy','true');
   button.querySelector('.refresh-label').textContent = '刷新中';
   try {
+    const resumeSpeed=speedEnabled;
+    if(resumeSpeed)setSpeedMode(false);
     const updated = await refreshPageData(fresh);
+    if(resumeSpeed)setSpeedMode(true);
     const historyUpdated = manual ? await refreshTasks() : true;
     if (manual && !document.hidden) notify(updated && historyUpdated !== false
       ? '页面数据已刷新'
@@ -331,7 +334,71 @@ async function showBackupStatus() {
   }catch{root.textContent='无法取得备用状态，请稍后重试或重新登录。';}
 }
 
-refreshOverviewOnEntry();
 
 document.addEventListener('click',event=>{document.querySelectorAll('.reset-info[open]').forEach(item=>{if(!item.contains(event.target))item.open=false;});});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.reset-info[open]').forEach(item=>item.open=false);});
+
+// Desktop-only, opt-in sampling; never updates while hidden or after leaving.
+const speedDesktop=matchMedia('(min-width:761px)');
+let speedEnabled=false,speedTimer=null,speedController=null,speedGeneration=0,speedOriginals=[];
+function speedRows(){return [...document.querySelectorAll('#members tbody tr')].map(row=>({key:row.querySelector('[data-online-client]')?.dataset.onlineClient,cell:row.querySelector('td:nth-child(4)')}));}
+function rateText(value){
+  if(typeof value!=='number'||!Number.isFinite(value)||value<0)return '—';
+  if(value<1024)return Math.round(value)+' B/s';
+  if(value<1024*1024)return (value/1024).toFixed(1)+' KB/s';
+  return (value/1024/1024).toFixed(1)+' MB/s';
+}
+function paintSpeedValues(values){
+  for(const {key,cell} of speedRows()){
+    if(!cell)continue;
+    const block=document.createElement('div');block.className='member-transfer';
+    for(const [field,arrow] of [['upload','↑'],['download','↓']]){
+      const span=document.createElement('span');span.textContent=arrow+' '+rateText(values[key]?.[field]);
+      span.title=field==='upload'?'采样平均上传速度':'采样平均下载速度';block.append(span);
+    }
+    cell.replaceChildren(block);
+  }
+}
+function pauseSpeedRequests(){
+  clearTimeout(speedTimer);speedTimer=null;speedGeneration++;
+  speedController?.abort();speedController=null;
+}
+async function querySpeeds(){
+  if(!speedEnabled||document.hidden||!speedDesktop.matches||!adminBase)return;
+  const generation=speedGeneration,controller=new AbortController();speedController=controller;
+  const timeout=setTimeout(()=>controller.abort(),5000);
+  try{
+    const response=await fetch(adminBase+'/speeds',{cache:'no-store',credentials:'same-origin',signal:controller.signal});
+    if(response.status===401){setSpeedMode(false);notify('登录已过期，请重新登录。');return;}
+    if(!response.ok)throw new Error('unavailable');
+    const data=await response.json();
+    if(generation===speedGeneration&&speedEnabled&&!document.hidden)paintSpeedValues(data.speeds||{});
+  }catch{
+    if(generation===speedGeneration&&speedEnabled&&!document.hidden)paintSpeedValues({});
+  }finally{
+    clearTimeout(timeout);
+    if(generation===speedGeneration){speedController=null;if(speedEnabled&&!document.hidden&&speedDesktop.matches)speedTimer=setTimeout(querySpeeds,3000);}
+  }
+}
+function setSpeedMode(enabled){
+  pauseSpeedRequests();
+  const button=document.querySelector('[data-speed-toggle]');
+  speedEnabled=Boolean(enabled&&speedDesktop.matches&&button&&adminBase);
+  if(!button)return;
+  button.setAttribute('aria-pressed',String(speedEnabled));
+  button.textContent=speedEnabled?'实时速度 ⇄':'上传 / 下载 ⇄';
+  button.title=speedEnabled?'点击恢复累计流量；速度由 3x-ui 累计流量差值计算，每 3 秒采样，受面板写入频率影响；后台暂停':'切换累计流量与采样平均速度';
+  document.querySelector('#members .user-table')?.classList.toggle('live-speeds',speedEnabled);
+  if(speedEnabled){speedOriginals=speedRows().map(({key,cell})=>({key,html:cell.innerHTML}));paintSpeedValues({});querySpeeds();}
+  else{for(const {key,cell} of speedRows()){const original=speedOriginals.find(row=>row.key===key);if(original)cell.innerHTML=original.html;}speedOriginals=[];}
+}
+document.addEventListener('click',event=>{if(event.target.closest('[data-speed-toggle]'))setSpeedMode(!speedEnabled);});
+document.addEventListener('visibilitychange',()=>{
+  pauseSpeedRequests();
+  if(speedEnabled){paintSpeedValues({});if(!document.hidden)querySpeeds();}
+});
+speedDesktop.addEventListener('change',()=>{if(!speedDesktop.matches)setSpeedMode(false);});
+window.addEventListener('pagehide',pauseSpeedRequests);
+window.addEventListener('pageshow',event=>{if(event.persisted&&speedEnabled&&!document.hidden)querySpeeds();});
+
+refreshOverviewOnEntry();

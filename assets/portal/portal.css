@@ -252,3 +252,9 @@
 @media(max-width:760px){.maintenance>.card-head{margin-bottom:7px}.maintenance .maintenance-action{padding:11px 0;gap:8px}.maintenance-project>div:first-child{min-width:0}.maintenance-buttons{gap:5px}.maintenance .maintenance-buttons .button{font-size:10px;padding:6px 7px}}
 
 .member-transfer{display:flex;flex-direction:column;gap:2px;color:var(--muted);font-size:11px;white-space:nowrap}
+
+.transfer-mode-toggle{border:0;background:transparent;padding:0;color:inherit;font:inherit;white-space:nowrap;cursor:pointer}
+.transfer-mode-toggle:hover,.transfer-mode-toggle[aria-pressed="true"]{color:var(--green)}
+.transfer-mode-toggle:focus-visible{outline:2px solid var(--green);outline-offset:4px}
+.member-transfer{font-variant-numeric:tabular-nums}.live-speeds .member-transfer{color:var(--green)}
+@media(max-width:760px){.transfer-mode-toggle{display:none}}

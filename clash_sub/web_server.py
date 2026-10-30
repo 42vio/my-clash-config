@@ -24,6 +24,7 @@ from clash_sub.state import airport_only_token, airport_access_token, load_state
 from clash_sub.web_settings import admin_username, admin_prefix, page_path, read_settings, verify_password
 from clash_sub.xui import read_xui_snapshot, read_inbound_traffic, read_traffic_resets
 from clash_sub.online import OnlineCache, query_online
+from clash_sub.speeds import SpeedSamples
 from clash_sub.bandwagon import UsageCache
 
 
@@ -83,6 +84,7 @@ class Portal:
         self.clock = clock
         self.store = store or TrafficMetadataStore(config)
         self.snapshot_reader = snapshot_reader
+        self.speeds = SpeedSamples(lambda:self.snapshot_reader(config.xui_database))
         self.sessions = {}
         self.failures = deque()
         self.lock = threading.Lock()
@@ -327,7 +329,7 @@ class Portal:
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
         body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.provider_card() + '<hr class="divider">'
-        body += usage_card("AmyTelecom 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知', header_action='<button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button>') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2>' + self.panel_shortcut(settings) + '</div><span class="subtle">' + datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M') + ' 更新</span></div>' + self.proxy_summary() + '<table class="user-table has-presence"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th>上传 / 下载</th><th>账号状态</th><th>操作</th></tr></thead><tbody>'
+        body += usage_card("AmyTelecom 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知', header_action='<button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button>') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2>' + self.panel_shortcut(settings) + '</div><span class="subtle">' + datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M') + ' 更新</span></div>' + self.proxy_summary() + '<table class="user-table has-presence"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th><button class="transfer-mode-toggle" data-speed-toggle aria-pressed="false" title="切换累计流量与采样平均速度">上传 / 下载 <span aria-hidden="true">⇄</span></button></th><th>账号状态</th><th>操作</th></tr></thead><tbody>'
         online = self.online_states(state)
         clients = {c.client_id: c for c in self.snapshot().clients}
         for client_id, user in sorted(state.users.items()):
@@ -501,7 +503,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = '<section class="card login-card"><form method="post" action="%s/login"><label for="username">管理员账号</label><input id="username" name="username" autocomplete="username" required maxlength="254"><label for="password">管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="8" maxlength="256"><button class="button primary">登录</button></form></section>' % esc(prefix)
                 return self.respond(200,portal.shell('owner 登录',body))
             if not session:
-                if rest in {'/onlines','/tasks','/server','/backup','/overview','/overview/refresh','/airport/links'} or rest.endswith('/links'):
+                if rest in {'/speeds','/onlines','/tasks','/server','/backup','/overview','/overview/refresh','/airport/links'} or rest.endswith('/links'):
                     return self.respond(401,'{}',content_type='application/json')
                 return self.respond(303,headers=(('Location',prefix+'/login'),))
             if rest == '/':
@@ -514,6 +516,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.respond(200,json.dumps(portal.backup_summary()),content_type='application/json')
             if rest == '/server':
                 return self.respond(200,portal.system_card())
+            if rest == '/speeds':
+                return self.respond(200,json.dumps({'speeds':portal.speeds.get(state)}),content_type='application/json')
             if rest == '/onlines':
                 return self.respond(200,json.dumps({'states':portal.online_states(state)}),content_type='application/json')
             if rest == '/tasks':
