@@ -41,7 +41,7 @@ owner 和普通用户各自额外提供 `Nodes.txt`，地址为 `https://<订阅
 
 owner 网页可管理用户链接、刷新 AmyTelecom，分别更新项目代码和生成配置。固定白名单操作由独立 systemd 后台任务执行，带会话与 CSRF 校验、幂等请求和脱敏执行记录；更新会重启网页，可能需要重新登录。
 
-标准订阅支持自建主备：主节点名称由当前用户的 3x-ui 节点返回，备用节点只加入 `Clash-Compat.yaml`。`42vio`、`openwrt` 不加入备用；未配置备用时，自建 fallback 组仍保留，包含实际主节点。`Nodes.txt`、Balance 和纯机场订阅不包含备用。
+标准订阅支持自建主备：主节点名称由当前用户的 3x-ui 节点返回，备用节点只加入 `Clash-Compat.yaml`。`42vio`、`openwrt` 不加入备用；只有一个自建节点且没有备用时，自建组复用 `select` 锚点，不定时测速；有多个节点或备用时保留 `fallback` 自动切换。`Nodes.txt`、Balance 和纯机场订阅不包含备用。
 
 在终端菜单「订阅来源 → 备用节点管理」中添加、更换、刷新或删除备用来源。订阅链接必须为 HTTPS，返回包含 `proxies:` 的 Clash/Mihomo YAML；也可每行一条手动导入 VLESS、Trojan、Shadowsocks、AnyTLS 或 Hysteria 2 节点链接。仅导入节点，不执行来源中的规则或脚本。来源和缓存保存在服务器私有目录的 `backup-source.json`（0600），真实来源链接不写入公开模板或客户端配置。服务器将校验通过的节点作为内嵌 `Backup` 集合写入标准订阅，因此客户端不再单独请求上游备用链接。
 

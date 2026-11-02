@@ -109,7 +109,7 @@ class BackupSubscriptionTests(unittest.TestCase):
                 if kind!='airport':
                     expected=['Actual name from 3x-ui']+([backup.BACKUP_GROUP] if kind=='compat' else [])
                     self.assertEqual(groups[backup.PRIMARY_GROUP]['proxies'],expected)
-                    self.assertEqual(groups[backup.PRIMARY_GROUP]['type'],'fallback')
+                    self.assertEqual(groups[backup.PRIMARY_GROUP]['type'],'fallback' if kind=='compat' else 'select')
                 if kind=='compat':
                     self.assertEqual(order.index(backup.BACKUP_GROUP),order.index(backup.PRIMARY_GROUP)+1)
                     self.assertEqual(providers['Backup']['type'],'inline')
@@ -121,7 +121,25 @@ class BackupSubscriptionTests(unittest.TestCase):
             groups={g['name']:g for g in plain['proxy-groups']}
             self.assertIn(backup.PRIMARY_GROUP,groups)
             self.assertEqual(groups[backup.PRIMARY_GROUP]['proxies'],['Actual name from 3x-ui'])
+            self.assertEqual(groups[backup.PRIMARY_GROUP]['type'],'select')
+            for key in ('url','interval','lazy','expected-status'):
+                self.assertNotIn(key,groups[backup.PRIMARY_GROUP])
             self.assertNotIn(backup.BACKUP_GROUP,groups)
+
+    def test_single_node_reuses_select_anchor_and_multiple_nodes_keep_fallback(self):
+        from clash_sub.yaml_rt import load_round_trip
+        templates=Path(__file__).resolve().parents[1]/'templates'
+        for count in (1,2):
+            with self.subTest(count=count):
+                main=[reality_proxy('Main '+str(i)) for i in range(count)]
+                text=render_subscription_bundle(False,main,None,templates)['compat']
+                doc=load_round_trip(text)
+                primary=next(g for g in doc['proxy-groups'] if g['name']==backup.PRIMARY_GROUP)
+                self.assertEqual(primary['proxies'],[node['name'] for node in main])
+                self.assertEqual(primary['type'],'select' if count==1 else 'fallback')
+                self.assertIs(primary.merge[0],doc['select' if count==1 else 'fallback'])
+                if count==2:
+                    self.assertEqual(primary['interval'],600)
 
     def test_service_passes_backup_only_to_eligible_users(self):
         from tests.test_lightweight_service import ServiceTests

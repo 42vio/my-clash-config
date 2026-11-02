@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.mergevalue import MergeValue
 
 from clash_sub.domain import (
     AIRPORT_FILENAME,
@@ -80,10 +81,21 @@ def _configure_backup(document, nodes):
     if primary is None:
         if nodes:raise ValueError('backup primary group missing')
         return
-    # Always retain the primary fallback group, even with only one node.
     primary['proxies']=CommentedSeq(n for n in primary.get('proxies',[]) if n!=BACKUP_GROUP)
     groups[:]=[g for g in groups if g['name']!=BACKUP_GROUP]
-    if not nodes:return
+    if not nodes:
+        if len(primary['proxies']) == 1:
+            # Replace the fallback merge so inherited health checks disappear.
+            manual = CommentedMap((key, value) for key, value in primary.items()
+                                  if key not in {'type', 'url', 'interval', 'lazy', 'expected-status',
+                                                 'timeout', 'max-failed-times'})
+            merge = MergeValue()
+            merge.append(document.get('select', CommentedMap(type='select')))
+            merge.merge_pos = 1
+            manual.add_yaml_merge(merge)
+            manual.fa.set_flow_style()
+            groups[groups.index(primary)] = manual
+        return
     validate_nodes(nodes)
     primary['proxies'].append(BACKUP_GROUP)
     health=CommentedMap(url='https://www.gstatic.com/generate_204',interval=300,lazy=True,**{'expected-status':204})
