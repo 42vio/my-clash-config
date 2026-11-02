@@ -78,11 +78,12 @@ async function refreshPageData(manual) {
     });
     if (!response.ok) throw new Error('unavailable');
     const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const selectors = ['.traffic-card', '#members', '#server-overview', '.backup-entry-state', '.nav-shortcuts', '#airport-usage-history'];
+    const selectors = ['.traffic-card', '#members', '#server-overview', '.backup-entry-state', '.nav-shortcuts', '#airport-usage-history', '#software-updates'];
     const regions = selectors.map(selector => [document.querySelector(selector), doc.querySelector(selector)]);
     if (regions.some(([current, next]) => !current || !next)) throw new Error('unavailable');
     if (document.hidden) return false;
     for (const [current, next] of regions) patchOverviewNode(current, next);
+    scheduleSoftwareVersions();
     return true;
   } catch {
     return false;
@@ -425,4 +426,37 @@ speedDesktop.addEventListener('change',()=>{if(!speedDesktop.matches)setSpeedMod
 window.addEventListener('pagehide',()=>pauseSpeedRequests(true));
 window.addEventListener('pageshow',event=>{if(event.persisted&&speedEnabled&&!document.hidden)querySpeeds();});
 
+let softwareVersionTimer = null;
+let softwareVersionPending = false;
+function scheduleSoftwareVersions(attempt = 0) {
+  if (!adminBase || document.hidden || softwareVersionTimer || softwareVersionPending || attempt >= 10) return;
+  if (document.querySelector('#software-updates')?.dataset.versionChecking !== 'true') return;
+  softwareVersionTimer = setTimeout(() => refreshSoftwareVersions(attempt), 1500);
+}
+async function refreshSoftwareVersions(attempt) {
+  softwareVersionTimer = null;
+  if (document.hidden) return;
+  softwareVersionPending = true;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch(adminBase + '/updates', {cache:'no-store', credentials:'same-origin', redirect:'error', signal:controller.signal});
+    if (!response.ok) throw new Error('unavailable');
+    const incoming = new DOMParser().parseFromString(await response.text(), 'text/html').querySelector('#software-updates');
+    const current = document.querySelector('#software-updates');
+    if (current && incoming && !document.hidden) patchOverviewNode(current, incoming);
+  } catch {
+    // Keep the last visible data; a temporary browser failure is not "latest".
+  } finally {
+    clearTimeout(timeout);
+    softwareVersionPending = false;
+    scheduleSoftwareVersions(attempt + 1);
+  }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { clearTimeout(softwareVersionTimer); softwareVersionTimer = null; }
+  else scheduleSoftwareVersions();
+});
+window.addEventListener('pagehide', () => { clearTimeout(softwareVersionTimer); softwareVersionTimer = null; });
+scheduleSoftwareVersions();
 refreshOverviewOnEntry();

@@ -32,6 +32,33 @@ class Request:
 
 
 class PortalTests(unittest.TestCase):
+    def test_software_updates_are_admin_only_and_do_not_expose_subscription_links(self):
+        with patch.object(self.version_cache, 'get', wraps=self.version_cache.get) as get:
+            self.assertEqual(self.request('/admin/updates')[0], 401)
+            token = self.settings['pages']['2']['token']
+            self.assertEqual(self.request('/p/'+token+'/updates')[0], 404)
+            get.assert_not_called()
+            status, headers, body = self.request('/admin/updates', cookie=self.login())
+        self.assertEqual(status, 200)
+        self.assertIn('no-store', headers)
+        self.assertIn('已是最新', body)
+        self.assertNotIn(self.state.users[1].token, body)
+        self.assertNotIn('data-task="install', body)
+
+    def test_software_failure_preserves_previous_release_without_claiming_latest(self):
+        self.version_state['failed'] = ['xui']
+        self.version_state['current']['xui'] = '3.10.0'
+        body = self.portal.software_updates()
+        xui = body.split('3x-ui 面板', 1)[1].split('Xray 核心', 1)[0]
+        self.assertIn('检查失败', xui)
+        self.assertIn('上次获知 v3.11.0', xui)
+        self.assertNotIn('已是最新', xui)
+        self.assertNotIn('→', xui)
+        self.version_state['failed'] = []
+        self.assertIn('→ <b>v3.11.0</b>', self.portal.software_updates())
+        self.version_state['current']['xui'] = None
+        self.assertIn('运行版本未知', self.portal.software_updates())
+
     def test_airport_usage_history_is_not_shown_on_member_pages(self):
         airport = self.portal.account('airport', self.state)
         member = self.portal.account(2, self.state)
@@ -136,10 +163,12 @@ class PortalTests(unittest.TestCase):
         self.assertIn('data-task="update"',body)
         self.assertIn('data-task="sync"',body)
         self.assertNotIn('data-task="update-sync"',body)
-        self.assertIn('class="maintenance-buttons"',body)
+        self.assertIn('aria-label="订阅管理"',body)
+        self.assertIn('aria-label="软件更新"',body)
         self.assertIn('class="section-shortcut history-toggle"',body)
         self.assertIn('class="maintenance-footer" hidden',body)
-        self.assertIn('<strong>AmyTelecom 订阅</strong>',body)
+        self.assertIn('AmyTelecom',body)
+        self.assertIn('更新节点与规则',body)
         self.assertNotIn('当前无执行中的任务',body)
         self.assertNotIn('更新订阅内容，保留现有链接',body)
 
@@ -214,7 +243,7 @@ class PortalTests(unittest.TestCase):
 
     def test_default_online_reader_uses_same_process_only_for_admin(self):
         with patch('clash_sub.web_server.query_online',return_value=frozenset({'member'})) as query:
-            self.portal=Portal(self.config,clock=lambda:self.now[0],store=self.store,snapshot_reader=lambda _:SimpleNamespace(clients=self.clients))
+            self.portal=Portal(self.config,clock=lambda:self.now[0],store=self.store,snapshot_reader=lambda _:SimpleNamespace(clients=self.clients), version_cache=self.version_cache)
             token=self.settings['pages']['2']['token']
             self.request('/p/'+token+'/')
             query.assert_not_called()
@@ -266,7 +295,9 @@ class PortalTests(unittest.TestCase):
         self.now = [1800000000]
         self.clients = (XuiClient(1,'owner','s1',True,1,2,100,0), XuiClient(2,'member','s2',True,3,4,100,0))
         self.store = SimpleNamespace(traffic_for=lambda key:Traffic(key,2,100,0), airport_traffic=lambda:Traffic(20,30,1000,0))
-        self.portal = Portal(self.config, clock=lambda:self.now[0], store=self.store, snapshot_reader=lambda _:SimpleNamespace(clients=self.clients))
+        self.version_state = {'current':{'xui':'3.11.0','xray':'26.10.31'}, 'releases':{'xui':{'version':'v3.11.0','updated':self.now[0]},'xray':{'version':'v26.10.31','updated':self.now[0]}}, 'failed':[], 'checked':self.now[0], 'checking':False}
+        self.version_cache = SimpleNamespace(get=lambda:self.version_state)
+        self.portal = Portal(self.config, clock=lambda:self.now[0], store=self.store, snapshot_reader=lambda _:SimpleNamespace(clients=self.clients), version_cache=self.version_cache)
 
     def request(self, path, *, method='GET', fields=None, cookie=None, origin=None, raw=False):
         if path.startswith('/admin/') and not raw:
@@ -425,7 +456,7 @@ class PortalTests(unittest.TestCase):
         self.assertIn('no-store',headers)
         self.assertEqual(calls,['refresh'])
         reader.assert_called_once()
-        for marker in ('traffic-card','id="members"','id="server-overview"','class="card maintenance"'):
+        for marker in ('traffic-card','id="members"','id="server-overview"','class="card maintenance management-panel"'):
             self.assertIn(marker,body)
         token=self.settings['pages']['2']['token']
         self.assertEqual(self.request('/p/'+token+'/overview/refresh')[0],404)

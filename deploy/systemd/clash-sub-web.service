@@ -19,7 +19,7 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET
-# Fixed HTTPS provider endpoint is queried on demand; no periodic collector.
+# Fixed HTTPS provider and GitHub release endpoints are queried on demand.
 ReadOnlyPaths=-/etc/clash-sub
 ReadOnlyPaths=/etc/x-ui
 ReadWritePaths=/var/lib/clash-sub/private

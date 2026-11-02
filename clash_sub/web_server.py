@@ -27,6 +27,7 @@ from clash_sub.online import OnlineCache, query_online
 from clash_sub.speeds import PanelSpeeds
 from clash_sub.bandwagon import UsageCache
 from clash_sub.airport_usage import render_history, history_button
+from clash_sub.software_updates import SoftwareUpdates, PROJECTS, version_tuple
 
 
 # Confirmed by the owner; subscription headers do not expose the reset day.
@@ -80,7 +81,7 @@ def usage_card(title, traffic, note="", *, compact=False, reset="待确认", unl
 
 
 class Portal:
-    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot, online_reader=None, provider_cache=None):
+    def __init__(self, config, *, clock=time.time, store=None, snapshot_reader=read_xui_snapshot, online_reader=None, provider_cache=None, version_cache=None):
         self.config = config
         self.clock = clock
         self.store = store or TrafficMetadataStore(config)
@@ -99,6 +100,7 @@ class Portal:
         self._inbound_time = 0
         self.online = OnlineCache(online_reader if online_reader is not None else lambda:query_online(config.xui_database))
         self.provider = provider_cache if provider_cache is not None else UsageCache(clock=clock)
+        self.versions = version_cache if version_cache is not None else SoftwareUpdates(config.private_root, clock=clock)
         self._resets = None
         self._resets_time = 0
 
@@ -399,8 +401,44 @@ class Portal:
             links.append({'title':'机场专用订阅','url':base+'/s/'+token+'/'+filename,'rotate':'rotate-sub','target':'airport','composition':'仅机场节点'})
         return {'email':'机场链接','scope':'airport','links':links}
 
+    def software_updates(self):
+        result = self.versions.get()
+        checked = result['checked']
+        note = datetime.fromtimestamp(checked, ZoneInfo('Asia/Shanghai')).strftime('%m-%d %H:%M 检查') if checked is not None else '正在检查' if result['checking'] else '尚未检查'
+        body = '<div class="management-group" id="software-updates" data-version-checking="%s" aria-label="软件更新"><div class="management-group-heading"><h3>软件更新</h3><span title="管理员访问时按需检查，结果缓存 24 小时；仅提示，不自动升级。">%s</span></div>' % ('true' if result['checking'] else 'false', esc(note))
+        body += '<div class="management-row"><span class="management-row-name">订阅管理程序</span><span class="management-row-detail"></span><button type="button" class="management-action" data-task="update">更新代码 ↗</button></div>'
+        for key, label in (('xui', '3x-ui 面板'), ('xray', 'Xray 核心')):
+            current = result['current'].get(key)
+            release = result['releases'].get(key)
+            latest = release['version'] if release else None
+            value = esc(('v' + current.lstrip('v')) if current else ('读取中' if result['checking'] else '运行版本未知'))
+            state, state_class, detail = '', 'management-current', ''
+            if key in result['failed']:
+                state, state_class = '检查失败', 'management-update-badge'
+                if latest:
+                    detail = '上次获知 %s（%s 北京时间）；本次无法确认最新版本' % (latest, datetime.fromtimestamp(release['updated'], ZoneInfo('Asia/Shanghai')).strftime('%m-%d %H:%M'))
+            elif latest and current:
+                comparison = (version_tuple(latest) > version_tuple(current)) - (version_tuple(latest) < version_tuple(current))
+                if comparison > 0:
+                    value += ' → <b>%s</b>' % esc(latest)
+                    state, state_class = '新版', 'management-update-badge'
+                else:
+                    state = '已是最新' if comparison == 0 else '高于最新稳定版'
+            elif latest:
+                detail = '最新稳定版 %s；当前运行版本尚未确认' % latest
+            elif not result['checking']:
+                state, state_class = '检查失败', 'management-update-badge'
+            if detail:
+                value += '<span class="management-version-detail">%s</span>' % esc(detail)
+            badge = '<span class="%s">%s</span>' % (state_class, esc(state)) if state else ''
+            url = 'https://github.com/%s/releases' % PROJECTS[key]
+            if latest and key not in result['failed']:
+                url += '/tag/' + latest
+            body += '<div class="management-row"><span class="management-row-name">%s</span><span class="management-row-detail"><span>%s</span>%s</span><a class="management-action" href="%s" target="_blank" rel="noopener noreferrer" aria-label="查看 %s 官方发布说明">发布说明 ↗</a></div>' % (label, value, badge, esc(url), label)
+        return body + '</div>'
+
     def maintenance_card(self):
-        return '<section class="card maintenance"><div class="card-head"><h2>订阅维护</h2><button class="section-shortcut history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><div class="maintenance-action"><div><strong>AmyTelecom 订阅</strong><p>获取机场最新节点与流量信息</p></div><button class="button" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="maintenance-action maintenance-project"><div><strong>项目维护</strong></div><div class="maintenance-buttons"><button class="button" data-task="update">更新代码 ↗</button><button class="button" data-task="sync">生成配置 ↻</button></div></div><div class="backup-access"><div><span>备用节点</span><span class="backup-entry-state">%s</span></div><button class="backup-detail-link" data-backup-details>查看状态 ↗</button></div><div class="maintenance-footer" hidden><span class="dot"></span><span id="task-progress" role="status"></span></div></section>' % esc(self.backup_summary()['label'])
+        return '<section class="card maintenance management-panel"><div class="card-head"><h2>管理与更新</h2><button class="section-shortcut history-toggle" data-history="open" aria-haspopup="dialog" aria-controls="history-dialog">执行记录</button></div><div class="management-group" aria-label="订阅管理"><div class="management-group-heading"><h3>订阅管理</h3></div><div class="management-row"><span class="management-row-name">机场订阅</span><span class="management-row-detail">AmyTelecom</span><button type="button" class="management-action" data-task="refresh-airport">刷新订阅 ↻</button></div><div class="management-row"><span class="management-row-name">备用节点</span><span class="management-row-detail backup-entry-state">%s</span><button type="button" class="management-action" data-backup-details>查看状态 ↗</button></div><div class="management-row"><span class="management-row-name">订阅配置</span><span class="management-row-detail" title="按当前节点和规则模板重新生成订阅；客户端更新订阅后生效。">更新节点与规则</span><button type="button" class="management-action" data-task="sync">重新生成 ↻</button></div></div>%s<div class="maintenance-footer" hidden><span class="dot"></span><span id="task-progress" role="status"></span></div></section>' % (esc(self.backup_summary()['label']), self.software_updates())
 
     def task_history(self):
         from clash_sub.web_tasks import history
@@ -521,7 +559,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 body = '<section class="card login-card"><form method="post" action="%s/login"><label for="username">管理员账号</label><input id="username" name="username" autocomplete="username" required maxlength="254"><label for="password">管理员密码</label><input id="password" type="password" name="password" autocomplete="current-password" required minlength="8" maxlength="256"><button class="button primary">登录</button></form></section>' % esc(prefix)
                 return self.respond(200,portal.shell('owner 登录',body))
             if not session:
-                if rest in {'/speeds','/onlines','/tasks','/server','/backup','/overview','/overview/refresh','/airport/links'} or rest.endswith('/links'):
+                if rest in {'/speeds','/onlines','/tasks','/server','/backup','/overview','/overview/refresh','/airport/links','/updates'} or rest.endswith('/links'):
                     return self.respond(401,'{}',content_type='application/json')
                 return self.respond(303,headers=(('Location',prefix+'/login'),))
             if rest == '/':
@@ -532,6 +570,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.respond(200,portal.admin(state,settings,csrf=session[3]))
             if rest == '/backup':
                 return self.respond(200,json.dumps(portal.backup_summary()),content_type='application/json')
+            if rest == '/updates':
+                return self.respond(200,portal.software_updates())
             if rest == '/server':
                 return self.respond(200,portal.system_card())
             if rest == '/speeds':
