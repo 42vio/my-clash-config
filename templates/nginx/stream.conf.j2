@@ -5,7 +5,6 @@
 map $ssl_preread_server_name $clash_sub_backend {
     default             127.0.0.1:10443;
     sub.{{ domain }}    127.0.0.1:30443;
-    trojan.{{ domain }} 127.0.0.1:20443;
 }
 
 server {

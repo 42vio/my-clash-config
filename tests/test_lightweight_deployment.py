@@ -133,7 +133,7 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertIn("ssl_preread on;", text)
         self.assertIn("127.0.0.1:10443", text)
         self.assertIn("127.0.0.1:30443", text)
-        self.assertIn("127.0.0.1:20443", text)
+        self.assertNotIn("127.0.0.1:20443", text)
         self.assertIn("{{ domain }}", text)
         self.assertNotIn("proxy_protocol", text.split("server {")[1].split("}")[0])
 
