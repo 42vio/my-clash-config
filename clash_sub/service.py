@@ -1,6 +1,7 @@
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import stat
 import tempfile
@@ -179,6 +180,13 @@ class ClashSubService:
             activation_url=activation_url,
         )
         self._airport.replace(downloaded.document,source)
+        # Statistics are secondary to publishing the subscription. A failed
+        # history write must not turn a committed provider update into failure.
+        try:
+            from clash_sub.airport_usage import record_sample
+            record_sample(self.config.private_root, source.traffic, source.last_success)
+        except (OSError, ValueError):
+            logging.getLogger(__name__).warning("airport_usage_record_failed")
         return {"updated": True, "traffic_captured": downloaded.traffic is not None}
     def airport_status(self):
         # Public summary only: hostname, aggregate traffic, expiry, last

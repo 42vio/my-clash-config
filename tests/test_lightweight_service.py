@@ -165,6 +165,35 @@ class FakeActivator:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_successful_airport_download_records_usage_without_extra_requests(self):
+        from clash_sub.airport_usage import read_samples
+        self.download_traffic = Traffic(10, 100, 1000, 0)
+        self.service.refresh_airport()
+        self.clock_value += 86400
+        self.download_traffic = Traffic(20, 300, 1000, 0)
+        self.service.refresh_airport()
+        rows = read_samples(self.config.private_root)
+        self.assertEqual([(r['upload'], r['download']) for r in rows], [(10, 100), (20, 300)])
+        self.assertEqual(len(self.download_calls), 2)
+        self.assertEqual(self.portal.activate_calls, [])
+
+    def test_failed_provider_publish_does_not_record_usage(self):
+        from clash_sub.airport_usage import read_samples
+        self.download_traffic = Traffic(10, 100, 1000, 0)
+        self.airport_store.replace.side_effect = AirportStoreError('airport_provider_write_failed')
+        with self.assertRaises(ServiceError):
+            self.service.refresh_airport()
+        self.assertEqual(read_samples(self.config.private_root), [])
+
+    def test_history_failure_does_not_fail_a_committed_subscription_refresh(self):
+        self.download_traffic = Traffic(10, 100, 1000, 0)
+        with patch('clash_sub.airport_usage.record_sample', side_effect=OSError('private detail')):
+            with self.assertLogs('clash_sub.service', level='WARNING') as output:
+                result = self.service.refresh_airport()
+        self.assertTrue(result['updated'])
+        self.assertEqual(len(self.replaced_sources), 1)
+        self.assertNotIn('private detail', ''.join(output.output))
+
     def test_airport_rotation_is_independent_persistent_and_keeps_legacy_until_rotation(self):
         from clash_sub.state import airport_access_token, airport_only_token, reconcile_state, rotate_user_token, save_state, load_state
         self.bootstrap()

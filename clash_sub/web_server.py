@@ -26,6 +26,7 @@ from clash_sub.xui import read_xui_snapshot, read_inbound_traffic, read_traffic_
 from clash_sub.online import OnlineCache, query_online
 from clash_sub.speeds import PanelSpeeds
 from clash_sub.bandwagon import UsageCache
+from clash_sub.airport_usage import render_history, history_button
 
 
 # Confirmed by the owner; subscription headers do not expose the reset day.
@@ -263,7 +264,9 @@ class Portal:
         traffic = self.store.airport_traffic() if airport else self.store.traffic_for(user.client_id)
         links = self.links(state, user, airport=airport) if user.active and client.enabled and user.current_release else '<p>当前账户未启用，暂无可用订阅。</p>'
         note = self.freshness_note("airport" if airport else "users")
-        body = '<div class="grid">' + usage_card("AmyTelecom 用量" if airport else "个人用量", traffic, note, reset=AMY_RESET_RULE if airport else self.reset_rule(user.client_id)) + '<section class="card"><div class="card-head"><h2>订阅连接</h2></div>' + links + '''<div class="subscription-help"><details class="help"><summary>如何导入订阅？</summary><p>Clash Verge Rev：在「订阅」中粘贴标准订阅链接。Clash Mi：添加远程配置并粘贴链接。</p><p>仅节点订阅供不支持 Clash / Mihomo 配置、但支持通用节点订阅的客户端使用；不包含机场节点、DNS、策略组和分流规则。</p></details><a class="client-shortcut" href="/clients/">下载客户端 ↗</a></div><p class="privacy">订阅链接包含访问凭据，请勿转发。</p></section></div>'''
+        body = '<div class="grid">' + usage_card("AmyTelecom 用量" if airport else "个人用量", traffic, note, reset=AMY_RESET_RULE if airport else self.reset_rule(user.client_id), header_action=history_button() if airport else "") + '<section class="card"><div class="card-head"><h2>订阅连接</h2></div>' + links + '''<div class="subscription-help"><details class="help"><summary>如何导入订阅？</summary><p>Clash Verge Rev：在「订阅」中粘贴标准订阅链接。Clash Mi：添加远程配置并粘贴链接。</p><p>仅节点订阅供不支持 Clash / Mihomo 配置、但支持通用节点订阅的客户端使用；不包含机场节点、DNS、策略组和分流规则。</p></details><a class="client-shortcut" href="/clients/">下载客户端 ↗</a></div><p class="privacy">订阅链接包含访问凭据，请勿转发。</p></section></div>'''
+        if airport:
+            body += render_history(self.config.private_root, self.clock(), size)
         return self.shell("机场订阅" if airport else user.email + " · 我的订阅", body, admin=admin, prefix=prefix, csrf=csrf)
 
     def freshness_note(self, kind):
@@ -344,7 +347,7 @@ class Portal:
     def admin(self, state, settings, *, csrf=''):
         prefix = admin_prefix(settings,state)
         body = '<div class="admin-overview"><section class="card traffic-card"><div class="card-head"><h2>流量概况</h2></div>' + self.provider_card() + '<hr class="divider">'
-        body += usage_card("AmyTelecom 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知', header_action='<button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button>') + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2>' + self.panel_shortcut(settings) + '</div><span class="subtle">' + datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M') + ' 更新</span></div>' + self.proxy_summary() + '<table class="user-table has-presence"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th><button class="transfer-mode-toggle" data-speed-toggle aria-pressed="false" title="切换累计流量与 3x-ui 实时速度">上传 / 下载 <span aria-hidden="true">⇄</span></button></th><th>账号状态</th><th>操作</th></tr></thead><tbody>'
+        body += usage_card("AmyTelecom 机场", self.store.airport_traffic(), self.freshness_note('airport'), compact=True, reset=airport_reset_date(self.clock()), reset_detail='每月 19 日重置，具体时刻未知', header_action='<button class="section-shortcut" data-airport-links aria-haspopup="dialog" aria-controls="manage-dialog">链接管理 ↗</button>' + history_button()) + '</section>' + self.maintenance_card() + '</div><section class="card users" id="members"><div class="card-head"><div class="proxy-heading-tools"><h2>代理用量</h2>' + self.panel_shortcut(settings) + '</div><span class="subtle">' + datetime.fromtimestamp(self.clock(),ZoneInfo('Asia/Shanghai')).strftime('%H:%M') + ' 更新</span></div>' + self.proxy_summary() + '<table class="user-table has-presence"><thead><tr><th>用户</th><th>在线</th><th>已用 / 额度</th><th><button class="transfer-mode-toggle" data-speed-toggle aria-pressed="false" title="切换累计流量与 3x-ui 实时速度">上传 / 下载 <span aria-hidden="true">⇄</span></button></th><th>账号状态</th><th>操作</th></tr></thead><tbody>'
         online = self.online_states(state)
         clients = {c.client_id: c for c in self.snapshot().clients}
         for client_id, user in sorted(state.users.items()):
@@ -363,7 +366,7 @@ class Portal:
                 detail = '<a class="user-page-icon" target="_blank" rel="noopener noreferrer" href="%s" title="打开个人网页" aria-label="打开个人网页"><span aria-hidden="true">↗</span></a>' % esc(page_path(record['token'],user.email))
             body += '<tr%s><td class="user-name">%s</td><td data-online-client="%d">%s</td><td>%s <span class="subtle">/ %s</span>%s</td><td>%s</td><td><span class="%s">%s</span></td><td><div class="user-actions">%s<button class="manage-link" data-user="%d" data-name="%s">管理链接</button></div></td></tr>' % (' data-expired="true"' if status!='有效' else '',esc(user.email)+('<small>管理员</small>' if client_id==state.owner_client_id else '<small>成员</small>'),client_id,self.presence(online[str(client_id)]),used,total,progress,('<div class="member-transfer"><span title="累计上传">↑ %s</span><span title="累计下载">↓ %s</span></div>' % (esc(size(traffic.upload)),esc(size(traffic.download))) if traffic else '暂无数据'),'account-normal' if status=='有效' else 'badge muted-badge',status,detail,client_id,esc(user.email))
 
-        body += '</tbody></table></section>' + self.task_history() + self.backup_dialog() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新全部页面数据" title="刷新全部页面数据"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
+        body += '</tbody></table></section>' + render_history(self.config.private_root, self.clock(), size) + self.task_history() + self.backup_dialog() + self.system_card() + '<button class="floating-refresh" data-action="refresh-overview" aria-label="刷新全部页面数据" title="刷新全部页面数据"><span class="refresh-icon" aria-hidden="true">↻</span><span class="refresh-label">刷新</span></button>' + self.management_dialogs()
         shortcuts=[]
         owner=state.users[state.owner_client_id]
         for key,label in ((str(owner.client_id),'个人网页'),('airport','机场订阅')):

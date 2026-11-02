@@ -78,7 +78,7 @@ async function refreshPageData(manual) {
     });
     if (!response.ok) throw new Error('unavailable');
     const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-    const selectors = ['.traffic-card', '#members', '#server-overview', '.backup-entry-state', '.nav-shortcuts'];
+    const selectors = ['.traffic-card', '#members', '#server-overview', '.backup-entry-state', '.nav-shortcuts', '#airport-usage-history'];
     const regions = selectors.map(selector => [document.querySelector(selector), doc.querySelector(selector)]);
     if (regions.some(([current, next]) => !current || !next)) throw new Error('unavailable');
     if (document.hidden) return false;
@@ -298,6 +298,20 @@ document.addEventListener('click', async event => {
     tasksPending = true; refreshTasks();
   } finally { submitting = false; button.disabled = false; }
 });
+
+const usageDialog = document.querySelector('#airport-usage-dialog');
+document.addEventListener('click', event => {
+  if (event.target.closest('[data-usage-history]') && usageDialog && !usageDialog.open) {
+    usageDialog.showModal();
+    document.body.classList.add('usage-dialog-open');
+  }
+  if (event.target.closest('[data-usage-close]')) usageDialog?.close();
+  if (event.target === usageDialog) {
+    const box = usageDialog.getBoundingClientRect();
+    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) usageDialog.close();
+  }
+});
+usageDialog?.addEventListener('close', () => document.body.classList.remove('usage-dialog-open'));
 if (adminBase && manageDialog) {
   refreshTasks();
   document.addEventListener('visibilitychange', () => {

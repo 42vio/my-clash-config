@@ -32,6 +32,16 @@ class Request:
 
 
 class PortalTests(unittest.TestCase):
+    def test_airport_usage_history_is_not_shown_on_member_pages(self):
+        airport = self.portal.account('airport', self.state)
+        member = self.portal.account(2, self.state)
+        self.assertIn('id="airport-usage-history"', airport)
+        self.assertIn('data-usage-history', airport)
+        self.assertIn('<dialog id="airport-usage-dialog"', airport)
+        self.assertIn('尚无用量记录', airport)
+        self.assertNotIn('id="airport-usage-history"', member)
+        self.assertNotIn('data-usage-history', member)
+
     def test_airport_link_manager_is_separate_authenticated_and_uses_independent_token(self):
         from clash_sub.state import generate_token
         self.assertEqual(self.request('/admin/airport/links')[0],401)
