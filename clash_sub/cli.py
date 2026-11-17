@@ -157,10 +157,10 @@ _WEB_MENU_ROWS = (
 
 _BWH_MENU_ROWS = (
     ("title", "搬瓦工用量与定时重置"),
-    ("option", "1", (("添加或更换 API 配置", None),)),
-    ("option", "2", (("验证连接并查看套餐用量", None),)),
-    ("option", "3", (("删除 API 配置", "red"),)),
-    ("option", "4", (("获取一次搬瓦工重置时间，设置 3x-ui 客户端及入站每月重置", None),)),
+    ("option", "1", (("查看搬瓦工套餐用量", None),)),
+    ("option", "2", (("按搬瓦工账期设置流量重置", None),)),
+    ("option", "3", (("设置搬瓦工 API 凭据", None),)),
+    ("option", "4", (("删除搬瓦工 API 凭据", "red"),)),
     ("option", "0", (("返回上一级", None),)),
 )
 
@@ -344,6 +344,8 @@ def _run_submenu(rows, maximum, dispatch, stdin, stdout, stderr, factory, colors
     while True:
         if expanded:
             status = _web_access_status() if rows is _WEB_MENU_ROWS else None
+            if rows is _BWH_MENU_ROWS:
+                status = _bwh_status()
             stdout.write(_render_submenu(rows, colors, status=status))
         prompt = None if expanded else colors.yellow("\n%s：输入下一项 [1-%d]，回车查看菜单，0 返回上一级：" % (name, maximum))
         choice = _read_choice(stdin, stdout, maximum, prompt=prompt)
@@ -836,8 +838,19 @@ def _web_dispatch(choice, stdin, stdout, stderr, factory):
     return _web_command(actions[choice], None, stdout, stderr, stdin=stdin), False
 
 
+def _bwh_status():
+    from clash_sub.bandwagon import load_credentials
+    from clash_sub.traffic_reset import scheduled_reset_label
+    try:
+        configured = '已配置' if load_credentials() else '未配置'
+    except (OSError, ValueError):
+        configured = '读取失败'
+    return '搬瓦工 API：%s\n定时重置：%s\n重置范围：全部客户端及入站' % (
+        configured, scheduled_reset_label())
+
+
 def _bwh_dispatch(choice, stdin, stdout, stderr, factory):
-    action = {"1": "set-bwh-api", "2": "bwh-status", "3": "delete-bwh-api", "4": "schedule-bwh-reset"}.get(choice)
+    action = {"1": "bwh-status", "2": "schedule-bwh-reset", "3": "set-bwh-api", "4": "delete-bwh-api"}.get(choice)
     if action is None:
         return None
     return _web_command(action, None, stdout, stderr, stdin=stdin), False

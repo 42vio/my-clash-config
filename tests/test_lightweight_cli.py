@@ -2054,7 +2054,7 @@ class WebMenuConsistencyTests(unittest.TestCase):
 
     def test_bandwagon_menu_uses_hidden_key_and_supports_status(self):
         with patch('clash_sub.cli.os.geteuid',return_value=0), patch('getpass.getpass',return_value='synthetic-bwh-api-key') as prompt, patch('clash_sub.web_manage.execute',return_value='搬瓦工 API 已验证') as execute:
-            code,stdout,stderr=run_cli(None,None,stdin_text='4\n9\n1\n1234567\n2\n0\n0\n0\n')
+            code,stdout,stderr=run_cli(None,None,stdin_text='4\n9\n3\n1234567\n1\n0\n0\n0\n')
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         prompt.assert_called_once()
@@ -2065,7 +2065,7 @@ class WebMenuConsistencyTests(unittest.TestCase):
 
     def test_bandwagon_deletion_requires_explicit_confirmation(self):
         with patch('clash_sub.cli.os.geteuid',return_value=0), patch('clash_sub.web_manage.execute',return_value='已删除') as execute:
-            code,stdout,stderr=run_cli(None,None,stdin_text='4\n9\n3\nno\n3\nDELETE\n0\n0\n0\n')
+            code,stdout,stderr=run_cli(None,None,stdin_text='4\n9\n4\nno\n4\nDELETE\n0\n0\n0\n')
         self.assertEqual(code,0)
         self.assertEqual(stderr,'')
         execute.assert_called_once()
@@ -2073,7 +2073,7 @@ class WebMenuConsistencyTests(unittest.TestCase):
 
     def test_bandwagon_empty_veid_cancels_without_reading_key(self):
         with patch('clash_sub.cli.os.geteuid',return_value=0), patch('getpass.getpass') as prompt, patch('clash_sub.web_manage.execute') as execute:
-            code,_,_=run_cli(None,None,stdin_text='4\n9\n1\n\n0\n0\n0\n')
+            code,_,_=run_cli(None,None,stdin_text='4\n9\n3\n\n0\n0\n0\n')
         self.assertEqual(code,0)
         prompt.assert_not_called()
         execute.assert_not_called()
