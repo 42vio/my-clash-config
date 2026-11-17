@@ -166,6 +166,9 @@ class Portal:
         self.store.refresh()
 
     def reset_rule(self, client_id=None):
+        if client_id is not None:
+            from clash_sub.traffic_reset import scheduled_reset_label
+            return scheduled_reset_label()
         with self._snapshot_lock:
             if self._resets is None or self.clock() - self._resets_time >= 300:
                 self._resets = read_traffic_resets(self.config.xui_database)

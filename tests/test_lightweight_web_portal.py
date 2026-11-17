@@ -555,7 +555,7 @@ class PortalTests(unittest.TestCase):
         self.assertIn("frame-ancestors 'none'",headers)
         self.assertNotIn('服务器概况',body)
         self.assertNotIn('到期时间',body)
-        self.assertIn('重置时间待确认',body)
+        self.assertIn('未设置定时重置',body)
 
     def test_system_metrics_are_only_read_for_admin_overview(self):
         with patch.object(self.portal, 'system_card', return_value='SERVER-METRICS') as metrics:
@@ -576,7 +576,12 @@ class PortalTests(unittest.TestCase):
             db.executemany('INSERT INTO clients VALUES (?,?,?,?)',[(1,'monthly',17,0),(2,'never',1,17)])
         self.assertEqual(read_traffic_resets(self.config.xui_database),{'inbound':'每月 17 日','clients':{1:'每月 17 日',2:'未设置自动重置'}})
         self.assertEqual(self.portal.reset_rule(),'每月 17 日')
-        self.assertIn('未设置自动重置', self.portal.account('2',self.state))
+        with patch('clash_sub.traffic_reset.scheduled_reset_label',
+                   return_value='每月 17 日 14:33:00（北京时间）'), patch(
+                       'clash_sub.web_server.read_traffic_resets') as xui_resets:
+            page = self.portal.account('2', self.state)
+            self.assertIn('每月 17 日 14:33:00（北京时间）', page)
+            xui_resets.assert_not_called()
         self.assertIn('每月 19 日', self.portal.account('airport',self.state))
         self.assertIn('每月 19 日', self.portal.admin(self.state,self.settings))
         self.assertNotIn('到期时间', self.portal.admin(self.state,self.settings))

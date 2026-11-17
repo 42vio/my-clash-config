@@ -169,6 +169,7 @@ DOCUMENTED_CLI_COMMANDS = frozenset(
         # Internal systemd entry: surfaced only to
         # clash-sub-airport-refresh.timer, never in the interactive menus.
         "airport-scheduled-refresh",
+        "inbound-scheduled-reset",
     )
 )
 
@@ -322,6 +323,7 @@ class RepositorySafetyTests(unittest.TestCase):
         self.assertEqual(subparsers.choices["sync"]._actions, [])
         # The internal timer entry never grows a URL or any other argument.
         self.assertEqual(subparsers.choices["airport-scheduled-refresh"]._actions, [])
+        self.assertEqual(subparsers.choices["inbound-scheduled-reset"]._actions, [])
 
     def test_every_runtime_private_path_is_ignored(self):
         paths = (

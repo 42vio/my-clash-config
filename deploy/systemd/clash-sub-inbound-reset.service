@@ -1,0 +1,13 @@
+[Unit]
+Description=Reset 3x-ui client and inbound traffic counters
+After=x-ui.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/clash-sub inbound-scheduled-reset
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET

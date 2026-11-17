@@ -160,6 +160,7 @@ _BWH_MENU_ROWS = (
     ("option", "1", (("添加或更换 API 配置", None),)),
     ("option", "2", (("验证连接并查看套餐用量", None),)),
     ("option", "3", (("删除 API 配置", "red"),)),
+    ("option", "4", (("获取一次搬瓦工重置时间，设置 3x-ui 客户端及入站每月重置", None),)),
     ("option", "0", (("返回上一级", None),)),
 )
 
@@ -769,11 +770,23 @@ def _web_command(action, target, stdout, stderr, stdin=None):
     import getpass
     if os.geteuid() != 0:
         return _error(stderr, "not_root", 1)
-    if action in {"set-bwh-api", "bwh-status", "delete-bwh-api"} and target is not None:
+    if action in {"set-bwh-api", "bwh-status", "delete-bwh-api", "schedule-bwh-reset"} and target is not None:
         return _error(stderr, "invalid_arguments", 2)
     try:
         password = None
         username = None
+        if action == "schedule-bwh-reset":
+            from clash_sub.traffic_reset import ScheduleError, configure
+            root = default_repo_root()
+            config = load_config(config_path(root), root)
+            with _OperationLock(Path(config.private_root) / "operation.lock"):
+                try:
+                    result = configure(lambda message: _confirm(stdin or sys.stdin, stdout, message))
+                except ScheduleError as error:
+                    stderr.write(str(error) + "。\n")
+                    return 1
+            stdout.write(result + "\n")
+            return 0
         if action == "set-bwh-api":
             veid = _prompt(stdin or sys.stdin, stdout, "输入搬瓦工 VEID（回车取消）：")
             if not veid:
@@ -816,7 +829,7 @@ def _web_command(action, target, stdout, stderr, stdin=None):
 
 def _web_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "9":
-        return _run_submenu(_BWH_MENU_ROWS, 3, _bwh_dispatch, stdin, stdout, stderr, factory, _colors_for(stdout), name="搬瓦工 API 设置")
+        return _run_submenu(_BWH_MENU_ROWS, 4, _bwh_dispatch, stdin, stdout, stderr, factory, _colors_for(stdout), name="搬瓦工 API 设置")
     actions = {"1": "setup", "2": "reset-password", "3": "web-on", "4": "web-off", "5": "panel-on", "6": "panel-off", "7": "tunnel", "8": "set-api-token"}
     if choice not in actions:
         return None
@@ -824,7 +837,7 @@ def _web_dispatch(choice, stdin, stdout, stderr, factory):
 
 
 def _bwh_dispatch(choice, stdin, stdout, stderr, factory):
-    action = {"1": "set-bwh-api", "2": "bwh-status", "3": "delete-bwh-api"}.get(choice)
+    action = {"1": "set-bwh-api", "2": "bwh-status", "3": "delete-bwh-api", "4": "schedule-bwh-reset"}.get(choice)
     if action is None:
         return None
     return _web_command(action, None, stdout, stderr, stdin=stdin), False
@@ -854,9 +867,10 @@ def _parser():
     task.add_argument('task_id')
     task.add_argument('--sync-only', action='store_true')
     web = commands.add_parser("web", add_help=False)
-    web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel", "set-api-token", "web-on", "web-off", "set-bwh-api", "bwh-status", "delete-bwh-api"))
+    web.add_argument("action", choices=("setup", "status", "links", "rotate-page", "reset-password", "panel-on", "panel-off", "tunnel", "set-api-token", "web-on", "web-off", "set-bwh-api", "bwh-status", "delete-bwh-api", "schedule-bwh-reset"))
     web.add_argument("target", nargs="?")
     # Internal systemd entry (clash-sub-airport-refresh.timer); never displayed.
+    commands.add_parser("inbound-scheduled-reset", add_help=False)
     commands.add_parser("airport-scheduled-refresh", add_help=False)
     commands.add_parser("install", add_help=False)
     commands.add_parser("backup", add_help=False)
@@ -884,6 +898,22 @@ def _run_command(parsed, stdout, stderr, factory):
             return 0
         except Exception:
             return _error(stderr,'web_task_failed',1)
+    if command == "inbound-scheduled-reset":
+        from clash_sub.traffic_reset import reset_inbounds
+        if os.geteuid() != 0:
+            return _error(stderr, "not_root", 1)
+        try:
+            root = default_repo_root()
+            reset_inbounds(load_config(config_path(root), root).xui_database)
+            return 0
+        except ValueError as error:
+            code = str(error)
+            if code not in {"traffic_reset_failed_clients", "traffic_reset_failed_inbounds",
+                            "traffic_reset_failed_clients_inbounds"}:
+                code = "inbound_reset_failed"
+            return _error(stderr, code, 1)
+        except Exception:
+            return _error(stderr, "inbound_reset_failed", 1)
     if command == "web":
         return _web_command(parsed.action, parsed.target, stdout, stderr)
     if command == "web-serve":

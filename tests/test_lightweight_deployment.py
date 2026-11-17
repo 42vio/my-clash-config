@@ -183,6 +183,7 @@ class LightweightDeploymentTests(unittest.TestCase):
             [
                 "clash-sub-airport-refresh.service",
                 "clash-sub-airport-refresh.timer",
+                "clash-sub-inbound-reset.service",
                 "clash-sub-metadata.service",
                 "clash-sub-metadata.socket",
                 "clash-sub-recover.service",

@@ -317,6 +317,7 @@ class Installer:
             self.paths.systemd_dir / "clash-sub-task@.service",
             self.paths.systemd_dir / "clash-sub-recover.service",
             self.paths.systemd_dir / "clash-sub-airport-refresh.service",
+            self.paths.systemd_dir / "clash-sub-inbound-reset.service",
             self.paths.systemd_dir / "clash-sub-airport-refresh.timer",
             self.paths.metadata_tmpfiles(),
         }
@@ -798,6 +799,7 @@ class Installer:
                 "clash-sub-task@.service",
                 "clash-sub-recover.service",
                 "clash-sub-airport-refresh.service",
+                "clash-sub-inbound-reset.service",
                 "clash-sub-airport-refresh.timer",
             )
         ]
@@ -1135,6 +1137,11 @@ class Installer:
         if systemd_actions:
             rollback_action(["systemctl", "disable", "--now", "clash-sub-metadata.socket"])
             rollback_action(["systemctl", "disable", "--now", "clash-sub-airport-refresh.timer"])
+            from clash_sub.traffic_reset import MARKER, TIMER
+            timer = self.paths.systemd_dir / TIMER
+            if timer.is_file() and not timer.is_symlink() and timer.read_bytes().startswith(MARKER.encode()):
+                rollback_action(["systemctl", "disable", "--now", TIMER])
+                timer.unlink()
             web_socket = str(self.paths.systemd_dir / "clash-sub-web.socket")
             if web_socket in state.files_written and web_socket not in state.replaced_files:
                 rollback_action(["systemctl", "disable", "--now", "clash-sub-web.socket"])
