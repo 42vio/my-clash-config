@@ -148,15 +148,15 @@ _WEB_MENU_ROWS = (
     ("option", "5", (("开启公网访问", None),)),
     ("option", "6", (("关闭公网访问", None),)),
     ("option", "7", (("SSH 隧道使用说明", None),)),
-    ("section", "API 配置"),
+    ("section", "用量与流量重置"),
     ("option", "8", (("设置 3x-ui API 令牌", None),)),
-    ("option", "9", (("搬瓦工 API 设置", None),)),
+    ("option", "9", (("搬瓦工用量与定时重置", None),)),
     ("spacer",),
     ("option", "0", (("返回主菜单", None),)),
 )
 
 _BWH_MENU_ROWS = (
-    ("title", "搬瓦工 API 设置"),
+    ("title", "搬瓦工用量与定时重置"),
     ("option", "1", (("添加或更换 API 配置", None),)),
     ("option", "2", (("验证连接并查看套餐用量", None),)),
     ("option", "3", (("删除 API 配置", "red"),)),
@@ -829,7 +829,7 @@ def _web_command(action, target, stdout, stderr, stdin=None):
 
 def _web_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "9":
-        return _run_submenu(_BWH_MENU_ROWS, 4, _bwh_dispatch, stdin, stdout, stderr, factory, _colors_for(stdout), name="搬瓦工 API 设置")
+        return _run_submenu(_BWH_MENU_ROWS, 4, _bwh_dispatch, stdin, stdout, stderr, factory, _colors_for(stdout), name="搬瓦工用量与定时重置")
     actions = {"1": "setup", "2": "reset-password", "3": "web-on", "4": "web-off", "5": "panel-on", "6": "panel-off", "7": "tunnel", "8": "set-api-token"}
     if choice not in actions:
         return None
