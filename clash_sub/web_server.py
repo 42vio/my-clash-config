@@ -168,7 +168,8 @@ class Portal:
     def reset_rule(self, client_id=None):
         if client_id is not None:
             from clash_sub.traffic_reset import scheduled_reset_label
-            return scheduled_reset_label()
+            label = scheduled_reset_label(compact=True)
+            return label + ' ' if label.startswith('每') else label
         with self._snapshot_lock:
             if self._resets is None or self.clock() - self._resets_time >= 300:
                 self._resets = read_traffic_resets(self.config.xui_database)

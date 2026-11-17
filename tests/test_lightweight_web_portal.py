@@ -577,10 +577,10 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(read_traffic_resets(self.config.xui_database),{'inbound':'每月 17 日','clients':{1:'每月 17 日',2:'未设置自动重置'}})
         self.assertEqual(self.portal.reset_rule(),'每月 17 日')
         with patch('clash_sub.traffic_reset.scheduled_reset_label',
-                   return_value='每月 17 日 14:33:00（北京时间）'), patch(
+                   return_value='每月 17 日 14:33'), patch(
                        'clash_sub.web_server.read_traffic_resets') as xui_resets:
             page = self.portal.account('2', self.state)
-            self.assertIn('每月 17 日 14:33:00（北京时间）', page)
+            self.assertIn('每月 17 日 14:33 重置', page)
             xui_resets.assert_not_called()
         self.assertIn('每月 19 日', self.portal.account('airport',self.state))
         self.assertIn('每月 19 日', self.portal.admin(self.state,self.settings))

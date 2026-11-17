@@ -117,7 +117,7 @@ def reset_inbounds(database):
         raise ValueError('traffic_reset_failed_' + '_'.join(failures))
 
 
-def scheduled_reset_label(units=UNITS):
+def scheduled_reset_label(units=UNITS, *, compact=False):
     """Read the installed monthly schedule for the personal usage page."""
     try:
         text = (units / TIMER).read_text(encoding='utf-8')
@@ -136,7 +136,8 @@ def scheduled_reset_label(units=UNITS):
             raise ValueError('invalid_day')
     except ValueError:
         return '定时重置时间待确认'
-    label = '每月 %d 日 %s（北京时间）' % (day, match[2])
+    display_time = match[2][:5] if compact else match[2] + '（北京时间）'
+    label = '每月 %d 日 %s' % (day, display_time)
     if day > 28:
         label += '（短月取月末）'
     return label

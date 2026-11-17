@@ -103,5 +103,7 @@ class TrafficResetTests(unittest.TestCase):
         self.configure()
         self.assertEqual(reset.scheduled_reset_label(self.units),
                          '每月 17 日 07:33:45（北京时间）')
+        self.assertEqual(reset.scheduled_reset_label(self.units, compact=True),
+                         '每月 17 日 07:33')
         (self.units / reset.TIMER).write_text('invalid')
         self.assertEqual(reset.scheduled_reset_label(self.units), '定时重置时间待确认')
