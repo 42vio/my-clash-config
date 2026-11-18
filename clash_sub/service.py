@@ -208,8 +208,47 @@ class ClashSubService:
             traffic=saved.traffic
             return {"saved": True, "activation_configured": saved.activation_url is not None, "activation_host": _source_host(saved.activation_url) if saved.activation_url else None, "source_configured": bool(saved.source_url), "source_host": _source_host(saved.source_url), "traffic_total": traffic.total if traffic else None, "traffic_used": (traffic.upload+traffic.download) if traffic else None, "traffic_remaining": max(traffic.total-traffic.upload-traffic.download,0) if traffic else None, "traffic_expiry_ms": traffic.expiry_ms if traffic else None, "last_success": saved.last_success, "provider_present": self._provider_present()}
     def backup_status(self):
-        from clash_sub.backup_subscription import status
-        return status(self.config.private_root)
+        from clash_sub.backup_subscription import status, read, eligible
+        from clash_sub.xui import XuiCompatibilityError
+        with self._lock():
+            result = status(self.config.private_root)
+            if result.get('last_error') == 'backup_source_invalid':
+                return result
+            data = read(self.config.private_root)
+            try:
+                clients = self._read_snapshot(self.config.xui_database).clients
+            except XuiCompatibilityError:
+                result['users_unavailable'] = True
+                return result
+            result['selection_mode'] = 'selected' if data and 'selected_client_ids' in data else 'default'
+            result['users'] = [
+                {'client_id': client.client_id, 'email': client.email,
+                 'enabled': client.enabled,
+                 'selected': eligible(client.email, client.client_id, data)}
+                for client in sorted(clients, key=lambda client: client.client_id)
+            ]
+            return result
+    def set_backup_users(self, client_ids):
+        from clash_sub.backup_subscription import set_users, validate_client_ids, read, combined_nodes
+        from clash_sub.xui import XuiCompatibilityError
+        with self._lock():
+            if client_ids is not None:
+                validate_client_ids(client_ids)
+                try:
+                    known = {client.client_id for client in self._read_snapshot(self.config.xui_database).clients}
+                except XuiCompatibilityError:
+                    raise ServiceError('backup_users_unavailable') from None
+                if not set(client_ids).issubset(known):
+                    raise ServiceError('backup_users_invalid')
+            set_users(self.config.private_root, client_ids)
+            data = read(self.config.private_root)
+            has_nodes = data is not None and bool(combined_nodes(data))
+        if has_nodes:
+            try:
+                return self._sync_backup_change()
+            except ServiceError:
+                raise ServiceError('backup_users_sync_failed') from None
+        return self.backup_status()
     def replace_backup_source(self,url):
         from clash_sub.backup_subscription import refresh
         with self._lock():refresh(self.config.private_root,url,download=self._download,validate=self._validate_backup_nodes,now=self._clock())
@@ -357,7 +396,7 @@ class ClashSubService:
         ) if owner else None
         from clash_sub.backup_subscription import read as read_backup, eligible, combined_nodes
         backup=read_backup(self.config.private_root)
-        nodes=combined_nodes(backup) if backup and backup['enabled'] and eligible(client.email) else None
+        nodes=combined_nodes(backup) if backup and backup['enabled'] and eligible(client.email, client.client_id, backup) else None
         bundle=self._render(owner,xui,provider,self.config.template_root,**({'backup_nodes':nodes} if nodes else {})); _shape(bundle,owner); forbidden=tokens+(url,client.sub_id)+((transient,) if transient else ())
         if backup and backup.get('url'):forbidden+=(backup['url'],)
         for variant,text in bundle.items():

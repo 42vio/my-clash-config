@@ -469,17 +469,30 @@ class Portal:
         except Exception:return None
 
     def backup_summary(self):
-        from clash_sub.backup_subscription import status, eligible
+        from clash_sub.backup_subscription import status, eligible, read
+        from clash_sub.operation import ServiceError
         result=status(self.config.private_root)
         state=load_state(Path(self.config.private_root)/'state.json')
-        result['users']=[user.email for user in state.users.values() if user.active and eligible(user.email) and '备用节点' in (self.published_composition(user) or '')] if state else []
-        result['excluded']=['42vio','openwrt']
+        try:
+            data = read(self.config.private_root)
+        except ServiceError:
+            data = None
+        result['users'] = [
+            user.email for user in state.users.values()
+            if user.active and '备用节点' in (self.published_composition(user) or '')
+        ] if state else []
+        result['selected_users'] = [
+            user.email for user in state.users.values()
+            if eligible(user.email, user.client_id, data)
+        ] if state else []
+        result['selection_mode'] = 'selected' if data and 'selected_client_ids' in data else 'default'
+        result['excluded'] = []
         result['label']='刷新异常' if result['last_error'] else '已启用' if result['enabled'] and result['nodes'] else '未就绪' if result['configured'] else '未配置'
         return result
 
     @staticmethod
     def backup_dialog():
-        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「订阅来源 → 备用节点管理」中分别添加、替换或删除。客户端需更新标准订阅。</p></dialog>'
+        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「订阅来源 → 备用节点管理」中分别添加、替换或删除，通过「选择适用用户」设置分配范围。客户端需更新标准订阅。</p></dialog>'
 
     def user_links(self, state, settings, client_id):
         user = state.users.get(client_id)

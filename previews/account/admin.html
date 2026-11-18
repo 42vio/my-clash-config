@@ -259,10 +259,10 @@ function userLinks(user){
   if(!state[user])state[user]={page:'preview-page-token',sub:'preview-sub-token'};
   const tokens=state[user],slug=user==='ren'?'42vio':user;
   const base='https://sub.example.com/';
-  const included=!['ren','42vio','openwrt'].includes(user)&&['enabled','error'].includes(document.querySelector('#backup-demo-state').value);
+  const included=['ren','42vio'].includes(user)&&['enabled','error'].includes(document.querySelector('#backup-demo-state').value);
   const personal={title:'个人网页',url:base+'p/'+tokens.page+'-'+slug+'/',rotate:'page',open:'index.html?user='+user};
   const subscriptions=[
-    {title:'标准订阅',url:base+'s/'+tokens.sub+'-'+slug+'/Clash-Compat.yaml',note:user==='ren'?'自建节点 + 机场':included?'自建节点 + 备用节点':'仅自建节点'},
+    {title:'标准订阅',url:base+'s/'+tokens.sub+'-'+slug+'/Clash-Compat.yaml',note:user==='ren'?'自建节点 + 机场'+(included?' + 备用节点':''):included?'自建节点 + 备用节点':'仅自建节点'},
     ...(user==='ren'?[{title:'Balance 订阅',url:base+'s/'+tokens.sub+'-'+slug+'/Clash-Balance.yaml'}]:[]),
     {title:'仅节点订阅',url:base+'s/'+tokens.sub+'-'+slug+'/Nodes.txt',note:'仅自建节点'}
   ];
@@ -347,7 +347,7 @@ function renderBackupPreview(state){
   const disabled=state==='disabled';
   root.innerHTML='<div class="backup-summary"><div><label>合并节点</label><strong>3 <small>个节点</small></strong></div><div><label>最近成功刷新 · 北京时间</label><strong>10.28 10:30</strong></div><div><label>来源提供的额度 · 示例</label><strong>8.6 <small>/ 50 GB · 剩余 41.4 GB</small></strong></div></div>'+
     (state==='error'?'<p class="backup-notice" role="status">最近刷新失败：HTTP 403（10.28 11:00）。保留上次成功缓存的 3 个节点，生成配置继续使用缓存。</p>':disabled?'<p class="backup-notice">已停用备用分发，保留缓存供查看。重新生成后，自建组只保留主节点；客户端需更新订阅。</p>':'')+
-    '<details class="backup-details" open><summary>节点与适用用户</summary><p class="subtle">订阅来源：2 个 · 最近刷新 10.28 10:30<br>手动导入：1 个 · 最近修改 10.28 09:00 · 不自动刷新</p><div class="backup-detail-grid"><div><h3>备用节点 · 不代表实时在线</h3><ul class="backup-node-list"><li>订阅来源 · 香港 01</li><li>订阅来源 · 日本 01</li><li>手动导入 · 美国 01</li></ul></div><div><h3>'+(disabled?'当前未向用户分发':'已启用备用的用户 · 示例')+'</h3><div class="backup-users">'+(disabled?'<span class="subtle">无</span>':'<span class="backup-user">Alex</span><span class="backup-user">Bella</span><span class="backup-user">Chris</span>')+'</div><p class="backup-exclusions">固定排除：42vio、openwrt · 仅保留自建主节点</p></div></div></details>';
+    '<details class="backup-details" open><summary>节点与适用用户</summary><p class="subtle">订阅来源：2 个 · 最近刷新 10.28 10:30<br>手动导入：1 个 · 最近修改 10.28 09:00 · 不自动刷新</p><div class="backup-detail-grid"><div><h3>备用节点 · 不代表实时在线</h3><ul class="backup-node-list"><li>订阅来源 · 香港 01</li><li>订阅来源 · 日本 01</li><li>手动导入 · 美国 01</li></ul></div><div><h3>'+(disabled?'当前未向用户分发':'已启用备用的用户 · 示例')+'</h3><div class="backup-users">'+(disabled?'<span class="subtle">无</span>':'<span class="backup-user">42vio</span>')+'</div><p class="backup-exclusions">可在终端选择适用用户 · 默认仅 42vio</p></div></div></details>';
 }
 document.querySelector('#backup-demo-state').addEventListener('change',event=>renderBackupPreview(event.target.value));
 renderBackupPreview('enabled');

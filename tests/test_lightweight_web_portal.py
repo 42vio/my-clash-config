@@ -286,7 +286,7 @@ class PortalTests(unittest.TestCase):
         save_state(self.root/'state.json', self.state)
         self.settings = provision_pages({'version':1, 'enabled':True, 'panel_public':False, 'pages':{}, 'password_hash':password_hash('a-strong-test-password')}, self.state)
         write_settings(self.root, self.settings)
-        self.config = SimpleNamespace(private_root=self.root, public_root=self.root/'public', xui_database=self.root/'db', subscription_authority='sub.example.com', template_root=Path(__file__).resolve().parents[1]/'templates')
+        self.config = SimpleNamespace(private_root=self.root, public_root=self.root/'public', xui_database=self.root/'db', subscription_authority='sub.example.com', xui_reality_hostname=None, xui_trojan_hostname=None, xui_cdn=None, template_root=Path(__file__).resolve().parents[1]/'templates')
         for client_id in (1,2):
             path = self.config.public_root/'releases'/str(client_id)/'release'
             path.mkdir(parents=True)
@@ -357,6 +357,15 @@ class PortalTests(unittest.TestCase):
         data=json.loads(body)
         self.assertEqual(data['users'],['member'])
         self.assertEqual(data['nodes'],[NODES[0]['name']])
+        backup.set_users(self.root, [2])
+        selected = json.loads(self.request('/admin/backup', cookie=self.login())[2])
+        self.assertEqual(selected['selection_mode'], 'selected')
+        self.assertEqual(selected['selected_users'], ['member'])
+        backup.set_users(self.root, [])
+        empty = json.loads(self.request('/admin/backup', cookie=self.login())[2])
+        self.assertEqual(empty['selected_users'], [])
+        self.assertEqual(empty['users'], ['member'])
+
         self.assertNotIn(SOURCE,body)
         self.assertNotIn('synthetic-backup-password',body)
         token=self.settings['pages']['2']['token']

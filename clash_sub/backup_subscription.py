@@ -17,13 +17,41 @@ FILENAME = 'backup-source.json'
 PROVIDER = 'Backup'
 PRIMARY_GROUP = '🏴\u200d☠️ 自建节点'
 BACKUP_GROUP = '🏴\u200d☠️ 备用节点'
-EXCLUDED_USERS = frozenset({'42vio', 'openwrt'})
+DEFAULT_USERS = frozenset({'42vio'})
 INTERVAL = 86400
 LIMIT = 5 * 1024 * 1024
 
 
-def eligible(email):
-    return email not in EXCLUDED_USERS
+def eligible(email, client_id=None, data=None):
+    if data is not None and 'selected_client_ids' in data:
+        return client_id in data['selected_client_ids']
+    return email in DEFAULT_USERS
+
+
+def validate_client_ids(client_ids):
+    if (
+        not isinstance(client_ids, list)
+        or any(type(value) is not int or value <= 0 for value in client_ids)
+        or len(set(client_ids)) != len(client_ids)
+    ):
+        raise ServiceError('backup_users_invalid')
+
+
+def set_users(root, client_ids):
+    if client_ids is not None:
+        validate_client_ids(client_ids)
+    current = dict(read(root) or {
+        'version': 1, 'url': None, 'enabled': False, 'nodes': [],
+        'last_success': None, 'traffic': None, 'last_error': None,
+    })
+    if client_ids is None:
+        current.pop('selected_client_ids', None)
+        if current['url'] is None and not current.get('manual_nodes'):
+            _remove_file(root)
+            return
+    else:
+        current['selected_client_ids'] = sorted(client_ids)
+    _write(root, current)
 
 
 def read(root):
@@ -41,6 +69,8 @@ def read(root):
         data = json.loads(raw)
         if not isinstance(data,dict) or data.get('version') != 1 or (data.get('url') is not None and not _valid_airport_url(data.get('url'))) or type(data.get('enabled')) is not bool:
             raise ValueError
+        if 'selected_client_ids' in data:
+            validate_client_ids(data['selected_client_ids'])
         manual = data.get('manual_nodes', [])
         if manual:
             validate_nodes(manual)
@@ -48,7 +78,7 @@ def read(root):
             raise ValueError
         if data.get('manual_updated') is not None and type(data['manual_updated']) is not int:
             raise ValueError
-        if data.get('url') is None and (data.get('nodes') or not manual):
+        if data.get('url') is None and (data.get('nodes') or (not manual and 'selected_client_ids' not in data)):
             raise ValueError
         if data.get('nodes'):
             validate_nodes(data['nodes'])
@@ -131,6 +161,10 @@ def remove(root):
         data.update(url=None,nodes=[],last_success=None,last_error=None,traffic=None)
         _write(root,data)
         return
+    if data and 'selected_client_ids' in data:
+        data.update(url=None, nodes=[], last_success=None, last_error=None, traffic=None, enabled=False)
+        _write(root, data)
+        return
     _remove_file(root)
 
 
@@ -157,7 +191,19 @@ def status(root):
         return {'configured':False,'enabled':False,'nodes':[],'last_success':None,'last_error':None,'traffic':None}
     subscription=[n['name'] for n in data['nodes']]
     manual=[n['name'] for n in data.get('manual_nodes',[])]
-    return {k:data[k] for k in ('enabled','last_success','last_error','traffic')} | {'configured':True,'nodes':[n['name'] for n in combined_nodes(data)],'subscription_nodes':subscription,'manual_nodes':manual,'manual_updated':data.get('manual_updated'),'subscription_configured':bool(data.get('url'))}
+    return {
+        'enabled': data['enabled'],
+        'last_success': data['last_success'],
+        'last_error': data['last_error'],
+        'traffic': data['traffic'],
+        'configured': bool(data.get('url') or manual),
+        'nodes': [node['name'] for node in combined_nodes(data)],
+        'subscription_nodes': subscription,
+        'manual_nodes': manual,
+        'manual_updated': data.get('manual_updated'),
+        'subscription_configured': bool(data.get('url')),
+        'selected_client_ids': data.get('selected_client_ids'),
+    }
 
 
 def combined_nodes(data):
@@ -192,7 +238,13 @@ def remove_manual(root):
     current=read(root)
     if current is None:return
     if not current.get('url'):
-        _remove_file(root)
+        if 'selected_client_ids' in current:
+            current.pop('manual_nodes', None)
+            current.pop('manual_updated', None)
+            current['enabled'] = False
+            _write(root, current)
+        else:
+            _remove_file(root)
         return
     current.pop('manual_nodes',None);current.pop('manual_updated',None)
     _write(root,current)

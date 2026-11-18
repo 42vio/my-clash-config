@@ -105,6 +105,7 @@ _BACKUP_SUBSCRIPTION_ROWS = (
     ("option", "4", (("查看备用状态", None),)),
     ("option", "5", (("导入或替换手动节点链接", None),)),
     ("option", "6", (("删除手动节点并生成配置", None),)),
+    ("option", "7", (("选择适用用户并生成配置", None),)),
     ("option", "0", (("返回", None),)),
 )
 
@@ -376,7 +377,7 @@ def _web_access_status():
 
 def _airport_dispatch(choice, stdin, stdout, stderr, factory):
     if choice == "6":
-        return _run_submenu(_BACKUP_SUBSCRIPTION_ROWS,6,_backup_subscription_dispatch,stdin,stdout,stderr,factory,_colors_for(stdout),name="备用节点管理")
+        return _run_submenu(_BACKUP_SUBSCRIPTION_ROWS,7,_backup_subscription_dispatch,stdin,stdout,stderr,factory,_colors_for(stdout),name="备用节点管理")
     if choice == "1":
         return _menu_airport_portal(stdin, stdout, stderr, factory)
     if choice == "2":
@@ -424,6 +425,40 @@ def _backup_subscription_dispatch(choice, stdin, stdout, stderr, factory):
         answer=_prompt(stdin,stdout,'仅删除手动节点，保留订阅来源。输入 DELETE 确认：')
         if answer!='DELETE':return 0,False
         return _call('backup-remove-manual',None,stdout,stderr,factory),False
+    if choice == '7':
+        try:
+            service = factory()
+            report = service.backup_status()
+            users = report.get('users')
+            if users is None:
+                return _error(stderr, 'backup_users_unavailable', 1), False
+            stdout.write('选择备用节点的适用用户，同一范围用于订阅来源和手动节点。\n')
+            for user in users:
+                marker = '已选' if user['selected'] else '未选'
+                state = '启用' if user['enabled'] else '停用，启用后生效'
+                stdout.write('  %s  %s  [%s · %s]\n' % (user['client_id'], user['email'], marker, state))
+            answer = _prompt(stdin, stdout, '输入用户 ID（逗号或空格分隔），all 选当前全部，none 清空，default 默认仅 42vio，回车取消：')
+            if not answer:
+                return 0, False
+            if answer == 'default':
+                selected = None
+            elif answer == 'none':
+                selected = []
+            elif answer == 'all':
+                selected = [user['client_id'] for user in users]
+            else:
+                values = answer.replace(',', ' ').split()
+                if not values or any(not value.isascii() or not value.isdigit() for value in values):
+                    return _error(stderr, 'backup_users_invalid', 1), False
+                selected = [_user_id(value) for value in values]
+                if any(value is None for value in selected):
+                    return _error(stderr, 'backup_users_invalid', 1), False
+            result = service.set_backup_users(selected)
+            _write_backup_status(stdout, result)
+            stdout.write('适用用户已保存。客户端刷新标准订阅后生效。\n')
+            return 0, False
+        except ServiceError as error:
+            return _error(stderr, error.code, 1), False
     return None
 
 
@@ -1215,6 +1250,13 @@ def _looks_like_url(value):
 
 
 def _error(stderr, code, status):
+    if code == 'backup_users_sync_failed':
+        stderr.write('适用用户已保存，订阅同步未全部完成。请检查 clash-sub status，修复后执行 clash-sub sync。\n')
+    elif code == 'backup_users_unavailable':
+        stderr.write('无法读取 3x-ui 用户列表，未修改分配范围。请先检查本机数据库。\n')
+    elif code == 'backup_users_invalid':
+        stderr.write('请选择列表中的用户 ID，每个 ID 填写一次。\n')
+
     if code.startswith('backup_node_line_') and code.endswith('_invalid_or_unsupported'):
         number=code[len('backup_node_line_'):-len('_invalid_or_unsupported')]
         if number.isdigit():
@@ -1422,4 +1464,8 @@ def _write_backup_status(stdout, result):
     updated=result.get('manual_updated')
     stdout.write('手动节点修改时间：%s\n' % (datetime.fromtimestamp(updated,timezone.utc).astimezone().isoformat() if updated else '暂无'))
     stdout.write('最近错误：%s\n' % labels.get(result.get('last_error'),'状态不可用'))
-    stdout.write('仅标准订阅包含备用；42vio、openwrt 除外。客户端需更新订阅。\n')
+    if 'users' in result:
+        names = [user['email'] for user in result['users'] if user['selected']]
+        mode = '默认' if result.get('selection_mode') == 'default' else '指定'
+        stdout.write('适用用户（%s）：%s\\n' % (mode, '、'.join(names) or '无'))
+    stdout.write('仅标准订阅包含备用，默认仅 42vio。可通过菜单 7 选择适用用户。客户端需更新订阅。\\n')

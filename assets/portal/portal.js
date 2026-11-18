@@ -344,7 +344,7 @@ async function showBackupStatus() {
     const grid=make('div','backup-detail-grid'),sources=make('div');
     for(const [label,nodes]of [['订阅来源',data.subscription_nodes||[]],['手动导入',data.manual_nodes||[]]]){sources.append(make('h3','',label+' · '+nodes.length+' 个'));const list=make('ul','backup-node-list');for(const name of nodes)list.append(make('li','',name));if(!nodes.length)list.append(make('li','subtle','暂无节点'));sources.append(list);}
     sources.append(make('p','backup-exclusions','手动节点最近修改：'+stamp(data.manual_updated)));
-    const users=make('div');users.append(make('h3','','已发布备用的用户'));const names=make('div','backup-users');for(const name of data.users)names.append(make('span','backup-user',name));if(!data.users.length)names.append(make('span','subtle','无'));users.append(names,make('p','backup-exclusions','固定排除：'+data.excluded.join('、')));
+    const users=make('div');users.append(make('h3','','已发布备用的用户'));const names=make('div','backup-users');for(const name of data.users)names.append(make('span','backup-user',name));if(!data.users.length)names.append(make('span','subtle','无'));users.append(names,make('p','backup-exclusions',(data.selection_mode==='selected'?'指定用户：':'默认用户：')+((data.selected_users||[]).join('、')||'无')));
     grid.append(sources,users);details.append(grid);root.append(details);
   }catch{root.textContent='无法取得备用状态，请稍后重试或重新登录。';}
 }

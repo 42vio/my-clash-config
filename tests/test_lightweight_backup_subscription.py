@@ -258,3 +258,147 @@ class ManualBackupTests(unittest.TestCase):
         self.assertNotIn('placeholder-manual-password',out.getvalue()+err.getvalue())
         _backup_subscription_dispatch('6',io.StringIO('DELETE\n'),out,err,lambda:service)
         service.remove_manual_backup_nodes.assert_called_once()
+
+
+class BackupUserSelectionTests(unittest.TestCase):
+    setUp = BackupSubscriptionTests.setUp
+    seed = BackupSubscriptionTests.seed
+
+    def test_default_is_only_42vio_and_explicit_ids_override_it(self):
+        self.assertTrue(backup.eligible('42vio'))
+        for email in ('openwrt', 'member', 'owner@example.test'):
+            self.assertFalse(backup.eligible(email))
+        backup.set_users(self.root, [8])
+        data = backup.read(self.root)
+        self.assertTrue(backup.eligible('renamed-member', 8, data))
+        self.assertFalse(backup.eligible('42vio', 7, data))
+
+    def test_selection_can_precede_sources_and_survives_source_changes(self):
+        backup.set_users(self.root, [8])
+        self.assertFalse(backup.status(self.root)['configured'])
+        self.seed()
+        backup.import_nodes(self.root, ManualBackupTests.LINK, now=200)
+        backup.refresh(self.root, SOURCE, download=lambda *_: download(), now=300)
+        self.assertEqual(backup.read(self.root)['selected_client_ids'], [8])
+        backup.remove(self.root)
+        backup.remove_manual(self.root)
+        self.assertFalse(backup.status(self.root)['configured'])
+        self.assertEqual(backup.read(self.root)['selected_client_ids'], [8])
+        backup.import_nodes(self.root, ManualBackupTests.LINK, now=400)
+        self.assertEqual(backup.read(self.root)['selected_client_ids'], [8])
+
+    def test_empty_selection_and_restore_default_keep_nodes(self):
+        self.seed()
+        backup.set_users(self.root, [])
+        data = backup.read(self.root)
+        self.assertFalse(backup.eligible('42vio', 7, data))
+        self.assertEqual(data['nodes'], NODES)
+        backup.set_users(self.root, None)
+        data = backup.read(self.root)
+        self.assertNotIn('selected_client_ids', data)
+        self.assertTrue(backup.eligible('42vio', 7, data))
+        self.assertTrue(data['nodes'])
+        backup.remove(self.root)
+        backup.set_users(self.root, [])
+        backup.set_users(self.root, None)
+        self.assertIsNone(backup.read(self.root))
+
+    def test_invalid_saved_or_requested_selection_is_rejected(self):
+        self.seed()
+        original = (self.root / backup.FILENAME).read_bytes()
+        for value in ([True], [-1], [0], [8, 8], ['8'], 'all'):
+            with self.subTest(value=value), self.assertRaises(ServiceError):
+                backup.set_users(self.root, value)
+            self.assertEqual((self.root / backup.FILENAME).read_bytes(), original)
+        corrupt = json.loads(original)
+        corrupt['selected_client_ids'] = [True]
+        (self.root / backup.FILENAME).write_text(json.dumps(corrupt))
+        with self.assertRaises(ServiceError):
+            backup.read(self.root)
+
+    def test_service_uses_selected_ids_and_rejects_unknown_users(self):
+        from dataclasses import replace
+        from tests.test_lightweight_service import ServiceTests
+        harness = ServiceTests()
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        harness.clients = [replace(harness.owner, email='42vio'), harness.member]
+        backup.refresh(harness.config.private_root, SOURCE, download=lambda *_: download(), now=100)
+        original_render = harness.service._render
+        received = []
+        def render(owner, xui, provider, root, **kwargs):
+            received.append((owner, bool(kwargs.get('backup_nodes'))))
+            return original_render(owner, xui, provider, root)
+        harness.service._render = render
+        harness.bootstrap()
+        self.assertEqual(received[-2:], [(True, True), (False, False)])
+        report = harness.service.set_backup_users([8])
+        self.assertEqual(received[-2:], [(True, False), (False, True)])
+        self.assertEqual([(u['client_id'], u['selected']) for u in report['users']], [(7, False), (8, True)])
+        before = backup.read(harness.config.private_root)
+        with self.assertRaisesRegex(ServiceError, 'backup_users_invalid'):
+            harness.service.set_backup_users([999])
+        self.assertEqual(backup.read(harness.config.private_root), before)
+        harness.service.set_backup_users([])
+        self.assertEqual(received[-2:], [(True, False), (False, False)])
+        harness.service.set_backup_users(None)
+        self.assertEqual(received[-2:], [(True, True), (False, False)])
+
+    def test_service_keeps_selection_after_partial_publish_for_retry(self):
+        from tests.test_lightweight_service import ServiceTests
+        harness = ServiceTests()
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        backup.refresh(harness.config.private_root, SOURCE, download=lambda *_: download(), now=100)
+        harness.service.sync_all = Mock(return_value={'errors': [{'client_id': 8}]})
+        with self.assertRaisesRegex(ServiceError, 'backup_users_sync_failed'):
+            harness.service.set_backup_users([8])
+        self.assertEqual(backup.read(harness.config.private_root)['selected_client_ids'], [8])
+
+    def test_menu_selects_users_and_supports_cancel_all_none_and_default(self):
+        from clash_sub.cli import _backup_subscription_dispatch
+        service = Mock()
+        users = [
+            {'client_id': 7, 'email': '42vio', 'enabled': True, 'selected': True},
+            {'client_id': 8, 'email': 'member', 'enabled': False, 'selected': False},
+        ]
+        report = {'configured': False, 'nodes': [], 'users': users, 'selection_mode': 'default'}
+        service.backup_status.return_value = report
+        service.set_backup_users.return_value = report
+        for text, expected in [('8', [8]), ('7, 8', [7, 8]), ('all', [7, 8]), ('none', []), ('default', None)]:
+            service.set_backup_users.reset_mock()
+            out, err = io.StringIO(), io.StringIO()
+            self.assertEqual(_backup_subscription_dispatch('7', io.StringIO(text + '\n'), out, err, lambda: service), (0, False))
+            service.set_backup_users.assert_called_once_with(expected)
+            self.assertIn('42vio', out.getvalue())
+        service.set_backup_users.reset_mock()
+        _backup_subscription_dispatch('7', io.StringIO('\n'), io.StringIO(), io.StringIO(), lambda: service)
+        service.set_backup_users.assert_not_called()
+        self.assertEqual(_backup_subscription_dispatch('7', io.StringIO('not-an-id\n'), io.StringIO(), io.StringIO(), lambda: service), (1, False))
+
+    def test_selection_before_sources_needs_no_airport_or_publish(self):
+        from tests.test_lightweight_service import ServiceTests
+        harness = ServiceTests()
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        harness.service.sync_all = Mock(side_effect=AssertionError('no source to publish'))
+        report = harness.service.set_backup_users([8])
+        self.assertFalse(report['configured'])
+        self.assertEqual(report['selection_mode'], 'selected')
+        self.assertEqual(backup.read(harness.config.private_root)['selected_client_ids'], [8])
+        harness.service.sync_all.assert_not_called()
+
+    def test_unavailable_database_keeps_source_status_and_rejects_selection(self):
+        from tests.test_lightweight_service import ServiceTests
+        from clash_sub.xui import XuiCompatibilityError
+        harness = ServiceTests()
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        backup.refresh(harness.config.private_root, SOURCE, download=lambda *_: download(), now=100)
+        harness.service._read_snapshot = Mock(side_effect=XuiCompatibilityError())
+        report = harness.service.backup_status()
+        self.assertTrue(report['configured'])
+        self.assertTrue(report['users_unavailable'])
+        with self.assertRaisesRegex(ServiceError, 'backup_users_unavailable'):
+            harness.service.set_backup_users([8])
+        self.assertNotIn('selected_client_ids', backup.read(harness.config.private_root))
