@@ -78,6 +78,34 @@ class NodeSubscriptionTests(unittest.TestCase):
                 cdn,
             )
 
+    def test_trojan_inbound_publishes_with_reality_and_uses_public_sni(self):
+        hostname = "site.example.com"
+        reality = dict(reality_proxy("REALITY"), port=10443)
+        trojan = {
+            "name": "洛杉矶-Trojan", "type": "trojan", "server": "127.0.0.1",
+            "port": 20443, "network": "tcp", "password": "test-password",
+            "tls": True, "sni": hostname, "servername": hostname, "alpn": ["http/1.1"],
+        }
+        nodes = normalize_xui_endpoints(
+            [reality, trojan], "node.example.com:443", trojan_hostname=hostname
+        )
+        templates = Path(__file__).resolve().parents[1] / "templates"
+        bundle = render_subscription_bundle(False, nodes, None, templates)
+        groups = yaml.safe_load(bundle["compat"])["proxy-groups"]
+        group = next(item for item in groups if item["name"] == "🏴‍☠️ 自建节点")
+        self.assertEqual(group["proxies"], ["REALITY", "洛杉矶-Trojan"])
+        uri = urlsplit(self.decode(nodes)[1])
+        self.assertEqual((uri.scheme, uri.hostname, uri.port), ("trojan", hostname, 443))
+        self.assertEqual(parse_qs(uri.query), {
+            "type": ["tcp"], "security": ["tls"], "sni": [hostname], "alpn": ["http/1.1"],
+        })
+        with self.assertRaises(SourceError):
+            normalize_xui_endpoints(
+                [dict(trojan, sni="other.example.com")],
+                "node.example.com:443",
+                trojan_hostname=hostname,
+            )
+
     def test_reality_mlkem_flag_is_preserved_in_share_uri(self):
         for enabled in (True, False):
             with self.subTest(enabled=enabled):

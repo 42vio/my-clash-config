@@ -129,4 +129,24 @@ server {
         return 404;
     }
 }
+{% endif %}
+{% if trojan_hostname %}
+
+server {
+    listen 127.0.0.1:{{ trojan_fallback_port }};
+    server_name {{ trojan_hostname }};
+    server_tokens off;
+    access_log off;
+
+    location = / {
+        default_type text/html;
+        charset utf-8;
+        root {{ trojan_assets_path }};
+        try_files /site-home.html =404;
+    }
+
+    location / {
+        return 404;
+    }
+}
 {% endif -%}

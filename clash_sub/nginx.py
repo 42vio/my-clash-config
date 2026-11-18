@@ -21,6 +21,8 @@ from clash_sub.domain import (
     ServiceConfig,
     XuiClient,
     XUI_CDN_INBOUND_PORT,
+    XUI_TROJAN_INBOUND_PORT,
+    TROJAN_FALLBACK_PORT,
 )
 from clash_sub.state import TOKEN_RE, LEGACY_TOKEN_RE, _state_to_payload, airport_only_token, airport_access_token
 
@@ -60,7 +62,13 @@ def render_stream_config(config, domain):
     try:
         return _nginx_template_environment(config).get_template(
             "stream.conf.j2"
-        ).render(domain=domain, cdn=_cdn_site(config, domain), cdn_origin_port=CDN_ORIGIN_PORT)
+        ).render(
+            domain=domain,
+            cdn=_cdn_site(config, domain),
+            cdn_origin_port=CDN_ORIGIN_PORT,
+            trojan_hostname=_trojan_site(config, domain),
+            xui_trojan_port=XUI_TROJAN_INBOUND_PORT,
+        )
     except NginxError:
         raise
     except Exception:
@@ -73,14 +81,19 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
     web_settings = read_settings(config.private_root)
     if web_settings["enabled"] and panel_base_path in {"/p", "/admin", "/clients", "/portal-assets"}:
         raise NginxError("panel path conflicts with portal")
-    favicon_path = Path(config.template_root).parent / "assets" / "favicon.ico"
+    assets = Path(config.template_root).parent / "assets"
+    favicon_path = assets / "favicon.ico"
     if (
         not isinstance(domain, str)
         or not _DOMAIN_RE.fullmatch(domain)
         or isinstance(panel_port, bool)
         or not isinstance(panel_port, int)
         or not 1 <= panel_port <= 65535
-        or panel_port in (443, 10443, 20443, 30443, XUI_CDN_INBOUND_PORT, CDN_ORIGIN_PORT)
+        or panel_port in (
+            443, 10443, 30443, XUI_CDN_INBOUND_PORT, CDN_ORIGIN_PORT,
+            XUI_TROJAN_INBOUND_PORT,
+        )
+        or (config.xui_trojan_hostname and panel_port == TROJAN_FALLBACK_PORT)
         or not isinstance(panel_base_path, str)
         or not re.fullmatch(r"/[A-Za-z0-9_-]+", panel_base_path)
         or not isinstance(routes_include, str)
@@ -112,6 +125,9 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
             cdn=_cdn_site(config, domain),
             cdn_origin_port=CDN_ORIGIN_PORT,
             xui_cdn_port=XUI_CDN_INBOUND_PORT,
+            trojan_hostname=_trojan_site(config, domain),
+            trojan_fallback_port=TROJAN_FALLBACK_PORT,
+            trojan_assets_path=str(assets),
         )
     except NginxError:
         raise
@@ -123,14 +139,30 @@ def _cdn_site(config, domain):
     cdn = config.xui_cdn
     if cdn is None:
         return None
-    label, separator, suffix = cdn.hostname.partition(".")
     if (
-        not separator or suffix != domain.lower() or label == "sub"
-        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        not _valid_site_hostname(cdn.hostname, domain)
         or not re.fullmatch(r"/[A-Za-z0-9_-]{1,128}", cdn.websocket_path)
     ):
         raise NginxError("invalid CDN origin hostname or path")
     return cdn
+
+
+def _trojan_site(config, domain):
+    hostname = config.xui_trojan_hostname
+    if hostname is not None and (
+        not _valid_site_hostname(hostname, domain)
+        or (config.xui_cdn and hostname == config.xui_cdn.hostname)
+    ):
+        raise NginxError("invalid Trojan hostname")
+    return hostname
+
+
+def _valid_site_hostname(hostname, domain):
+    label, separator, suffix = hostname.partition(".")
+    return (
+        bool(separator) and suffix == domain.lower() and label != "sub"
+        and bool(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label))
+    )
 
 
 def render_routes(config, state, clients):

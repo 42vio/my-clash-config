@@ -1,109 +1,80 @@
-# my-clash-config 个人维护手册
+# my-clash-config 项目总览
 
-本仓库维护本地 Clash 模板，并生成服务器运行时所需的订阅发布物。部署、日常运维和恢复分别以对应手册为准。
+这是搬瓦工 VPS 的代理和订阅项目。3x-ui 管理入站、客户端和用量，Nginx 在公网 `443` 按域名的 TLS SNI 分流，`clash-sub` 把每个客户端关联的节点发布到自己的订阅。
 
-## 最终输出
+## 域名和端口
 
-订阅 URL 与文件名严格区分大小写，Clash Verge 中的 profile 标题与文件名一致：
+| 用途 | 外部地址与 Cloudflare DNS | VPS 内部 |
+| --- | --- | --- |
+| REALITY 直连「洛杉矶」 | `node.42io.cc:443`，灰云 A + AAAA | `127.0.0.1:10443`，VLESS + TCP + REALITY |
+| CDN「洛杉矶-CDN」 | `cdn.42io.cc:443`，橙云 CNAME 到 `node.42io.cc` | Nginx 在 `127.0.0.1:31443` 终止回源 TLS，再将 `/vless-ws` 转到 `127.0.0.1:11443` |
+| Trojan 直连「洛杉矶-Trojan」 | `site.42io.cc:443`，灰云 CNAME 到 `node.42io.cc` | Nginx 按 `site.42io.cc` 的 SNI 透传到 `127.0.0.1:20443` |
+| 订阅和管理页面 | `sub.42io.cc:443` | Nginx TLS 入口 `127.0.0.1:30443` |
 
-| 身份 | 输出文件 | Clash 标题 | 机场 provider |
-| --- | --- | --- | --- |
-| owner | `Clash-Compat.yaml` | `Clash-Compat.yaml` | 有（`AmyTelecom`） |
-| owner | `Clash-Balance.yaml` | `Clash-Balance.yaml` | 有（`AmyTelecom`） |
-| owner | `Clash-Airport.yaml` | `Clash-Airport.yaml` | 有（`AmyTelecom`），无自建节点 |
-| 普通用户 | `Clash-Compat.yaml` | `Clash-Compat.yaml` | 无 |
+VPS 换地址时，更新 `node` 的 A 和 AAAA。CDN 在 Cloudflare 开启 WebSockets，确认边缘证书覆盖 `cdn.42io.cc`，回源 TLS 用 **Full (strict)**。当前双栈 CNAME 的源站地址由 Cloudflare 选择。Trojan 的灰云记录直接解析到 VPS。
 
-owner 与普通用户不通过文件名区分，由订阅令牌和服务端授权决定。普通用户不生成 Balance，也不包含或访问任何机场 provider。`Clash-Airport.yaml` 使用与 owner 原链接不同的派生令牌；该令牌只能访问 Airport 配置及其 `AmyTelecom.yaml` provider，不能换文件名取得 owner 的自建配置。
+## 3x-ui 设置速查
 
-本次为不兼容升级：旧订阅文件名与旧 URL 已全部删除，没有重定向或兼容入口，旧客户端必须用 `clash-sub links` 重新获取新链接。
+- 三条入站和 3x-ui 原始 Clash 订阅都监听 `127.0.0.1`。在「客户端」把入站关联到已有账号，沿用原订阅链接。现有 7 个客户端已关联三条线路。
+- **REALITY** 保留原有 SNI、客户端 Vision 和 Short ID。客户端连接的是 `node.42io.cc`，握手使用配置里原有的 REALITY SNI。
+- **CDN** 用 VLESS + WebSocket，路径 `/vless-ws`，Host 可留空。3x-ui 的 Security 和 VLESS Encryption 均为 `none`，客户端 Flow 留空。Nginx 负责公网 TLS，订阅发布时补上 CDN 的 SNI 和 WebSocket Host。
+- **Trojan** 用 TCP（RAW）+ TLS，SNI 为 `site.42io.cc`，TLS ALPN 只选 `http/1.1`，ECH 留空。证书与私钥使用 `/etc/ssl/domain/fullchain.pem` 和 `/etc/ssl/domain/privkey.pem`，保留热加载。在「协议 → 回落」加默认目标 `127.0.0.1:18080`，Xver 为 `0`，子入站、Name、ALPN、Path 留空。Xray 解密后把网页请求交给 Nginx 的 HTTP 首页。页面内容在 [assets/site-home.html](assets/site-home.html)。
 
-### 通用纯节点订阅
+VPS 私有配置文件为 `/opt/my-clash-config/private/config/service.yaml`。CDN 和 Trojan 在当前部署中的配置为：
 
-owner 和普通用户各自额外提供 `Nodes.txt`，地址为 `https://<订阅域名>/s/<该用户令牌>/Nodes.txt`。正文是 Base64 编码的节点分享 URI 列表，只包含该用户的自建节点，不包含机场节点、DNS、策略组或分流规则。Shadowrocket 添加为订阅；Quantumult X 通过资源解析器导入，客户端仍需自己的规则配置。
-
-更新服务器代码后运行 `clash-sub sync`，再用 `clash-sub links` 获取实际链接。旧发布物在同步前继续可用，同步前不会列出尚未生成的纯节点链接。纯节点与 Clash 配置一起发布、回滚，沿用用户令牌、令牌轮换和自建流量头；机场专用令牌无权访问它。
-
-导出支持当前自建 VLESS TCP（含 REALITY / Vision）、Trojan TCP TLS 和无插件 Shadowsocks。遇到无法完整转换的协议或选项会使该用户本次同步失败并保留旧发布物，避免生成缺参数的节点。
-
-## 生成关系
-
-`templates/base/Clash-Compat.yaml` 是完整基础模板；生成 Balance 时以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）替换基础模板的 DNS。owner 的 Airport 使用 Compat 模板和机场 provider，不注入 3x-ui 节点；原有两份 owner 配置继续注入自建节点与机场 provider，普通用户只输出 Compat。服务器不保存任何 Home 配置，Home 只存在于本机 Clash Verge 的全局扩展脚本。
-
-## 订阅订阅页面与 3x-ui 管理面板开关
-
-终端主菜单 `3` 按用户查看网页与订阅链接；`9` 管理独立链接轮换；`4「订阅页面与 3x-ui 管理面板」` 提供网页初始化、3x-ui 公网访问开关、SSH 隧道说明、API 令牌设置（子菜单 8）、订阅页面开关（3 开启、4 关闭；保留客户端订阅下载），以及搬瓦工用量与定时重置（9，支持添加、更换、验证用量、删除，以及按套餐账期设置入站流量重置）。详细步骤见 [网页运维说明](docs/operations.md#订阅页面与-3x-ui-管理面板开关)。
-
-网页包含管理员总览、个人用量和机场专用页面。页面令牌独立于订阅令牌，可单独轮换；owner 是唯一管理员，通过独立随机入口及网页管理员账号、密码登录（密码至少 8 位，与 3x-ui 认证独立）。更新代码不会自动开放网页，也不会自动关闭原有公网面板；运行 `clash-sub web setup` 初始化并开启订阅页面，保留 3x-ui 面板原有公网访问状态；面板公网访问通过独立菜单切换。代理和订阅下载不随面板开关停止。
-
-「订阅页面与 3x-ui 管理面板」按订阅页面、3x-ui 面板、用量与流量重置分区展示，操作编号连续为 1—9；进入菜单和切换开关后自动显示订阅页面与 3x-ui 管理面板公网访问状态，无需单独选择查看或刷新状态。
-
-`clash-sub web links` 输出 `/p/<页面令牌>-<email>/` 格式的可读网页地址；旧的无后缀网页地址继续有效。用户标识与令牌归属同时校验，原有 `/s/` 订阅链接保持不变。
-
-owner 网页可管理用户链接、刷新 AmyTelecom，分别更新项目代码和生成配置。固定白名单操作由独立 systemd 后台任务执行，带会话与 CSRF 校验、幂等请求和脱敏执行记录；更新会重启网页，可能需要重新登录。
-
-标准订阅支持自建主备：主节点名称由当前用户的 3x-ui 节点返回，备用节点只加入 `Clash-Compat.yaml`。`42vio`、`openwrt` 不加入备用；只有一个自建节点且没有备用时，自建组复用 `select` 锚点，不定时测速；有多个节点或备用时保留 `fallback` 自动切换。`Nodes.txt`、Balance 和纯机场订阅不包含备用。
-
-在终端菜单「订阅来源 → 备用节点管理」中添加、更换、刷新或删除备用来源。订阅链接必须为 HTTPS，返回包含 `proxies:` 的 Clash/Mihomo YAML；也可每行一条手动导入 VLESS、Trojan、Shadowsocks、AnyTLS 或 Hysteria 2 节点链接。仅导入节点，不执行来源中的规则或脚本。来源和缓存保存在服务器私有目录的 `backup-source.json`（0600），真实来源链接不写入公开模板或客户端配置。服务器将校验通过的节点作为内嵌 `Backup` 集合写入标准订阅，因此客户端不再单独请求上游备用链接。
-
-备用来源复用每日订阅任务，距离最近成功刷新满 24 小时才下载；成功后生成配置，失败保留上次成功缓存。客户端更新标准订阅后获得新节点；客户端的 300 秒健康检查只用于故障切换。删除来源后也会生成配置，客户端需更新订阅才移除已保存的备用节点。管理员可在「订阅维护 → 备用节点」查看缓存和刷新状态，在用户「管理链接」中查看实际已发布的标准订阅组成；网页不提供备用链接的添加或删除操作。
-
-管理员成员列表可显示来自 3x-ui 在线接口的在线／离线／未知状态，每三十秒按需刷新；没有配置 `XUI_API_TOKEN` 时显示未知，不影响其他网页功能。凭据与运行方式见运维说明的“管理员在线状态”。
-
-本地示例保留在 `previews/account/`，不含真实凭据。管理员「流量概况」接入搬瓦工 API 套餐用量，需通过终端菜单设置凭据；按需查询并缓存 1 分钟，失败保留同账号上次成功数据。3x-ui 汇总显示在「代理用量」成员列表上方，读取 3x-ui 所有入站当前的上传与下载累计（含已停用入站），随入站每月重置；不读取历史累计、不汇总用户用量，也不作为搬瓦工账单统计。
-
-## 订阅流量元数据
-
-订阅响应里的 `Subscription-Userinfo` 流量头不预写进任何配置文件：客户端请求订阅时，Nginx 把请求转发到 socket 激活的 `clash-sub-metadata.service`，服务按需读取 3x-ui 流量（五分钟缓存）与最近一次机场下载保存的流量，生成响应头；文件正文仍由 Nginx 直接发送。元数据服务不可用或超时的时候，同一份文件照常以 200 返回，只是缺少流量头，订阅本身不受影响。完整链路、缓存与降级行为见部署与运维手册。
-
-## 本地文件
-
-管理员总览「管理与更新」分为订阅管理和软件更新：前者保留机场刷新、备用节点状态与订阅重新生成，后者保留项目代码更新，并分别显示 3x-ui 面板、Xray 核心的当前运行版本和官方最新稳定版。管理员访问时按需检查，GitHub 结果缓存 24 小时（含失败尝试，重启后沿用），当前运行版本最多每分钟刷新；查询在后台执行，不阻塞网页、不新增定时任务、不自动下载或升级。检查失败保留上次成功版本并明确标注，无法读取运行版本时显示未知。缓存 `software-updates.json` 存于服务器私有目录（0600），普通用户与机场页面不提供版本查询入口。发布说明链接固定指向官方 GitHub 项目。
-
-Amy 用量记录：每次成功拉取并保存机场订阅时，若响应包含有效流量信息，就将北京时间、上传和下载累计值保存到服务器私有文件 `airport-usage.json`（0600，仅保留当前观测周期，19 日为预计重置日期）。不增加上游请求、不新增定时任务，也不改变现有刷新时间。管理员总览和机场页面通过「用量记录」按钮打开弹窗，查看当前周期的累计折线、区间增量柱状图及记录明细；增量属于两次拉取之间的实际区间，不是自然日统计。不在 19 日零点清理：19–21 日相隔不超过 72 小时的两次记录出现计数回落时推定重置，保存重置所在区间并清理旧周期；同月不重复切换，其他回落标记异常并保留记录。未观察到重置时继续保留旧数据。历史用量无法补录。
-
-- `templates/base/Clash-Compat.yaml`：Compat 完整基础模板（已去除动态节点与机场痕迹）。
-- `templates/dns/Clash-Balance.yaml`：只含 Balance 的完整 `dns:` 段及其注释。
-- `templates/profiles.yaml`：两个 profile 的 DNS 配方与注入策略组列表。
-- `private/clash-verge-home.js`：Git 忽略的本机 Home 扩展脚本，仅对 `Clash-Compat.yaml` 和 `Clash-Balance.yaml` 两个标题生效。
-
-## 常用命令
-
-开发 Mac 上同步模板：
-
-```bash
-./bin/clash-sub template-sync
+```yaml
+xui-cdn:
+  hostname: cdn.42io.cc
+  websocket-path: /vless-ws
+xui-trojan-hostname: site.42io.cc
 ```
 
-服务器上进入管理菜单：
+## 节点排序与网络选择
+
+「🏴‍☠️ 自建节点」是 `fallback` 组，从列表前面优先选可用节点。当前已发布顺序为 **REALITY → CDN → Trojan**。如果 REALITY 不稳定，建议改成 **Trojan → CDN → REALITY**：
+
+1. 在 **3x-ui → 入站 → 编辑**里设置「订阅排序（Subscription sort index）」。Trojan 填 `1`，CDN 填 `2`，REALITY 填 `3`。数值相同时按入站 ID 排。
+2. 在 VPS 执行 `clash-sub sync`，然后让客户端刷新原订阅。
+
+排序只决定先试哪条节点。线上 Compat 和 Balance 的全局 `ipv6` 为 `true`，三个节点都沿用客户端默认的 `ip-version`。需要绕开源站直连故障时，可以手动选 CDN。 [3x-ui 排序说明](https://github.com/MHSanaei/3x-ui/issues/4835)
+
+2026-11-18 验收时，Cloudflare CDN 的 IPv4 和 IPv6 代理都已跑通。Trojan 的公网 IPv6 网页回落返回 `200`，VPS 本机通过 Nginx 测真实 Trojan 认证代理成功。Mac 所在网络直连 VPS 的 IPv4 `443` 仍超时。
+
+## 订阅和用量
+
+| 用途 | 选哪个 |
+| --- | --- |
+| 日常 Clash 配置 | `Clash-Compat.yaml`。owner 同时有 AmyTelecom，普通客户端只拿自己的自建节点 |
+| 另一套 DNS | owner 的 `Clash-Balance.yaml`，只换 DNS 配方 |
+| 只用机场 | owner 的 `Clash-Airport.yaml`，有单独的订阅令牌 |
+| 只导入节点 | `Nodes.txt`，只含该用户的自建节点 |
+| VPS 套餐总用量 | 管理页「搬瓦工套餐用量」。3x-ui 的入站计数和个人额度单独显示 |
+
+忘记订阅链接用 `clash-sub links`，忘记网页入口用 `clash-sub web links`。管理员、个人和机场网页的链接各自独立。备用来源在「订阅来源 → 备用节点管理」维护，只影响符合条件用户的 Compat 配置。 [运维手册](docs/operations.md)
+
+## 平时怎么维护
+
+| 要做的事 | 入口 |
+| --- | --- |
+| 新增、停用或调整入站 | 先在 3x-ui 改，执行 `clash-sub sync`，在客户端刷新订阅 |
+| 将 GitHub 的代码更新到 VPS | 在 `/opt/my-clash-config` 执行 `clash-sub update`，然后 `nginx -t` 和 `clash-sub sync` |
+| 看状态或备份 | `clash-sub status` / `clash-sub backup` |
+| 回到一份旧订阅 | 先用 `clash-sub history <用户ID>` 查版本，再执行用户级回滚 |
+| 暂停 Trojan | 在 3x-ui 停用入站后同步订阅。若也要移除网页入口，再去掉私有配置中的 `xui-trojan-hostname` 并重生成 Nginx 配置 |
+
+排查 Trojan 回落时，先在 VPS 访问 `http://127.0.0.1:18080/` 确认首页，再从浏览器用 HTTPS 访问 `site.42io.cc`，最后用真实 Trojan 客户端验证代理。浏览器首页和代理要分别通过。
+
+## Mac 上的模板
+
+原版模板在 **iCloud Drive → Clash**。在仓库根目录运行：
 
 ```bash
-clash-sub
+icloud_clash="$HOME/Library/Mobile Documents/com~apple~CloudDocs/Clash"
+.venv/bin/python3.14 bin/clash-sub template-sync \
+  --compat "$icloud_clash/Clash-Compat.yaml" \
+  --balance "$icloud_clash/Clash-Balance.yaml"
 ```
 
-运行仓库测试：
+Compat 是完整基础模板，Balance 只导入 DNS 段。同步会净化模板，先核对生成差异再发布。 [模板说明](docs/template-design.md)
 
-```bash
-.venv/bin/python -m unittest discover -s tests -p 'test*.py'
-```
-
-扫描受跟踪文件中的敏感值：
-
-```bash
-.venv/bin/python scripts/scan_tracked_secrets.py
-```
-
-在服务器上额外比对私密目录中的值：
-
-```bash
-sudo .venv/bin/python scripts/scan_tracked_secrets.py --private-root /var/lib/clash-sub/private
-```
-
-## 文档入口
-
-- [DEPLOYMENT.md](DEPLOYMENT.md)：安装、监听收口、目录权限、升级卸载、首次导入与备份恢复。
-- [docs/template-design.md](docs/template-design.md)：模板组成、注释、iCloud 同步、导出矩阵、机场引用与 Home 脚本。
-- [docs/operations.md](docs/operations.md)：模板更新、机场更新、用户管理、同步、回滚与故障处理。
-
-## 修改后检查
-
-先检查模板同步报告与受跟踪 diff，再运行测试和两种密钥扫描。模板机制、部署与恢复的完整操作分别留在对应手册，避免在本页重复维护。
+重装 VPS 从 [部署清单](DEPLOYMENT.md) 开始。恢复备份、面板开关、用量和订阅排错的完整操作见 [运维手册](docs/operations.md)。

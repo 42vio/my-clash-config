@@ -1213,6 +1213,25 @@ class NginxTemplateRenderTests(unittest.TestCase):
         self.assertIn("proxy_set_header Upgrade $http_upgrade;", origin)
         self.assertNotIn("routes.conf", origin)
 
+    def test_trojan_uses_sni_and_loopback_http_fallback(self):
+        from dataclasses import replace
+
+        config = replace(self._config(), xui_trojan_hostname="site.example.com")
+        stream = render_stream_config(config, "example.com")
+        self.assertIn("site.example.com    127.0.0.1:20443;", stream)
+        rendered = render_sub_server(
+            config, domain="example.com", panel_port=2053, panel_base_path="/panel",
+            routes_include="/etc/nginx/clash-sub/routes.conf",
+            fullchain="/etc/ssl/domain/fullchain.pem", privkey="/etc/ssl/domain/privkey.pem",
+        )
+        fallback = rendered.split("listen 127.0.0.1:18080;", 1)[1]
+        self.assertIn("server_name site.example.com;", fallback)
+        self.assertIn("location = / {", fallback)
+        self.assertIn("root %s;" % (self.template_root.parent.parent / "assets"), fallback)
+        self.assertIn("try_files /site-home.html =404;", fallback)
+        self.assertNotIn("ssl_certificate", fallback)
+        self.assertNotIn("proxy_pass", fallback)
+
     def test_rejects_domain_with_config_syntax_characters(self):
         for domain in ("example.com }\nserver { listen 12345;", "exa mple.com", "example.com;", "localhost", ""):
             with self.subTest(domain=domain):

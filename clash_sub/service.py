@@ -349,6 +349,7 @@ class ClashSubService:
             self._fetch(url, self.config.max_source_bytes),
             self.config.xui_public_endpoint,
             self.config.xui_cdn,
+            trojan_hostname=self.config.xui_trojan_hostname,
         )
         provider=AirportProvider(
             _provider_url(self.config, identity.token),

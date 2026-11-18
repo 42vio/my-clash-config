@@ -24,6 +24,8 @@ PROFILE_TITLES = MappingProxyType({
 AIRPORT_FILENAME = "AmyTelecom.yaml"
 XUI_CDN_INBOUND_PORT = 11443
 CDN_ORIGIN_PORT = 31443
+XUI_TROJAN_INBOUND_PORT = 20443
+TROJAN_FALLBACK_PORT = 18080
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class ServiceConfig:
     template_root: Path
     max_source_bytes: int = 5 * 1024 * 1024
     xui_cdn: XuiCdn | None = None
+    xui_trojan_hostname: str | None = None
 
 
 @dataclass(frozen=True)

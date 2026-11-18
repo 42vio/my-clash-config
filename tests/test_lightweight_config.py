@@ -78,6 +78,13 @@ class LightweightConfigTests(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(self.path, self.root)
 
+    def test_loads_trojan_hostname_and_rejects_a_shared_public_route(self):
+        self.write_config(extra="xui-trojan-hostname: Site.example.com\n")
+        self.assertEqual(load_config(self.path, self.root).xui_trojan_hostname, "site.example.com")
+        self.write_config(extra="xui-trojan-hostname: sub.example.com\n")
+        with self.assertRaises(ConfigError):
+            load_config(self.path, self.root)
+
     def test_domain_records_are_immutable_dataclasses(self):
         records = (
             ServiceConfig,

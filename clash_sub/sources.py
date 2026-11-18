@@ -10,7 +10,7 @@ from urllib.request import HTTPRedirectHandler, Request
 
 import yaml
 
-from clash_sub.domain import AirportDownload, Traffic, XUI_CDN_INBOUND_PORT
+from clash_sub.domain import AirportDownload, Traffic, XUI_CDN_INBOUND_PORT, XUI_TROJAN_INBOUND_PORT
 
 
 class SourceError(RuntimeError):
@@ -136,7 +136,7 @@ def load_proxy_snapshot(path):
         _snapshot_fail()
 
 
-def normalize_xui_endpoints(proxies, endpoint, cdn=None):
+def normalize_xui_endpoints(proxies, endpoint, cdn=None, *, trojan_hostname=None):
     """Publish local 3x-ui nodes at their public entry points."""
     host, port = _parse_public_endpoint(endpoint)
     normalized = []
@@ -146,8 +146,12 @@ def normalize_xui_endpoints(proxies, endpoint, cdn=None):
             _source_fail()
         if inbound_port == XUI_INBOUND_PORT:
             proxy["server"], proxy["port"] = host, port
+            if trojan_hostname and proxy.get("servername") == trojan_hostname:
+                _source_fail()
         elif inbound_port == XUI_CDN_INBOUND_PORT and cdn:
             _publish_cdn_proxy(proxy, cdn)
+        elif inbound_port == XUI_TROJAN_INBOUND_PORT and trojan_hostname:
+            _publish_trojan_proxy(proxy, trojan_hostname)
         else:
             _source_fail()
         normalized.append(proxy)
@@ -173,6 +177,24 @@ def _publish_cdn_proxy(proxy, cdn):
     proxy.pop("encryption", None)
     proxy.update(server=cdn.hostname, port=443, tls=True, servername=cdn.hostname)
     options["headers"] = {"Host": cdn.hostname}
+
+
+def _publish_trojan_proxy(proxy, hostname):
+    password = proxy.get("password")
+    if (
+        proxy.get("type") != "trojan"
+        or proxy.get("network", "tcp") not in ("tcp", "raw")
+        or proxy.get("tls", True) is not True
+        or proxy.get("skip-cert-verify", False) is not False
+        or proxy.get("flow")
+        or "reality-opts" in proxy
+        or not isinstance(password, str)
+        or not password
+        or any(proxy.get(key) not in (None, "", hostname) for key in ("sni", "servername"))
+    ):
+        _source_fail()
+    proxy.update(server=hostname, port=443, network="tcp", sni=hostname)
+    proxy.pop("servername", None)
 
 
 def merge_proxy_sources(labeled_sources):

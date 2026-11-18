@@ -28,6 +28,11 @@ _CONFIG_KEYS = {
     "max-source-bytes",
 }
 _XUI_CDN_KEY = "xui-cdn"
+_XUI_TROJAN_KEY = "xui-trojan-hostname"
+_HOSTNAME_RE = re.compile(
+    r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+    r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+"
+)
 
 _PATH_KEYS = {
     "xui-database": "xui_database",
@@ -49,7 +54,7 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
 
     if not isinstance(data, dict):
         raise ConfigError("service configuration must be a mapping")
-    unknown = set(data) - _CONFIG_KEYS - {_XUI_CDN_KEY}
+    unknown = set(data) - _CONFIG_KEYS - {_XUI_CDN_KEY, _XUI_TROJAN_KEY}
     if unknown:
         raise ConfigError("unsupported configuration key")
     if data.get("schema-version") != 2 or isinstance(data.get("schema-version"), bool):
@@ -62,11 +67,21 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
     subscription_authority = _subscription_authority(data["subscription-authority"])
     xui_public_endpoint = _xui_public_endpoint(data["xui-public-endpoint"])
     xui_cdn = _load_xui_cdn(data[_XUI_CDN_KEY]) if _XUI_CDN_KEY in data else None
+    xui_trojan_hostname = (
+        _hostname(data[_XUI_TROJAN_KEY], "xui trojan")
+        if _XUI_TROJAN_KEY in data else None
+    )
+    subscription_host = urlsplit("//" + subscription_authority).hostname
+    reality_host = urlsplit("//" + xui_public_endpoint).hostname
     if xui_cdn and xui_cdn.hostname in {
-        urlsplit("//" + subscription_authority).hostname,
-        urlsplit("//" + xui_public_endpoint).hostname,
+        subscription_host, reality_host,
     }:
         raise ConfigError("xui cdn hostname conflicts with an existing endpoint")
+    if xui_trojan_hostname and (
+        xui_trojan_hostname == subscription_host
+        or (xui_cdn and xui_trojan_hostname == xui_cdn.hostname)
+    ):
+        raise ConfigError("xui trojan hostname conflicts with an existing endpoint")
     configured_paths = {
         field: _absolute_path(data[key]) for key, field in _PATH_KEYS.items()
     }
@@ -83,6 +98,7 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
         subscription_authority=subscription_authority,
         xui_public_endpoint=xui_public_endpoint,
         xui_cdn=xui_cdn,
+        xui_trojan_hostname=xui_trojan_hostname,
         template_root=Path(repo_root) / "templates",
         max_source_bytes=max_source_bytes,
         **configured_paths,
@@ -167,16 +183,17 @@ def _xui_public_endpoint(value: Any) -> str:
 def _load_xui_cdn(data):
     if not isinstance(data, dict) or set(data) != {"hostname", "websocket-path"}:
         raise ConfigError("xui cdn requires a hostname and websocket path")
-    hostname, path = data["hostname"], data["websocket-path"]
-    if not isinstance(hostname, str) or not re.fullmatch(
-        r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
-        r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+",
-        hostname,
-    ):
-        raise ConfigError("invalid xui cdn hostname")
+    hostname = _hostname(data["hostname"], "xui cdn")
+    path = data["websocket-path"]
     if not isinstance(path, str) or not re.fullmatch(r"/[A-Za-z0-9_-]{1,128}", path):
         raise ConfigError("invalid xui cdn websocket path")
-    return XuiCdn(hostname.lower(), path)
+    return XuiCdn(hostname, path)
+
+
+def _hostname(value, label):
+    if not isinstance(value, str) or len(value) > 253 or not _HOSTNAME_RE.fullmatch(value):
+        raise ConfigError("invalid %s hostname" % label)
+    return value.lower()
 
 
 def _absolute_path(value: Any) -> Path:

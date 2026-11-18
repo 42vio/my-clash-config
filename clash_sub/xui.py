@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
-from clash_sub.domain import Traffic, XuiClient, XuiSnapshot, XUI_CDN_INBOUND_PORT
+from clash_sub.domain import Traffic, XuiClient, XuiSnapshot, XUI_CDN_INBOUND_PORT, XUI_TROJAN_INBOUND_PORT
 
 
 class XuiCompatibilityError(RuntimeError):
@@ -223,25 +223,27 @@ def _validate_proxy_inbounds(connection) -> None:
         "SELECT port, protocol, enable, stream_settings FROM inbounds"
     ).fetchall()
     reality = []
-    has_cdn = False
+    has_additional_proxy = False
     for port, protocol, enabled, raw_settings in rows:
-        if protocol != "vless":
+        if protocol != "vless" and (protocol, port, enabled) != ("trojan", XUI_TROJAN_INBOUND_PORT, 1):
             continue
         settings = json.loads(raw_settings)
         if not isinstance(settings, dict):
             _fail()
         security = settings.get("security")
         network = settings.get("network", "tcp")
-        if security == "reality":
+        if protocol == "vless" and security == "reality":
             if port != _REALITY_INBOUND_PORT or network not in ("tcp", "raw"):
                 _fail()
             reality.append(enabled == 1)
         elif (
-            port == XUI_CDN_INBOUND_PORT and enabled == 1
+            protocol == "vless" and port == XUI_CDN_INBOUND_PORT and enabled == 1
             and network == "ws" and security in (None, "", "none")
         ):
-            has_cdn = True
-    if len(reality) > 1 or not (any(reality) or has_cdn):
+            has_additional_proxy = True
+        elif protocol == "trojan" and network in ("tcp", "raw") and security == "tls":
+            has_additional_proxy = True
+    if len(reality) > 1 or not (any(reality) or has_additional_proxy):
         _fail()
 
 

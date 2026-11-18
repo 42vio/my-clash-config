@@ -43,21 +43,9 @@ https://github.com/666shen/tcp-dashboard
 
 安装前保持 Reality 入站的公网 listen；安装成功并看到收口提示后，将该入站 listen 改为 `127.0.0.1`，端口仍为 `10443`。回滚安装后需改回 `0.0.0.0`。
 
-## Cloudflare 备用入口
+## 附加入站
 
-给 `cdn.<主域名>` 建一条开启代理的 `CNAME` 记录，指向现有节点域名 `node.<主域名>`。客户端可通过 Cloudflare 边缘的 IPv4 或 IPv6 连接。如果目标同时解析出源站 IPv4 和 IPv6，Cloudflare 优先用 IPv4 回源。确认 Cloudflare 边缘证书覆盖 CDN 子域名、WebSockets 已开启，回源 TLS 使用 **Full (strict)**。部署后实际验证 Cloudflare 能连通源站 TCP `443`。
-
-1. 在 3x-ui 新建 `VLESS + WebSocket` 入站，监听 `127.0.0.1:11443`。路径使用一个以 `/` 开头的段，只含字母、数字、下划线和连字符，例如 `/vless-ws`。Host 可留空。入站的 Security 和 VLESS Encryption 均选 `none`，WebSocket 入站上的 client Flow 留空。把现有 client 关联到新入站，并确认生成的 Xray 配置仅在 REALITY 入站保留 Vision。订阅发布时会补上公网 TLS、SNI 与 WebSocket Host。
-2. 在服务器的 `private/config/service.yaml` 增加以下配置。使用安装时主域名的一级子域名，以便复用已有通配证书。
-
-   ```yaml
-   xui-cdn:
-     hostname: cdn.example.com
-     websocket-path: /vless-ws
-   ```
-
-3. 用 `clash-sub update` 应用 Nginx 模板，执行 `nginx -t` 和 `clash-sub sync`，然后刷新客户端订阅。Nginx 从公网 `443` 按 SNI 路由到 CDN 站点，在本机终止 TLS 并把配置的 WebSocket 路径转给 3x-ui。其他路径返回 `404`。两个本地端口 `11443` 和 `31443` 都只监听环回。
-4. 在 IPv4 和 IPv6 网络上分别选中 CDN 节点，实际打开一个通过代理访问的网页。订阅里的 CDN 节点应与现有 REALITY 一起出现在「🏴‍☠️ 自建节点」中。关闭 CDN 入站并重新同步后，该节点会从订阅移除。
+首次安装完成后，按 [项目总览的域名、端口与 3x-ui 设置](README.md#域名和端口) 接入 Cloudflare CDN 和 Trojan。把相应的 `xui-cdn`、`xui-trojan-hostname` 写入服务器私有配置后，用 `clash-sub update` 生成 Nginx 配置，并在验证连通后执行 `clash-sub sync`。
 
 ## Reality Short ID 约定
 
