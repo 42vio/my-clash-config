@@ -1,3 +1,4 @@
+import json
 import re
 from contextlib import closing
 import sqlite3
@@ -5,7 +6,7 @@ import time
 from pathlib import Path
 from urllib.parse import quote
 
-from clash_sub.domain import Traffic, XuiClient, XuiSnapshot
+from clash_sub.domain import Traffic, XuiClient, XuiSnapshot, XUI_CDN_INBOUND_PORT
 
 
 class XuiCompatibilityError(RuntimeError):
@@ -108,7 +109,7 @@ def read_xui_snapshot(path: Path, now_ms: int | None = None) -> XuiSnapshot:
             _validate_schema(connection)
             listen, port, clash_path = _read_settings(connection)
             clients = _read_clients(connection, current_time_ms)
-            _validate_reality_inbound(connection)
+            _validate_proxy_inbounds(connection)
         finally:
             connection.close()
     except XuiCompatibilityError:
@@ -217,18 +218,30 @@ def _read_clients(connection, current_time_ms: int) -> list[XuiClient]:
     return clients
 
 
-def _validate_reality_inbound(connection) -> None:
+def _validate_proxy_inbounds(connection) -> None:
     rows = connection.execute(
         "SELECT port, protocol, enable, stream_settings FROM inbounds"
     ).fetchall()
-    reality = [
-        row for row in rows if row[1] == "vless" and "reality" in str(row[3]).lower()
-    ]
-    if (
-        len(reality) != 1
-        or reality[0][2] != 1
-        or reality[0][0] != _REALITY_INBOUND_PORT
-    ):
+    reality = []
+    has_cdn = False
+    for port, protocol, enabled, raw_settings in rows:
+        if protocol != "vless":
+            continue
+        settings = json.loads(raw_settings)
+        if not isinstance(settings, dict):
+            _fail()
+        security = settings.get("security")
+        network = settings.get("network", "tcp")
+        if security == "reality":
+            if port != _REALITY_INBOUND_PORT or network not in ("tcp", "raw"):
+                _fail()
+            reality.append(enabled == 1)
+        elif (
+            port == XUI_CDN_INBOUND_PORT and enabled == 1
+            and network == "ws" and security in (None, "", "none")
+        ):
+            has_cdn = True
+    if len(reality) > 1 or not (any(reality) or has_cdn):
         _fail()
 
 

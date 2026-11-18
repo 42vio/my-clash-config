@@ -22,6 +22,14 @@ PROFILE_TITLES = MappingProxyType({
     "airport": "Clash-Airport.yaml",
 })
 AIRPORT_FILENAME = "AmyTelecom.yaml"
+XUI_CDN_INBOUND_PORT = 11443
+CDN_ORIGIN_PORT = 31443
+
+
+@dataclass(frozen=True)
+class XuiCdn:
+    hostname: str
+    websocket_path: str
 
 
 @dataclass(frozen=True)
@@ -38,6 +46,7 @@ class ServiceConfig:
     systemctl_binary: Path
     template_root: Path
     max_source_bytes: int = 5 * 1024 * 1024
+    xui_cdn: XuiCdn | None = None
 
 
 @dataclass(frozen=True)

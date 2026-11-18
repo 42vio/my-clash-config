@@ -2,6 +2,7 @@
 
 import base64
 import ipaddress
+from collections.abc import Mapping
 from urllib.parse import quote, urlencode
 
 
@@ -31,8 +32,11 @@ def _share_uri(proxy):
     # protocol options instead of publishing a subtly different connection.
     supported = {"name", "type", "server", "port", "uuid", "password", "cipher",
                  "network", "tls", "flow", "servername", "sni", "client-fingerprint",
-                 "reality-opts", "skip-cert-verify", "alpn", "udp", "tfo"}
-    if set(proxy) - supported or proxy.get("network", "tcp") != "tcp":
+                 "reality-opts", "skip-cert-verify", "alpn", "udp", "tfo", "ws-opts"}
+    network = proxy.get("network", "tcp")
+    if set(proxy) - supported or network not in ("tcp", "ws"):
+        raise ValueError
+    if "ws-opts" in proxy and network != "ws":
         raise ValueError
     host = _string(proxy["server"])
     if ":" in host:
@@ -57,13 +61,17 @@ def _share_uri(proxy):
     if kind not in {"vless", "trojan"}:
         raise ValueError
     userinfo = quote(_string(proxy["uuid" if kind == "vless" else "password"]), safe="")
-    query = {"type": "tcp"}
+    query = {"type": network}
     if kind == "vless":
         query["encryption"] = "none"
     tls = proxy.get("tls", kind == "trojan")
     if type(tls) is not bool:
         raise ValueError
     reality = proxy.get("reality-opts")
+    if network == "ws":
+        if not tls or reality is not None or proxy.get("flow"):
+            raise ValueError
+        _add_websocket_params(query, proxy.get("ws-opts", {}))
     if reality is not None:
         if not tls or set(reality) - {"public-key", "short-id", "support-x25519mlkem768"}:
             raise ValueError
@@ -98,3 +106,22 @@ def _share_uri(proxy):
             raise ValueError
         query["allowInsecure"] = "1" if proxy["skip-cert-verify"] else "0"
     return "%s://%s@%s?%s#%s" % (kind, userinfo, address, urlencode(query, quote_via=quote), tag)
+
+
+def _add_websocket_params(query, options):
+    if not isinstance(options, Mapping) or set(options) - {"path", "headers"}:
+        raise ValueError
+    path = _string(options.get("path", "/"))
+    if not path.startswith("/"):
+        raise ValueError
+    query["path"] = path
+    headers = options.get("headers", {})
+    if not isinstance(headers, Mapping):
+        raise ValueError
+    if headers:
+        if len(headers) != 1:
+            raise ValueError
+        name, host = next(iter(headers.items()))
+        if not isinstance(name, str) or name.lower() != "host":
+            raise ValueError
+        query["host"] = _string(host)

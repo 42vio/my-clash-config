@@ -1192,6 +1192,27 @@ class NginxTemplateRenderTests(unittest.TestCase):
         self.assertIn('proxy_set_header X-Forwarded-For "";', rendered)
         self.assertIn("limit_req_zone $binary_remote_addr zone=clash_subscription", rendered)
 
+    def test_cdn_uses_public_443_and_an_isolated_websocket_origin(self):
+        from dataclasses import replace
+
+        from clash_sub.domain import XuiCdn
+
+        config = replace(self._config(), xui_cdn=XuiCdn("cdn.example.com", "/vless-ws"))
+        stream = render_stream_config(config, "example.com")
+        self.assertIn("cdn.example.com    127.0.0.1:31443;", stream)
+        self.assertIn("listen [::]:443 ipv6only=on;", stream)
+        rendered = render_sub_server(
+            config, domain="example.com", panel_port=2053, panel_base_path="/panel",
+            routes_include="/etc/nginx/clash-sub/routes.conf",
+            fullchain="/etc/ssl/domain/fullchain.pem", privkey="/etc/ssl/domain/privkey.pem",
+        )
+        origin = rendered.split("listen 127.0.0.1:31443 ssl;", 1)[1]
+        self.assertIn("server_name cdn.example.com;", origin)
+        self.assertIn("location = /vless-ws {", origin)
+        self.assertIn("proxy_pass http://127.0.0.1:11443;", origin)
+        self.assertIn("proxy_set_header Upgrade $http_upgrade;", origin)
+        self.assertNotIn("routes.conf", origin)
+
     def test_rejects_domain_with_config_syntax_characters(self):
         for domain in ("example.com }\nserver { listen 12345;", "exa mple.com", "example.com;", "localhost", ""):
             with self.subTest(domain=domain):

@@ -12,6 +12,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from clash_sub.domain import (
     AIRPORT_FILENAME,
+    CDN_ORIGIN_PORT,
     MEMBER_VARIANTS,
     OWNER_VARIANTS,
     PROFILE_FILENAMES,
@@ -19,6 +20,7 @@ from clash_sub.domain import (
     RuntimeState,
     ServiceConfig,
     XuiClient,
+    XUI_CDN_INBOUND_PORT,
 )
 from clash_sub.state import TOKEN_RE, LEGACY_TOKEN_RE, _state_to_payload, airport_only_token, airport_access_token
 
@@ -58,7 +60,7 @@ def render_stream_config(config, domain):
     try:
         return _nginx_template_environment(config).get_template(
             "stream.conf.j2"
-        ).render(domain=domain)
+        ).render(domain=domain, cdn=_cdn_site(config, domain), cdn_origin_port=CDN_ORIGIN_PORT)
     except NginxError:
         raise
     except Exception:
@@ -78,7 +80,7 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
         or isinstance(panel_port, bool)
         or not isinstance(panel_port, int)
         or not 1 <= panel_port <= 65535
-        or panel_port in (443, 10443, 20443, 30443)
+        or panel_port in (443, 10443, 20443, 30443, XUI_CDN_INBOUND_PORT, CDN_ORIGIN_PORT)
         or not isinstance(panel_base_path, str)
         or not re.fullmatch(r"/[A-Za-z0-9_-]+", panel_base_path)
         or not isinstance(routes_include, str)
@@ -107,11 +109,28 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
             favicon_path=str(favicon_path),
             panel_public=web_settings["panel_public"],
             portal_enabled=web_settings["enabled"],
+            cdn=_cdn_site(config, domain),
+            cdn_origin_port=CDN_ORIGIN_PORT,
+            xui_cdn_port=XUI_CDN_INBOUND_PORT,
         )
     except NginxError:
         raise
     except Exception:
         raise NginxError("sub server rendering failed") from None
+
+
+def _cdn_site(config, domain):
+    cdn = config.xui_cdn
+    if cdn is None:
+        return None
+    label, separator, suffix = cdn.hostname.partition(".")
+    if (
+        not separator or suffix != domain.lower() or label == "sub"
+        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+        or not re.fullmatch(r"/[A-Za-z0-9_-]{1,128}", cdn.websocket_path)
+    ):
+        raise NginxError("invalid CDN origin hostname or path")
+    return cdn
 
 
 def render_routes(config, state, clients):

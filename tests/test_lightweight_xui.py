@@ -259,6 +259,20 @@ class XuiSnapshotTests(unittest.TestCase):
 
         self.assertTrue(snapshot.clients)
 
+    def test_accepts_enabled_cdn_inbound_when_reality_is_disabled(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE inbounds SET enable = 0 WHERE id = 1")
+            connection.execute(
+                "INSERT INTO inbounds VALUES (2, 11443, 'vless', 1, '127.0.0.1', '{}',"
+                " '{\"security\":\"none\",\"network\":\"ws\"}', 'Cloudflare')"
+            )
+
+        self.assertTrue(read_xui_snapshot(self.database).clients)
+
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute("UPDATE inbounds SET enable = 0 WHERE id = 2")
+        self.assert_incompatible()
+
     def test_rejects_missing_inbounds_table(self):
         with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("DROP TABLE inbounds")

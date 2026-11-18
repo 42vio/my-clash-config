@@ -2,6 +2,10 @@ schema-version: 2
 owner-email: owner-example
 subscription-authority: sub.example.com:443
 xui-public-endpoint: example.com:443
+# Optional Cloudflare entry for a 3x-ui VLESS WebSocket inbound on 127.0.0.1:11443.
+# xui-cdn:
+#   hostname: cdn.example.com
+#   websocket-path: /vless-ws
 xui-database: /etc/x-ui/x-ui.db
 private-root: /var/lib/clash-sub/private
 public-root: /var/lib/clash-sub/public

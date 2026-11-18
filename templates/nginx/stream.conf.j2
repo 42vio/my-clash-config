@@ -5,6 +5,9 @@
 map $ssl_preread_server_name $clash_sub_backend {
     default             127.0.0.1:10443;
     sub.{{ domain }}    127.0.0.1:30443;
+{%- if cdn %}
+    {{ cdn.hostname }}    127.0.0.1:{{ cdn_origin_port }};
+{%- endif %}
 }
 
 server {

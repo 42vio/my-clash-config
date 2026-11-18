@@ -1,11 +1,16 @@
 import base64
 import unittest
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
+import yaml
+
+from clash_sub.domain import XuiCdn
 from clash_sub.generator import render_subscription_bundle
 from clash_sub.metadata_server import resolve_target
 from clash_sub.node_subscription import render_node_subscription
 from clash_sub.release_store import _validate_bundle
+from clash_sub.sources import SourceError, normalize_xui_endpoints
 from tests.test_lightweight_generator import reality_proxy
 from tests.test_lightweight_end_to_end import AcceptanceHarness
 
@@ -41,6 +46,37 @@ class NodeSubscriptionTests(unittest.TestCase):
         self.assertEqual(base64.urlsafe_b64decode(userinfo + "=" * (-len(userinfo) % 4)).decode(), "aes-128-gcm:" + password)
         self.assertEqual(unquote(urlsplit(trojan).username), password)
         self.assertEqual(parse_qs(urlsplit(trojan).query)["security"], ["tls"])
+
+    def test_local_cdn_inbound_publishes_with_reality_and_public_tls(self):
+        cdn = XuiCdn("cdn.example.com", "/vless-ws")
+        reality = dict(reality_proxy("REALITY"), port=10443)
+        websocket = {
+            "name": "Cloudflare", "type": "vless", "uuid": reality["uuid"],
+            "server": "127.0.0.1", "port": 11443, "tls": False, "network": "ws",
+            "ws-opts": {"path": "/vless-ws"},
+        }
+        templates = Path(__file__).resolve().parents[1] / "templates"
+        for source in ([reality, websocket], [reality]):
+            nodes = normalize_xui_endpoints(source, "node.example.com:443", cdn)
+            bundle = render_subscription_bundle(False, nodes, None, templates)
+            document = yaml.safe_load(bundle["compat"])
+            group = next(item for item in document["proxy-groups"] if item["name"] == "🏴‍☠️ 自建节点")
+            self.assertEqual(group["proxies"], [node["name"] for node in source])
+        nodes = normalize_xui_endpoints([websocket], "node.example.com:443", cdn)
+        self.assertEqual(nodes[0]["ws-opts"]["headers"], {"Host": cdn.hostname})
+        uri = urlsplit(self.decode(nodes)[0])
+        self.assertEqual((uri.hostname, uri.port), (cdn.hostname, 443))
+        self.assertEqual(parse_qs(uri.query), {
+            "type": ["ws"], "encryption": ["none"], "security": ["tls"],
+            "path": ["/vless-ws"], "host": [cdn.hostname], "sni": [cdn.hostname],
+        })
+        self.assertIs(websocket["tls"], False)
+        with self.assertRaises(SourceError):
+            normalize_xui_endpoints(
+                [dict(websocket, **{"ws-opts": {"path": "/wrong"}})],
+                "node.example.com:443",
+                cdn,
+            )
 
     def test_reality_mlkem_flag_is_preserved_in_share_uri(self):
         for enabled in (True, False):

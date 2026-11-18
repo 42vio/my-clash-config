@@ -63,6 +63,21 @@ class LightweightConfigTests(unittest.TestCase):
         self.assertEqual(MEMBER_VARIANTS, ("compat",))
         self.assertEqual(config.template_root, self.root / "templates")
 
+    def test_loads_optional_cdn_config_and_rejects_conflicts(self):
+        cdn = "xui-cdn:\n  hostname: CDN.example.com\n  websocket-path: /vless-ws\n"
+        self.write_config(extra=cdn)
+        config = load_config(self.path, self.root)
+        self.assertEqual(config.xui_cdn.hostname, "cdn.example.com")
+        self.assertEqual(config.xui_cdn.websocket_path, "/vless-ws")
+        for invalid in (
+            cdn.replace("CDN.example.com", "sub.example.com"),
+            cdn.replace("/vless-ws", "/ws;"),
+        ):
+            with self.subTest(config=invalid):
+                self.write_config(extra=invalid)
+                with self.assertRaises(ConfigError):
+                    load_config(self.path, self.root)
+
     def test_domain_records_are_immutable_dataclasses(self):
         records = (
             ServiceConfig,

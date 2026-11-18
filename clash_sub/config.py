@@ -1,11 +1,12 @@
 import os
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
 
-from clash_sub.domain import ServiceConfig
+from clash_sub.domain import ServiceConfig, XuiCdn
 
 
 class ConfigError(ValueError):
@@ -26,6 +27,7 @@ _CONFIG_KEYS = {
     "systemctl-binary",
     "max-source-bytes",
 }
+_XUI_CDN_KEY = "xui-cdn"
 
 _PATH_KEYS = {
     "xui-database": "xui_database",
@@ -47,7 +49,7 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
 
     if not isinstance(data, dict):
         raise ConfigError("service configuration must be a mapping")
-    unknown = set(data) - _CONFIG_KEYS
+    unknown = set(data) - _CONFIG_KEYS - {_XUI_CDN_KEY}
     if unknown:
         raise ConfigError("unsupported configuration key")
     if data.get("schema-version") != 2 or isinstance(data.get("schema-version"), bool):
@@ -59,6 +61,12 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
     owner_email = _nonempty_string(data["owner-email"], "owner email")
     subscription_authority = _subscription_authority(data["subscription-authority"])
     xui_public_endpoint = _xui_public_endpoint(data["xui-public-endpoint"])
+    xui_cdn = _load_xui_cdn(data[_XUI_CDN_KEY]) if _XUI_CDN_KEY in data else None
+    if xui_cdn and xui_cdn.hostname in {
+        urlsplit("//" + subscription_authority).hostname,
+        urlsplit("//" + xui_public_endpoint).hostname,
+    }:
+        raise ConfigError("xui cdn hostname conflicts with an existing endpoint")
     configured_paths = {
         field: _absolute_path(data[key]) for key, field in _PATH_KEYS.items()
     }
@@ -74,6 +82,7 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
         owner_email=owner_email,
         subscription_authority=subscription_authority,
         xui_public_endpoint=xui_public_endpoint,
+        xui_cdn=xui_cdn,
         template_root=Path(repo_root) / "templates",
         max_source_bytes=max_source_bytes,
         **configured_paths,
@@ -153,6 +162,21 @@ def _xui_public_endpoint(value: Any) -> str:
     if not valid:
         raise ConfigError("xui public endpoint must use port 443")
     return endpoint
+
+
+def _load_xui_cdn(data):
+    if not isinstance(data, dict) or set(data) != {"hostname", "websocket-path"}:
+        raise ConfigError("xui cdn requires a hostname and websocket path")
+    hostname, path = data["hostname"], data["websocket-path"]
+    if not isinstance(hostname, str) or not re.fullmatch(
+        r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
+        r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+",
+        hostname,
+    ):
+        raise ConfigError("invalid xui cdn hostname")
+    if not isinstance(path, str) or not re.fullmatch(r"/[A-Za-z0-9_-]{1,128}", path):
+        raise ConfigError("invalid xui cdn websocket path")
+    return XuiCdn(hostname.lower(), path)
 
 
 def _absolute_path(value: Any) -> Path:

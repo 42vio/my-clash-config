@@ -10,7 +10,7 @@ from urllib.request import HTTPRedirectHandler, Request
 
 import yaml
 
-from clash_sub.domain import AirportDownload, Traffic
+from clash_sub.domain import AirportDownload, Traffic, XUI_CDN_INBOUND_PORT
 
 
 class SourceError(RuntimeError):
@@ -136,18 +136,43 @@ def load_proxy_snapshot(path):
         _snapshot_fail()
 
 
-def normalize_xui_endpoints(proxies, endpoint):
-    """Rewrite 3x-ui node addresses to the public entry endpoint."""
+def normalize_xui_endpoints(proxies, endpoint, cdn=None):
+    """Publish local 3x-ui nodes at their public entry points."""
     host, port = _parse_public_endpoint(endpoint)
     normalized = []
     for proxy in _normalize_proxies({"proxies": proxies}):
-        copied = copy.deepcopy(proxy)
-        if copied.get("port") != XUI_INBOUND_PORT or not isinstance(copied.get("server"), str):
+        inbound_port = proxy.get("port")
+        if type(inbound_port) is not int or not isinstance(proxy.get("server"), str):
             _source_fail()
-        copied["server"] = host
-        copied["port"] = port
-        normalized.append(copied)
+        if inbound_port == XUI_INBOUND_PORT:
+            proxy["server"], proxy["port"] = host, port
+        elif inbound_port == XUI_CDN_INBOUND_PORT and cdn:
+            _publish_cdn_proxy(proxy, cdn)
+        else:
+            _source_fail()
+        normalized.append(proxy)
     return normalized
+
+
+def _publish_cdn_proxy(proxy, cdn):
+    options = proxy.get("ws-opts")
+    if (
+        proxy.get("type") != "vless"
+        or proxy.get("network") != "ws"
+        or proxy.get("tls", False) is not False
+        or proxy.get("flow")
+        or proxy.get("encryption", "none") != "none"
+        or proxy.get("skip-cert-verify", False) is not False
+        or "reality-opts" in proxy
+        or not isinstance(options, Mapping)
+        or options.get("path") != cdn.websocket_path
+        or set(options) - {"path", "headers"}
+        or options.get("headers", {}) not in ({}, {"Host": cdn.hostname})
+    ):
+        _source_fail()
+    proxy.pop("encryption", None)
+    proxy.update(server=cdn.hostname, port=443, tls=True, servername=cdn.hostname)
+    options["headers"] = {"Host": cdn.hostname}
 
 
 def merge_proxy_sources(labeled_sources):
