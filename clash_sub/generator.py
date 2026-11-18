@@ -13,7 +13,7 @@ from clash_sub.domain import (
     MEMBER_VARIANTS,
     OWNER_VARIANTS,
 )
-from clash_sub.sources import merge_proxy_sources
+from clash_sub.sources import merge_subscription_nodes
 from clash_sub.node_subscription import render_node_subscription
 from clash_sub.yaml_rt import (
     RoundTripYamlError,
@@ -31,7 +31,7 @@ _PROFILE_RECIPES = {"compat": "compat", "balance": "balance"}
 def render_subscription_bundle(is_owner, xui, airport, template_root, *, backup_nodes=None):
     """Compose Clash profiles plus the user's portable self-hosted nodes."""
     bundle = render_user_bundle(is_owner, xui, airport, template_root, backup_nodes=backup_nodes)
-    bundle["nodes"] = render_node_subscription(merge_proxy_sources((("3x-ui", xui),)))
+    bundle["nodes"] = render_node_subscription(merge_subscription_nodes(xui, backup_nodes))
     return bundle
 
 
@@ -62,11 +62,12 @@ def render_user_bundle(
 
 def _render_variant(template_root, variant, xui, airport, backup_nodes=None):
     document, injections, positions = _compose_variant(template_root, variant)
-    document["proxies"] = CommentedSeq(merge_proxy_sources((("3x-ui", xui),)) if xui else [])
+    merged = merge_subscription_nodes(xui, backup_nodes)
+    document["proxies"] = CommentedSeq(merged[:len(xui)])
     if airport is not None:
         _with_provider(document, airport)
     _inject_proxy_names(document, injections, airport is not None, positions)
-    _configure_backup(document, backup_nodes)
+    _configure_backup(document, merged[len(xui):])
     _drop_unusable_groups(document)
     try:
         return dump_round_trip(document)
@@ -75,7 +76,7 @@ def _render_variant(template_root, variant, xui, airport, backup_nodes=None):
 
 
 def _configure_backup(document, nodes):
-    from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP, PROVIDER, validate_nodes
+    from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP, validate_nodes
     groups=document['proxy-groups']
     primary=next((g for g in groups if g['name']==PRIMARY_GROUP),None)
     if primary is None:
@@ -83,25 +84,21 @@ def _configure_backup(document, nodes):
         return
     primary['proxies']=CommentedSeq(n for n in primary.get('proxies',[]) if n!=BACKUP_GROUP)
     groups[:]=[g for g in groups if g['name']!=BACKUP_GROUP]
-    if not nodes:
-        if len(primary['proxies']) == 1:
-            # Replace the fallback merge so inherited health checks disappear.
-            manual = CommentedMap((key, value) for key, value in primary.items()
-                                  if key not in {'type', 'url', 'interval', 'lazy', 'expected-status',
-                                                 'timeout', 'max-failed-times'})
-            merge = MergeValue()
-            merge.append(document.get('select', CommentedMap(type='select')))
-            merge.merge_pos = 1
-            manual.add_yaml_merge(merge)
-            manual.fa.set_flow_style()
-            groups[groups.index(primary)] = manual
-        return
-    validate_nodes(nodes)
-    primary['proxies'].append(BACKUP_GROUP)
-    health=CommentedMap(url='https://www.gstatic.com/generate_204',interval=300,lazy=True,**{'expected-status':204})
-    providers=document.setdefault('proxy-providers',CommentedMap())
-    providers[PROVIDER]=CommentedMap(type='inline',payload=CommentedSeq(copy.deepcopy(nodes)),**{'health-check':CommentedMap(enable=True,**health)})
-    groups.insert(groups.index(primary)+1,CommentedMap(name=BACKUP_GROUP,type='url-test',use=CommentedSeq([PROVIDER]),tolerance=100,**health))
+    if nodes:
+        validate_nodes(nodes)
+        document['proxies'].extend(copy.deepcopy(nodes))
+        primary['proxies'].extend(node['name'] for node in nodes)
+    if len(primary['proxies']) == 1:
+        # Replace the fallback merge so inherited health checks disappear.
+        manual = CommentedMap((key, value) for key, value in primary.items()
+                              if key not in {'type', 'url', 'interval', 'lazy', 'expected-status',
+                                             'timeout', 'max-failed-times'})
+        merge = MergeValue()
+        merge.append(document.get('select', CommentedMap(type='select')))
+        merge.merge_pos = 1
+        manual.add_yaml_merge(merge)
+        manual.fa.set_flow_style()
+        groups[groups.index(primary)] = manual
 
 
 def _drop_unusable_groups(document):

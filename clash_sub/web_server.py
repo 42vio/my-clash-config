@@ -464,7 +464,12 @@ class Portal:
             providers=document.get('proxy-providers',{}) or {}
             parts=['自建节点']
             if 'AmyTelecom' in providers:parts.append('机场')
-            if 'Backup' in providers:parts.append('备用节点')
+            manifest_path = Path(self.config.private_root)/'releases'/str(user.client_id)/user.current_release/'manifest.json'
+            has_backup = 'Backup' in providers
+            if manifest_path.is_file() and manifest_path.stat().st_size <= 1024 * 1024:
+                manifest = json.loads(manifest_path.read_bytes())
+                has_backup = has_backup or 'backup' in manifest.get('input_hashes', {})
+            if has_backup:parts.append('备用节点')
             return ' + '.join(parts) if len(parts)>1 else '仅自建节点'
         except Exception:return None
 
@@ -492,7 +497,7 @@ class Portal:
 
     @staticmethod
     def backup_dialog():
-        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">仅标准订阅 Compat · 主节点优先，故障时使用备用。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「订阅来源 → 备用节点管理」中分别添加、替换或删除，通过「选择适用用户」设置分配范围。客户端需更新标准订阅。</p></dialog>'
+        return '<dialog id="backup-dialog" aria-labelledby="backup-title"><div class="dialog-head"><h2 id="backup-title">备用节点</h2><button class="close-dialog" data-close="backup-dialog" aria-label="关闭备用节点状态">×</button></div><div id="backup-content" aria-live="polite"></div><p class="backup-caption">标准订阅的自建节点末尾追加备用，且同步提供仅节点订阅。此处不代表客户端当前正在使用的线路。</p><p class="backup-terminal-note">订阅链接与手动节点在终端「订阅来源 → 备用节点管理」中分别添加、替换或删除，通过「选择适用用户」设置分配范围。客户端需更新标准订阅。</p></dialog>'
 
     def user_links(self, state, settings, client_id):
         user = state.users.get(client_id)

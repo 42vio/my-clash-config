@@ -97,23 +97,23 @@ class BackupSubscriptionTests(unittest.TestCase):
             for kind,text in bundle.items():
                 if kind=='nodes':
                     from clash_sub.node_subscription import render_node_subscription
-                    self.assertEqual(text,render_node_subscription(main));continue
+                    self.assertEqual(text,render_node_subscription(main + NODES));continue
                 allowed=airport.url if owner else None
                 doc=validate_clash(text,(),allowed)
                 providers=doc.get('proxy-providers',{})
-                self.assertEqual('Backup' in providers,kind=='compat')
+                self.assertNotIn('Backup', providers)
                 groups={g['name']:g for g in doc['proxy-groups']}
                 order=list(groups)
                 if owner and kind!='airport':
                     self.assertLess(order.index('自动选择'),order.index(backup.PRIMARY_GROUP))
                 if kind!='airport':
-                    expected=['Actual name from 3x-ui']+([backup.BACKUP_GROUP] if kind=='compat' else [])
+                    expected=['Actual name from 3x-ui']+([node['name'] for node in NODES] if kind=='compat' else [])
                     self.assertEqual(groups[backup.PRIMARY_GROUP]['proxies'],expected)
                     self.assertEqual(groups[backup.PRIMARY_GROUP]['type'],'fallback' if kind=='compat' else 'select')
                 if kind=='compat':
-                    self.assertEqual(order.index(backup.BACKUP_GROUP),order.index(backup.PRIMARY_GROUP)+1)
-                    self.assertEqual(providers['Backup']['type'],'inline')
-                    self.assertEqual(len(providers['Backup']['payload']),3)
+                    self.assertNotIn(backup.BACKUP_GROUP, groups)
+                    self.assertEqual(doc['proxies'], main + NODES)
+                    self.assertEqual(groups[backup.PRIMARY_GROUP]['interval'], 600)
                     self.assertNotIn(SOURCE,text)
                     for group in doc['proxy-groups']:
                         if group['name']!=backup.BACKUP_GROUP:self.assertNotIn('Backup',group.get('use',[]))
@@ -198,12 +198,12 @@ class ManualBackupTests(unittest.TestCase):
         nodes=backup.combined_nodes(backup.read(self.root))
         templates=Path(__file__).resolve().parents[1]/'templates'
         bundle=render_subscription_bundle(True,[reality_proxy('Actual main')],AirportProvider('https://sub.example.test/s/owner/AmyTelecom.yaml'),templates,backup_nodes=nodes)
-        payload=yaml.safe_load(bundle['compat'])['proxy-providers']['Backup']['payload']
+        payload=yaml.safe_load(bundle['compat'])['proxies'][1:]
         self.assertEqual([node['type'] for node in payload],['anytls','hysteria2'])
         self.assertNotIn('Backup',yaml.safe_load(bundle['balance']).get('proxy-providers',{}))
         self.assertNotIn('Backup',yaml.safe_load(bundle['airport']).get('proxy-providers',{}))
         from clash_sub.node_subscription import render_node_subscription
-        self.assertEqual(bundle['nodes'],render_node_subscription([reality_proxy('Actual main')]))
+        self.assertEqual(bundle['nodes'],render_node_subscription([reality_proxy('Actual main')] + nodes))
         previous=(self.root/backup.FILENAME).read_bytes()
         with self.assertRaises(ServiceError):
             backup.import_nodes(self.root,links+'\nhy2://placeholder@example.com/?obfs=unknown',now=300)

@@ -197,6 +197,15 @@ def _publish_trojan_proxy(proxy, hostname):
     proxy.pop("servername", None)
 
 
+def merge_subscription_nodes(xui, backup=None):
+    sources = []
+    if xui:
+        sources.append(("3x-ui", xui))
+    if backup:
+        sources.append(("backup", backup))
+    return merge_proxy_sources(sources)
+
+
 def merge_proxy_sources(labeled_sources):
     """Copy sources in order and make same-name cross-source nodes distinct."""
     merged, _aliases = merge_proxy_sources_with_aliases(labeled_sources)

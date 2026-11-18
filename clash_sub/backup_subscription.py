@@ -14,7 +14,6 @@ from clash_sub.sources import download_airport_document, _valid_airport_url
 from clash_sub.checks import _validate_proxies
 
 FILENAME = 'backup-source.json'
-PROVIDER = 'Backup'
 PRIMARY_GROUP = '🏴\u200d☠️ 自建节点'
 BACKUP_GROUP = '🏴\u200d☠️ 备用节点'
 DEFAULT_USERS = frozenset({'42vio'})

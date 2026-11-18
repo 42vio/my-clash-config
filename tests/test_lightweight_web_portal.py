@@ -365,6 +365,13 @@ class PortalTests(unittest.TestCase):
         empty = json.loads(self.request('/admin/backup', cookie=self.login())[2])
         self.assertEqual(empty['selected_users'], [])
         self.assertEqual(empty['users'], ['member'])
+        path.write_text('proxies:\n- {name: Main}\n- {name: Extra}\n')
+        manifest = self.root/'releases/2/release/manifest.json'
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_text(json.dumps({'input_hashes': {'backup': 'placeholder'}}))
+        flattened = json.loads(self.request('/admin/backup', cookie=self.login())[2])
+        self.assertEqual(flattened['users'], ['member'])
+
 
         self.assertNotIn(SOURCE,body)
         self.assertNotIn('synthetic-backup-password',body)

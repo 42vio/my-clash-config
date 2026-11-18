@@ -2,6 +2,7 @@
 
 import base64
 import ipaddress
+import re
 from collections.abc import Mapping
 from urllib.parse import quote, urlencode
 
@@ -32,9 +33,16 @@ def _share_uri(proxy):
     # protocol options instead of publishing a subtly different connection.
     supported = {"name", "type", "server", "port", "uuid", "password", "cipher",
                  "network", "tls", "flow", "servername", "sni", "client-fingerprint",
-                 "reality-opts", "skip-cert-verify", "alpn", "udp", "tfo", "ws-opts"}
+                 "reality-opts", "skip-cert-verify", "alpn", "udp", "tfo", "ws-opts", "grpc-opts"}
+    kind = proxy["type"]
+    if kind in {"anytls", "hysteria2"}:
+        supported = {"name", "type", "server", "port", "password", "sni", "servername",
+                     "skip-cert-verify", "alpn", "udp", "tfo"}
+        supported |= {"client-fingerprint"} if kind == "anytls" else {
+            "obfs", "obfs-password", "fingerprint", "ports", "hop-interval", "up", "down",
+        }
     network = proxy.get("network", "tcp")
-    if set(proxy) - supported or network not in ("tcp", "ws"):
+    if set(proxy) - supported or network not in ("tcp", "ws", "grpc"):
         raise ValueError
     if "ws-opts" in proxy and network != "ws":
         raise ValueError
@@ -48,7 +56,8 @@ def _share_uri(proxy):
         raise ValueError
     address = "%s:%d" % (host, port)
     tag = quote(_string(proxy["name"]), safe="")
-    kind = proxy["type"]
+    if kind in {"anytls", "hysteria2"}:
+        return _tls_proxy_uri(proxy, address, tag)
     if kind == "ss":
         if set(proxy) - {"name", "type", "server", "port", "cipher", "password", "udp", "tfo"}:
             raise ValueError
@@ -68,8 +77,18 @@ def _share_uri(proxy):
     if type(tls) is not bool:
         raise ValueError
     reality = proxy.get("reality-opts")
+    if "grpc-opts" in proxy and network != "grpc":
+        raise ValueError
+    if network == "grpc":
+        options = proxy.get("grpc-opts", {})
+        if not isinstance(options, Mapping) or set(options) - {"grpc-service-name"} or proxy.get("flow"):
+            raise ValueError
+        service = options.get("grpc-service-name", "")
+        if not isinstance(service, str) or any(ord(c) < 32 for c in service):
+            raise ValueError
+        query["serviceName"] = service
     if network == "ws":
-        if not tls or reality is not None or proxy.get("flow"):
+        if reality is not None or proxy.get("flow"):
             raise ValueError
         _add_websocket_params(query, proxy.get("ws-opts", {}))
     if reality is not None:
@@ -125,3 +144,47 @@ def _add_websocket_params(query, options):
         if not isinstance(name, str) or name.lower() != "host":
             raise ValueError
         query["host"] = _string(host)
+
+
+def _tls_proxy_uri(proxy, address, tag):
+    from clash_sub.node_import import parse_links
+    query = {}
+    for source, target in (
+        ("sni", "sni"), ("servername", "sni"), ("client-fingerprint", "fp"),
+        ("obfs", "obfs"), ("obfs-password", "obfs-password"),
+        ("fingerprint", "pinSHA256"), ("ports", "mport"),
+    ):
+        if source in proxy:
+            value = _string(proxy[source])
+            if target in query and query[target] != value:
+                raise ValueError
+            query[target] = value
+    if "skip-cert-verify" in proxy:
+        if type(proxy["skip-cert-verify"]) is not bool:
+            raise ValueError
+        query["insecure"] = "1" if proxy["skip-cert-verify"] else "0"
+    if "alpn" in proxy:
+        if not isinstance(proxy["alpn"], list) or not proxy["alpn"]:
+            raise ValueError
+        query["alpn"] = ",".join(_string(item) for item in proxy["alpn"])
+    if "hop-interval" in proxy:
+        if type(proxy["hop-interval"]) is not int:
+            raise ValueError
+        query["hop-interval"] = str(proxy["hop-interval"])
+    for key in ("up", "down"):
+        if key in proxy:
+            value = str(proxy[key])
+            match = re.fullmatch(r"(\d+(?:\.\d+)?)(?: Mbps)?", value)
+            if not match:
+                raise ValueError
+            query[key] = match.group(1)
+    uri = "%s://%s@%s?%s#%s" % (
+        proxy["type"], quote(_string(proxy["password"]), safe=""),
+        address, urlencode(query, quote_via=quote), tag,
+    )
+    # Reuse the importer's validation of extensions and port hopping.
+    try:
+        parse_links(uri)
+    except Exception:
+        raise ValueError from None
+    return uri

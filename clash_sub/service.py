@@ -16,7 +16,7 @@ from clash_sub.airport_portal import AirportPortalError
 from clash_sub.airport_source import AirportSource
 from clash_sub.airport_store import AirportStoreError
 from clash_sub.domain import AIRPORT_FILENAME, MEMBER_VARIANTS, OWNER_VARIANTS, PROFILE_FILENAMES, AirportProvider, RuntimeState
-from clash_sub.sources import SourceError, merge_proxy_sources, normalize_xui_endpoints
+from clash_sub.sources import SourceError, merge_subscription_nodes, normalize_xui_endpoints
 from clash_sub.node_subscription import NodeSubscriptionError, render_node_subscription
 from clash_sub.state import StateError, airport_only_token, airport_access_token, generate_token, prepare_link_update
 from clash_sub.operation import ServiceError, _OperationLock
@@ -401,12 +401,15 @@ class ClashSubService:
         if backup and backup.get('url'):forbidden+=(backup['url'],)
         for variant,text in bundle.items():
             if variant == "nodes":
-                if text != render_node_subscription(merge_proxy_sources((("3x-ui",xui),))):
+                if text != render_node_subscription(merge_subscription_nodes(xui, nodes)):
                     raise ValueError("node subscription source mismatch")
                 continue
             allowed = provider.airport_only_url if variant == "airport" else provider.url if provider else None
             self._validate(text,forbidden,allowed)
-        release=self._releases.prepare(client.client_id,bundle,{"xui":_digest(xui)})
+        input_hashes = {"xui": _digest(xui)}
+        if nodes:
+            input_hashes["backup"] = _digest(nodes)
+        release=self._releases.prepare(client.client_id,bundle,input_hashes)
         if release:
             if candidates is not None: candidates.append((client.client_id,release))
             if owner:

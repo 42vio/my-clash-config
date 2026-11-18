@@ -1468,4 +1468,4 @@ def _write_backup_status(stdout, result):
         names = [user['email'] for user in result['users'] if user['selected']]
         mode = '默认' if result.get('selection_mode') == 'default' else '指定'
         stdout.write('适用用户（%s）：%s\\n' % (mode, '、'.join(names) or '无'))
-    stdout.write('仅标准订阅包含备用，默认仅 42vio。可通过菜单 7 选择适用用户。客户端需更新订阅。\\n')
+    stdout.write('标准订阅的自建节点末尾及仅节点订阅包含备用，默认仅 42vio。可通过菜单 7 选择适用用户。客户端需更新订阅。\\n')

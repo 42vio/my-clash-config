@@ -191,3 +191,43 @@ class NodeSubscriptionAcceptanceTests(unittest.TestCase):
         result = harness.service.sync_all()
         self.assertEqual(result["errors"], ({"client_id": harness.member_id, "code": "node_subscription_export_failed"},))
         self.assertEqual(harness.active_view(), before)
+
+
+class BackupNodeExportTests(unittest.TestCase):
+    def test_flat_group_and_node_export_use_same_order_and_collision_names(self):
+        from clash_sub.backup_subscription import PRIMARY_GROUP, BACKUP_GROUP
+        from clash_sub.node_import import parse_links
+        main = reality_proxy('Same')
+        backup = {'name': 'Same', 'type': 'ss', 'server': '192.0.2.20', 'port': 443,
+                  'cipher': 'aes-128-gcm', 'password': 'placeholder'}
+        templates = Path(__file__).resolve().parents[1] / 'templates'
+        bundle = render_subscription_bundle(False, [main], None, templates, backup_nodes=[backup])
+        document = yaml.safe_load(bundle['compat'])
+        primary = next(group for group in document['proxy-groups'] if group['name'] == PRIMARY_GROUP)
+        names = [node['name'] for node in document['proxies']]
+        self.assertEqual(names, ['Same [3x-ui]', 'Same [backup]'])
+        self.assertEqual(primary['proxies'], names)
+        self.assertEqual(primary['type'], 'fallback')
+        self.assertNotIn(BACKUP_GROUP, [group['name'] for group in document['proxy-groups']])
+        self.assertNotIn('Backup', document.get('proxy-providers', {}))
+        decoded = base64.b64decode(bundle['nodes']).decode()
+        imported = parse_links(decoded)
+        self.assertEqual([node['name'] for node in imported], names)
+
+    def test_modern_backup_extensions_survive_portable_export(self):
+        from clash_sub.node_import import parse_links
+        links = [
+            'anytls://placeholder%3A%40@example.com/?sni=example.com&fp=chrome&insecure=1&alpn=h2#AnyTLS',
+            'hy2://placeholder%3A%40@192.0.2.2:443?sni=example.com&obfs=gecko&obfs-password=placeholder&pinSHA256='
+            + 'ab' * 32 + '&mport=443,8443-8445&hop-interval=30&up=100&down=200&insecure=0&alpn=h3#HY2',
+            'vless://11111111-1111-1111-1111-111111111111@example.com:80?type=ws&security=none&path=%2Fws#VLESSWS',
+            'trojan://placeholder@example.com:443?type=grpc&serviceName=hello%2Fworld&sni=example.com#Trojan',
+            'vless://11111111-1111-1111-1111-111111111111@example.com:443?type=grpc&security=tls&serviceName=hello&sni=example.com#VLESS',
+        ]
+        for link in links:
+            with self.subTest(scheme=urlsplit(link).scheme):
+                nodes = parse_links(link)
+                if nodes[0]['type'] == 'hysteria2':
+                    nodes[0]['server'] = '2001:db8::2'
+                exported = base64.b64decode(render_node_subscription(nodes)).decode()
+                self.assertEqual(parse_links(exported), nodes)
