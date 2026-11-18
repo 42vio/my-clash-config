@@ -1,3 +1,5 @@
+> 历史设计或实施计划。记录文件名所示日期的方案，当前设置与操作见[项目使用手册](../../../README.md)。
+
 # Clash Config Redesign Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

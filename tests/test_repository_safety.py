@@ -137,7 +137,7 @@ HOME_UPLOAD_SURFACE_REFERENCES = (
 # its traffic-update CLI command) is fully replaced by the socket-activated
 # metadata service.  Its names may survive only in the development-history
 # records under docs/superpowers/, never in active runtime code, deployment
-# assets, the four project-use manuals, or the runtime tests.
+# assets, the two project-use manuals, or the runtime tests.
 LEGACY_SCHEDULED_TRAFFIC_REFERENCES = (
     "clash-sub-traffic",
     "traffic-update",
@@ -189,14 +189,12 @@ def _runtime_source_files():
 
 PROJECT_USE_DOCUMENTS = (
     "README.md",
-    "DEPLOYMENT.md",
-    "docs/template-design.md",
-    "docs/operations.md",
+    "docs/technical-reference.md",
 )
 
 # Removed business names may survive only in the development-history
 # documents under docs/superpowers/, never in active runtime code,
-# templates, tests, configuration, deployment assets, or the four
+# templates, tests, configuration, deployment assets, or the two
 # project-use manuals.  The published airport file AmyTelecom.yaml is a
 # current, sanctioned name and is deliberately absent here; the public
 # templates stay free of every AmyTelecom reference through the dedicated
@@ -287,7 +285,7 @@ class RepositorySafetyTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
     def test_scheduled_traffic_mechanism_is_absent_from_the_active_product_tree(self):
-        # Active runtime code, deployment assets, the four project-use
+        # Active runtime code, deployment assets, the two project-use
         # manuals, and the runtime tests must carry none of the retired
         # scheduled-traffic names.  Historical design records under
         # docs/superpowers/ are deliberately not scanned.
@@ -429,7 +427,7 @@ class RepositorySafetyTests(unittest.TestCase):
         )
         self.assertNotIn("AmyTelecom", tracked_text)
 
-    def test_project_use_documentation_is_exactly_four_chinese_files(self):
+    def test_project_use_documentation_is_exactly_two_chinese_files(self):
         actual = {
             path.relative_to(ROOT).as_posix()
             for path in (*ROOT.glob("*.md"), *(ROOT / "docs").rglob("*.md"))
@@ -440,13 +438,13 @@ class RepositorySafetyTests(unittest.TestCase):
             text = (ROOT / relative).read_text(encoding="utf-8")
             self.assertTrue(text.strip(), relative)
 
-    def test_project_use_documents_only_use_placeholder_url_hosts(self):
-        # The four manuals never carry a real portal or subscription host:
+    def test_project_use_documents_only_use_approved_public_url_hosts(self):
+        # The manuals may identify public deployment hosts approved by the owner.
         # Public references are allowed only as exact, document-specific lines;
         # other URLs still cannot expose a real portal or subscription host.
-        allowed = {"github.com", "sub"}
+        allowed = {"github.com", "sub", "node.42io.cc", "site.42io.cc", "www.gstatic.com"}
         public_references = {
-            ("DEPLOYMENT.md", "https://vpsoso.com/blog/vps/tcp_better"),
+            ("docs/technical-reference.md", "https://vpsoso.com/blog/vps/tcp_better"),
         }
         for relative in PROJECT_USE_DOCUMENTS:
             document = "\n".join(

@@ -71,13 +71,14 @@ def _activation_candidate_inventory_paths(text, private_root, current_root, ngin
 
 DOCUMENTATION_PATHS = {
     "readme": ROOT / "README.md",
-    "deployment": ROOT / "DEPLOYMENT.md",
-    "template-design": ROOT / "docs" / "template-design.md",
-    "operations": ROOT / "docs" / "operations.md",
+    "technical-reference": ROOT / "docs" / "technical-reference.md",
 }
 
 
 RETIRED_DOCUMENTATION_PATHS = (
+    "DEPLOYMENT.md",
+    "docs/operations.md",
+    "docs/template-design.md",
     "docs/3x-ui-setup.md",
     "docs/dns-design.md",
     "docs/legacy-trojan-topology.md",
@@ -105,7 +106,7 @@ class DocumentationContractTests(unittest.TestCase):
         for name, path in DOCUMENTATION_PATHS.items():
             self.assertTrue(path.is_file(), name)
 
-    def test_only_four_personal_maintenance_documents_remain(self):
+    def test_only_two_personal_maintenance_documents_remain(self):
         actual = {
             path.relative_to(ROOT).as_posix()
             for path in (*ROOT.glob("*.md"), *(ROOT / "docs").rglob("*.md"))
@@ -115,9 +116,7 @@ class DocumentationContractTests(unittest.TestCase):
             actual,
             {
                 "README.md",
-                "DEPLOYMENT.md",
-                "docs/template-design.md",
-                "docs/operations.md",
+                "docs/technical-reference.md",
             },
         )
 
@@ -165,7 +164,7 @@ class LightweightDeploymentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_deployment_prerequisites_install_git_before_clone(self):
-        deployment = (ROOT / "DEPLOYMENT.md").read_text(encoding="utf-8")
+        deployment = (ROOT / "docs" / "technical-reference.md").read_text(encoding="utf-8")
         self.assertIn("apt-get install -y git", deployment)
 
     def test_scheduled_traffic_units_are_gone_and_metadata_units_are_the_installed_set(self):

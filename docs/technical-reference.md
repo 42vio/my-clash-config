@@ -1,61 +1,280 @@
-# 运维、故障与恢复
+# 技术参考
 
-## 快速入口
+当前配置和日常操作见[使用手册](../README.md)。本页集中保留安装、权限、模板生成、服务机制和恢复细节。维护日期为 2026-11-18。
 
-| 目标 | 从这里开始 |
+- [安装与环境](#安装与环境)
+- [模板与配置生成](#模板与配置生成)
+- [服务器运行机制](#服务器运行机制)
+- [管理网页与服务](#管理网页与服务)
+- [故障与恢复细节](#故障与恢复细节)
+- [验证记录](#验证记录)
+
+## 安装与环境
+
+### 部署前检查
+
+- 使用干净的 apt/systemd Linux 主机，以 root 执行安装；磁盘至少保留 1 GiB 可用空间。
+- 已准备主域名及其 Cloudflare API Token；安装过程会申请证书。
+- 443/TCP 未被占用，3x-ui 已安装，且目标 owner 的 3x-ui client 已启用并可用其 email 识别。
+- 先按下节完成 3x-ui 设置；不要提交订阅 URL、token 或任何私密 YAML。
+
+当前服务器公网监听 TCP 443 与 SSH 26019。新环境先确认并放行实际 SSH 端口，再放行 TCP 443。证书通过 DNS 验证签发，80/TCP 按实际网站或证书验证方式决定是否开放。
+
+网络调优历史参考保留在下方，使用前核对目标系统和脚本。
+
+BBR
+
+https://vpsoso.com/blog/vps/tcp_better
+
+https://github.com/666shen/tcp-dashboard
+
+### 3x-ui 关键配置
+
+| 项目 | 固定值 |
 | --- | --- |
-| 开发 Mac 更新模板 | [模板更新](#模板更新) |
-| 服务器更换/刷新机场、查看机场状态 | [机场更新](#机场更新) |
-| 客户端手动刷新机场 | [手动刷新 provider](#手动刷新-provider) |
-| 订阅流量头的工作方式与降级 | [订阅流量元数据](#订阅流量元数据) |
-| 发布、状态与链接 | [同步、状态与链接](#同步状态与链接) |
-| 订阅异常或服务不可用 | [故障检查顺序](#故障检查顺序) |
-| 保存当前服务器 | [备份](#备份) |
-| 重装机器或更换域名/VPS | [全新服务器恢复](#全新服务器恢复) 或 [域名或-vps-迁移](#域名或-vps-迁移) |
-| 修改本机 Home 节点 | [Home 脚本维护](#home-脚本维护) |
-| 不再由脚本继续维护 | [人工接管](#人工接管) |
+| 数据库 | `/etc/x-ui/x-ui.db` |
+| 面板路径 | 随机且非 `/`，格式为 `/名称/`，只含字母、数字、`_`、`-` |
+| 面板监听 | `127.0.0.1` |
+| 面板 TLS | 证书与私钥字段留空 |
+| 原始订阅服务 | 启用，且同时启用 Clash 订阅 |
+| 原始订阅监听 | `127.0.0.1` |
+| 原始订阅端口 | 保留有效且未冲突的本地端口，例如 `2096` |
+| Reality 入站 | 启用的 `VLESS` + `TCP` + `REALITY`，端口 `10443` |
 
-以下服务器命令均以 root 在 `/opt/my-clash-config` 的已安装环境执行。首次安装、3x-ui 固定设置、目录权限和安装回滚见[部署清单](../DEPLOYMENT.md)；模板的拆分、注释规则与机场引用见[模板设计](template-design.md)。
+原始订阅只供本机 `clash-sub` 读取，不直接对公网开放。公网订阅入口为 `443`，由 Nginx 按 SNI 转到内部 `127.0.0.1:30443`；脚本读取 3x-ui 原始订阅时使用 `127.0.0.1:<原始订阅端口>`，这三个端口用途不同。
 
-交互菜单在首次进入或返回上一级时显示完整选项。操作结束后保留结果，只显示一行继续操作提示：输入编号直接执行下一项，按回车展开当前菜单，输入 `0` 返回上一级（主菜单中为退出）。
+安装前保持 Reality 入站的公网 listen；安装成功并看到收口提示后，将该入站 listen 改为 `127.0.0.1`，端口仍为 `10443`。回滚安装后需改回 `0.0.0.0`。
 
-## 模板更新
+### Reality Short ID 约定
 
-日常默认来源为开发 Mac iCloud 目录下的 `Clash-Compat.yaml` 和 `Clash-Balance.yaml`：
+本项目直接读取 3x-ui 的本地 Clash 订阅，不经过 VLESS 链接转换。以测试夹具对应的 3x-ui v3.6.0 为准，Clash 生成器将服务端 `realitySettings.shortIds[0]` 写入客户端 `reality-opts.short-id`；本项目只重写公网地址和端口，保留该值。多个服务端 Short ID 输出成一个客户端 Short ID 是正常行为，无需复制成多个节点。
+
+- 新建单节点入站时，使用一个固定、非空的 Short ID，建议为 16 位十六进制字符串（8 字节）；不要在同步或刷新订阅时重新生成。协议也允许更短的偶数位十六进制值，本项目当前完整性校验要求非空。
+- 已有入站保留当前首项及其顺序，确保已发布订阅的 `short-id` 仍包含在服务端 `shortIds` 中。不要为简化数组立即删除其他项：旧 VLESS 链接或 JSON 订阅可能已经使用这些值。待相关客户端迁移并验证后，再考虑收敛为单项。
+- v3.6.0 的原始 VLESS 链接 `sid` 与 JSON 订阅 `shortId` 使用随机选项。未来若增加 QX 或其他转换入口，需要核对转换器是否保留该值；单项服务端数组可消除这些入口的随机选值，不能仅凭当前 Clash 链路推断它们稳定。本仓库目前没有 QX/VLESS 转换器。
+- 本项目尚未将输出 `short-id` 与数据库数组独立交叉校验；当前选值由 3x-ui 自己从该入站数组产生。修改数组、升级 3x-ui 或切换订阅源后，重新生成配置并核对所选值、成员关系与连续两次生成结果，再执行客户端连接验证。配置校验通过不代表远端握手成功。
+- 多设备需要独立停用、流量统计或额度时，在 3x-ui 为每台设备创建独立 client/UUID，并使用各自订阅。Short ID 是入站的可接受值列表，不是 UUID 的设备权限绑定；不同 UUID 可以共用同一个 Short ID。当前无需新增 UUID 哈希选值逻辑。
+
+上游实现：[Clash 生成器](https://github.com/MHSanaei/3x-ui/blob/v3.6.0/internal/sub/clash_service.go)、[VLESS 链接生成器](https://github.com/MHSanaei/3x-ui/blob/v3.6.0/internal/sub/service.go)、[JSON 生成器](https://github.com/MHSanaei/3x-ui/blob/v3.6.0/internal/sub/json_service.go)。服务器实际版本及数据库内容需另行核实，不由测试夹具版本推定。
+
+### 全新安装
+
+先安装 Git，再克隆仓库；其余依赖由 `install.sh` 补齐。
+
+```bash
+apt-get update
+apt-get install -y git
+git clone https://github.com/42vio/my-clash-config /opt/my-clash-config
+cd /opt/my-clash-config
+bash install.sh
+```
+
+按提示输入主域名、Cloudflare API Token 和 owner 的 3x-ui client email；仅在需要 swap 时预先设置 `CLASH_SUB_SWAP_MB`。安装会创建本地虚拟环境、生成 `/usr/local/bin/clash-sub`、初始化运行时目录（含机场 provider 目录）、Nginx 配置、`/etc/tmpfiles.d/clash-sub-metadata.conf`（开机建立 `/run/clash-sub` 目录），并启用 `clash-sub-metadata.socket` 与 `clash-sub-airport-refresh.timer`（北京时间每天 06:00 开始自动刷新机场配置，随机延迟 0–2 小时）。订阅流量头由该 socket 按请求按需提供，不存在任何定时流量刷新任务。
+
+安装过程按 12 个步骤显示当前操作和已完成进度；百分比表示完成的步骤比例，不是剩余时间估算。若 Python 安装阶段失败，修正错误后重新执行 `bash install.sh`，安装器会读取安装记录并沿用已经完成的阶段。
+
+若已有证书尚未到续期时间，安装器只会复用它；但会先确认 acme.sh 已安全保存 Cloudflare 续期凭据。凭据缺失时，当前安装输入的 Token 会触发一次受控强制签发以让 acme.sh 自行保存凭据；该操作失败或仍未保存时以 `acme_cf_token_not_persisted` 失败，不会把证书步骤记为完成。不要手工编辑或复制 acme.sh 的凭据文件，也不要反复强制签发。
+
+### 目录与权限
+
+安装建立并校验以下布局；不要手工放宽权限：
 
 ```text
-~/Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents/
-├── Clash-Compat.yaml
-└── Clash-Balance.yaml
+/var/lib/clash-sub/
+├── private/          0700，root 所有：state.json、status.json、airport-source.json、traffic-cache.json、operation.lock、releases、current、staging
+└── public/           02750，root:www-data：releases/
+    └── provider/     02750，root:www-data：AmyTelecom.yaml (0640)
 ```
 
+机场 provider 文件是 public 下唯一的非发布目录内容；它由机场更新流程原子写入，不随主配置发布。`airport-source.json`（机场来源记录：订阅开关页面地址、订阅链接与最近保存的流量）与 `traffic-cache.json`（3x-ui 流量缓存）都是 0600、root:root 的私密文件：来源记录与 provider 文件经日志式事务同时切换，崩溃中断的事务在下一次机场操作时恢复到完整的旧状态或完整的新状态；流量缓存则由元数据服务在五分钟刷新时独立原子更新。两次正式文件替换之间存在毫秒级窗口，恰好并发的订阅请求可能短暂取得新正文与旧流量头，随后恢复一致。
+
+流量元数据 Socket 在运行时目录之外：`/run/clash-sub/metadata.sock`（0660 root:www-data），父目录 `/run/clash-sub`（0750 root:www-data）由 tmpfiles 规则在启动时建立，socket 由 `clash-sub-metadata.socket` 监听并按需激活 `clash-sub-metadata.service`。
+
+### 首次初始化
+
+1. 执行 `clash-sub`，主菜单选择 `1` 进入机场订阅子菜单，再选择 `1`（设置订阅开关页面），按可见提示粘贴带 `sid/token` 的订阅开关页面地址；输入会自动清理首尾空白。该操作会访问页面开启订阅、生成一条新订阅链接，下载成功后才同时保存开关页面地址、订阅链接与流量，并生成 `AmyTelecom.yaml`；任一步失败都保留旧状态。
+2. 依次执行首次生成与检查：
+
+   ```bash
+   clash-sub sync
+   clash-sub links
+   clash-sub status
+   ```
+
+3. 将 Reality 入站 listen 改为 `127.0.0.1`，保持 `10443`，使公网仅保留 443。
+
+`sync` 要求 Compat 模板、Balance DNS 模板与当前机场 provider 同时有效；provider 缺失或无效时整体拒绝执行，不会生成半套发布。
+
+### 部署验证
+
 ```bash
-./bin/clash-sub template-sync
+nginx -t
+systemctl status nginx clash-sub-metadata.socket
+clash-sub status
+clash-sub links
 ```
 
-只替换一个来源时，每次只传一个选项；未指定的默认来源不会被读取：
+确认 `nginx -t` 通过、`clash-sub-metadata.socket` 已启用且监听、`status` 的最近错误为空、`links` 显示 owner 三条（`Clash-Compat.yaml`、`Clash-Balance.yaml`、仅机场的 `Clash-Airport.yaml`）与普通用户一条（`Clash-Compat.yaml`）链接。用其中一条链接请求一次订阅后，`clash-sub-metadata.service` 应被 socket 激活（`systemctl status clash-sub-metadata.service` 显示运行中），响应携带 `Subscription-Userinfo` 流量头。面板入口为安装输出的 `https://sub.<主域名><面板路径>/`；不要把链接或面板路径写入仓库。
+
+浏览器标签图标由 Nginx 提供兜底：`/favicon.ico` 先请求 3x-ui，只有其返回 404 时才返回仓库中的 `assets/favicon.ico`。如果日后 3x-ui 在页面里声明自己的图标，面板路径仍由原代理直接转发，浏览器会使用其声明的图标。不要在 3x-ui 安装目录里手工替换文件。
+
+### 升级与卸载
+
+已运行的服务器只需更新项目代码并重新生成 Nginx 配置，无需重装 3x-ui。项目发布到远端仓库后，以 root 在服务器执行：
 
 ```bash
-./bin/clash-sub template-sync --compat /path/Clash-Compat.yaml
-./bin/clash-sub template-sync --balance /path/Clash-Balance.yaml
+cd /opt/my-clash-config
+clash-sub update
+nginx -t
+curl -I https://sub.<主域名>/favicon.ico
 ```
 
-同步先净化并验证全部候选，随后原子写入；路径不可用、YAML 解析或验证失败时，目标不会留下半更新。报告只允许出现公开路径与被忽略的顶层路径名；不得把机场 URL、节点或凭据复制到终端记录、提交信息或故障报告。
+`clash-sub update` 会拉取代码并用新模板重载 Nginx；`curl -I` 应返回 `200` 和图标的 Content-Type。浏览器可能缓存旧图标，必要时重新打开标签页或强制刷新。
 
-完成后只审查受跟踪改动，并运行：
+若需要撤销整合安装，执行：
 
 ```bash
-git diff --check
-.venv/bin/python -m unittest discover -s tests -p 'test*.py'
+clash-sub rollback --install
+```
+
+该操作移除或还原本项目写入的 Nginx 配置与 systemd 文件，保留运行时目录、3x-ui 数据库及已签发证书；之后将 Reality 入站 listen 改回 `0.0.0.0` 以恢复 `10443` 直连。再次安装前按“3x-ui 关键配置”和“全新安装”重新执行。
+
+### 路径与命令速查
+
+| 用途 | 路径或命令 |
+| --- | --- |
+| 仓库 | `/opt/my-clash-config` |
+| 管理命令 | `/usr/local/bin/clash-sub` |
+| 3x-ui 数据库 | `/etc/x-ui/x-ui.db` |
+| 私密运行时目录 | `/var/lib/clash-sub/private` |
+| 公开发布目录 | `/var/lib/clash-sub/public` |
+| 机场 provider | `/var/lib/clash-sub/public/provider/AmyTelecom.yaml` |
+| 备用订阅来源与缓存（可选，0600） | `/var/lib/clash-sub/private/backup-source.json` |
+| 机场来源记录 / 流量缓存 | `/var/lib/clash-sub/private/airport-source.json`、`/var/lib/clash-sub/private/traffic-cache.json` |
+| 服务配置 | `/opt/my-clash-config/private/config/service.yaml` |
+| Nginx 路由 | `/etc/nginx/clash-sub/routes.conf` |
+| Nginx stream / HTTP 配置 | `/etc/nginx/stream-conf.d/clash-sub.conf` / `/etc/nginx/conf.d/clash-sub.conf` |
+| 证书 | `/etc/ssl/domain/fullchain.pem`、`/etc/ssl/domain/privkey.pem` |
+| 流量元数据 | `/run/clash-sub/metadata.sock`、`clash-sub-metadata.socket`、`clash-sub-metadata.service` |
+| 启动恢复 | `clash-sub-recover.service`、`nginx.service.d/clash-sub-recover.conf` |
+| 安装记录 | `/opt/my-clash-config/private/install-state.json` |
+
+## 模板与配置生成
+
+### 文件结构
+
+| 路径 | 职责 | 是否受跟踪 |
+| --- | --- | --- |
+| `templates/base/Clash-Compat.yaml` | Compat 完整基础模板；不携带动态节点与机场痕迹。 | 是 |
+| `templates/dns/Clash-Balance.yaml` | 只含 Balance 的完整 `dns:` 段及其注释。 | 是 |
+| `templates/profiles.yaml` | 两个 profile 的 DNS 配方，以及节点/机场注入策略组列表。 | 是 |
+| `private/clash-verge-home.js` | 本机 Clash Verge 全局扩展脚本，唯一的 Home 载体。 | 否，`.gitignore` 忽略 |
+
+### 生成流程
+
+1. 生成 Compat：以 Compat 完整基础模板注入用户 3x-ui 节点；owner 再注入 `AmyTelecom` 机场 provider，输出 `Clash-Compat.yaml`。
+2. 生成 Balance：先取 Compat 完整基础模板，以 `templates/dns/Clash-Balance.yaml` 的整个 `dns:` 段（含注释）整体替换 DNS，再按 owner 路径注入 3x-ui 节点与机场 provider，输出 `Clash-Balance.yaml`。
+3. 生成 Airport：取 Compat 完整基础模板，只注入机场 provider，不注入 3x-ui 节点，输出 `Clash-Airport.yaml`。
+4. 普通用户只生成 Compat，渲染层直接拒绝传入机场 provider。
+
+### 动态节点的插入顺序
+
+同步时，`profiles.yaml` 的 `inject-node-positions` 记录各注入分组中第一个动态节点的位置（从 0 开始），不记录私密节点名称。生成时按用户节点顺序在该位置插入整组节点，保留其余选项的相对顺序；普通用户的不可用机场分组在节点插入后移除。若来源中的动态节点分散在多个位置，统一合并到第一个位置。
+
+没有位置字段或某分组没有位置记录的旧清单，继续把节点追加到该分组末尾。位置必须是对应节点注入分组的非负整数，且不能超过净化后选项列表的长度；无效位置会阻止生成，不会静默调整。
+
+### 导出矩阵
+
+| 身份 | 生成 profile | 机场 provider |
+| --- | --- | --- |
+| owner | `compat`、`balance`、`airport` | 有，`AmyTelecom` 以固定形态注入；`airport` 无自建节点 |
+| 普通用户 | 仅 `compat` | 无机场 provider、无机场节点 |
+
+### 机场引用
+
+owner 主配置中的机场 provider 固定为：
+
+```yaml
+proxy-providers:
+  AmyTelecom:
+    type: http
+    url: "https://订阅域名/s/<owner-token>/AmyTelecom.yaml"
+    path: ./proxy_providers/AmyTelecom.yaml
+    interval: 86400
+```
+
+公开 URL 的 `/s/` 路径保持不变，`<owner-token>` 为 `<22字符随机部分>-<client-email>`。例如占位格式 `https://订阅域名/s/<22字符随机部分>-alice@example.invalid/Clash-Compat.yaml`；不能直接使用占位符访问。Airport 配置使用独立派生的 22 字符随机核心和同一个邮箱后缀，不能凭此推导 owner 主链接。
+
+provider 显示名固定 `AmyTelecom`，三份 owner 主配置引用同一个服务器文件：原有两份使用 owner 令牌 URL，Airport 配置使用独立派生令牌 URL。Clash Verge 可单独手动刷新，自动刷新间隔 24 小时（86400 秒）。服务器侧的真实文件是 `/var/lib/clash-sub/public/provider/AmyTelecom.yaml`；派生令牌只能访问 Airport 配置和这个 provider，普通用户令牌没有任何机场路由。`Clash-Airport.yaml` 是按模板生成的完整配置，与 provider 原文件是两条不同链接。
+
+订阅响应头（`Subscription-Userinfo` 流量头、`Profile-Update-Interval: 24`）由部署侧在请求时按需附加：模板、provider 文件与发布物从不携带流量数据，流量数字只保存在服务器私密目录的来源记录与缓存里。
+
+模板同步会在净化时移除机场在本机的痕迹：机场 provider 本体、以机场缓存文件为 `path`/`url` 的本地别名 provider、这些 provider 在策略组 `use` 与 YAML merge/锚点中的引用，以及提及该缓存文件名的注释。受影响的策略组记入 `profiles.yaml` 的机场注入列表，owner 发布时重新挂上 `AmyTelecom`。
+
+### 注释与 YAML 结构
+
+注释属于模板的正式内容：
+
+- Compat 的通用注释进入所有最终主配置。
+- Balance 的 DNS 内容与 DNS 注释作为整体覆盖 Compat 的 DNS 段；Balance 独有的 DNS 注释随之保留。
+- Balance 的非 DNS 独有注释只进入差异报告，不自动合并。
+- 动态注入用户节点、机场 provider 和规则时，不丢失原有注释，也不整份重排 YAML。
+
+模板读写使用 round-trip YAML，保留 comment、anchor、alias 和 merge（`<<`）关系。若手工编辑导致引用无效、重复键或 YAML 不可解析，候选验证会拒绝写入。
+
+### iCloud 模板同步
+
+当前文件和显式命令见[使用手册](../README.md#同步-mac-的-icloud-模板)。不传参数的脚本默认路径仍为 `~/Library/Mobile Documents/iCloud~com~west2online~ClashX/Documents/`。
+
+同步规则：
+
+1. 以 `Clash-Compat.yaml` 净化后整体更新 Compat 基础模板。
+2. 从 `Clash-Balance.yaml` 提取完整 `dns:` 段及归属注释，更新 Balance DNS 模板。
+3. 比较两者去除 DNS 后的其余差异，只把差异的顶层路径写入报告，不合并、不输出任何值。
+4. 报告 Compat 内容变化、Balance DNS 变化、被忽略的非 DNS 差异与注释保留结果。
+5. 候选先经过渲染校验（用真实渲染器分别生成一次 owner 配置和一次普通用户配置并校验）和秘密扫描；任一失败都不替换仓库中的当前模板。
+
+同步报告逐项给出：
+
+- 「Compat 基础 / Balance DNS：已更新或无变化」与最终写入的文件。
+- 结构变化摘要：相对当前跟踪模板新增、删除、修改的 YAML 路径（键名与数量，超过 6 项折叠为计数；列表只记增减条数，不列内容）。
+- Compat 通用注释保留情况（全部保留 N 行，或保留 M/N 行）。
+- Balance 独有 DNS 注释保留行数。
+- 被忽略的 Balance 非 DNS 差异顶层路径。
+
+报告只允许出现公开路径、键名、数量与是否更新；不得输出机场 URL、节点、Home 内容或任何标量值。
+
+### Home 扩展脚本
+
+服务器不再保存或生成 Home 配置。Home 敏感内容只维护在本机 `private/clash-verge-home.js`（Clash Verge Rev 的全局扩展脚本）。
+
+脚本只对两个精确 profile 标题生效：
+
+- `Clash-Compat.yaml`
+- `Clash-Balance.yaml`
+
+其他 profile 原样返回。脚本把 Home 节点、`HomeServer` 和 `ProxyServer` 分组插入主配置，两个分组放在“自动选择”之后；对应规则保持在规则列表预定的高优先级位置。
+
+维护方式：直接编辑该脚本，保存后用 `node --check private/clash-verge-home.js` 验证语法，再在 Clash Verge 中重新载入配置观察效果。不要把脚本内容、节点名或地址粘贴到文档、提交或终端记录。
+
+### 私密数据边界
+
+使用手册记录已确认的部署域名与端口。实际用户凭据、完整订阅链接和私钥按下述规则保管。
+
+`private/**`、`.env` 和生成发布物均不受跟踪。3x-ui 的实际连接数据、机场订阅、订阅令牌、私有节点地址和认证材料只可留在对应的私密文件、受保护的服务器运行时目录或机场更新的交互式输入中；机场地址输入按当前需求可见，但不会写入项目状态或日志。服务器上的机场来源记录（`airport-source.json`，含订阅链接与流量数字）与流量缓存（`traffic-cache.json`）同属私密运行时数据，固定 0600，永不进入仓库。
+
+不要在模板注释、示例、提交信息、终端重定向输出或故障报告中记录这些值。提交前运行：
+
+```bash
 .venv/bin/python scripts/scan_tracked_secrets.py
 .venv/bin/python scripts/scan_tracked_secrets.py --private-root private
 ```
 
-模板同步只更新仓库模板，不触碰服务器。模板变更生效需要提交、推送，并在服务器 `clash-sub update` 后 `sync`。
+第一条扫描受跟踪仓库内容；第二条在本机存在私密目录时额外比对私密值是否泄露到受跟踪文件。两者都应报告 `scan clean`。
 
-服务器执行 `clash-sub update` 时，post-update 会幂等补齐并校正运行时目录（包括机场 provider 目录），再更新 systemd 与 Nginx；旧安装无需手工追补新目录。
+## 服务器运行机制
 
-## 机场更新
+### 机场更新
 
 机场更新与主配置发布完全解耦：只更新 provider 文件与来源记录，不读取 x-ui、不渲染模板、不运行 Mihomo、不生成发布、不执行 sync、不激活 Nginx。
 
@@ -88,11 +307,11 @@ git diff --check
 
 机场字节变化本身不会创建新发布：发布输入哈希只含 3x-ui 数据。需要把新机场节点刷进客户端时，在 Clash Verge 中手动刷新 provider（见下节），或在内容需要重排时执行 `clash-sub sync`。
 
-## 手动刷新 provider
+### 手动刷新 provider
 
 owner 客户端在 Clash Verge 的「订阅」页选中 `Clash-Compat.yaml` 或 `Clash-Balance.yaml`，对 `AmyTelecom` provider 执行手动更新即可拉取最新机场节点；主配置本身无需重新下载。provider 的自动刷新间隔为 24 小时。Clash Verge 里显示的机场流量与到期是服务器最近一次机场下载保存的数字，刷新 provider 不会触发服务器访问机场上游。
 
-## 订阅流量元数据
+### 订阅流量元数据
 
 订阅流量头（`Subscription-Userinfo`）按请求按需生成，不预写进任何配置文件，也没有定时刷新任务。链路如下：
 
@@ -114,7 +333,7 @@ journalctl -u clash-sub-metadata.service -n 100 --no-pager
 
 `clash-sub metadata-serve` 是服务单元的内部入口，不出现在交互菜单，日常无需手工调用。
 
-## 同步、状态与链接
+### 同步、状态与链接
 
 模板或 3x-ui 数据有效变更后发布：
 
@@ -137,7 +356,7 @@ clash-sub sync
 
 `update` 先创建更新前快照，执行 fast-forward 拉取和依赖同步，再由新代码完成 systemd 加固与 Nginx 重渲染；更新后仍需重新发布。
 
-### 邮箱后缀订阅链接
+#### 邮箱后缀订阅链接
 
 公开链接统一为 `https://订阅域名/s/<22字符随机部分>-<client-email>/<文件名>`。邮箱（也可以是用户名）保留大小写，允许英文字母、数字及 `. _ @ + -`，长度 1–254；空格、中文、斜杠、百分号与控制字符会被拒绝。完整链接是访问凭据，邮箱后缀用于核对收件人，不能代替随机部分；分享时也会暴露该邮箱。
 
@@ -147,174 +366,7 @@ clash-sub sync
 
 owner 的机场专用配置使用另一枚 22 字符派生令牌，后缀也是邮箱；机场镜像 `AmyTelecom.yaml` 使用 owner 主令牌。owner 改名、迁移或轮换后，包含旧 provider URL 的历史配置不能直接回滚，需重新同步生成。3x-ui 的本地 Clash 订阅仍是自建节点来源，不能因此关闭。
 
-## 用户管理
-
-普通用户与 owner 都来自 3x-ui client；在面板中增删或启停 client 后执行 `clash-sub sync` 即可生效。owner 由安装时输入的 email 确定；owner 身份变化才执行：
-
-```bash
-clash-sub reinitialize-owner <用户ID>
-clash-sub sync
-```
-
-重新初始化只重建身份映射；稳定 provider 已在服务器上时无需重新导入机场，直接 `sync` 即可。
-
-## 历史与回退
-
-先从 `status` 或 `links` 确认目标用户 ID，再查看该用户可用发布版本：
-
-```bash
-clash-sub history <用户ID>
-clash-sub rollback <用户ID> <发布版本ID>
-clash-sub status
-clash-sub links
-```
-
-回滚边界：只回滚主配置和相应路由映射；机场 provider 文件、身份令牌与本机 Home 脚本不参与回滚。只有历史中存在的版本可以回退。泄露订阅链接时，轮换对应用户的令牌并重新取链接；旧链接立即失效：
-
-```bash
-clash-sub rotate-link <用户ID>
-clash-sub links
-```
-
-owner 轮换会以新令牌 URL 重新生成三份主配置；provider 文件本身不移动，机场上游不会被再次联系。普通用户轮换只改路由，不触碰 provider。
-
-## Home 脚本维护
-
-Home 节点、`HomeServer` 与 `ProxyServer` 分组只存在于本机 `private/clash-verge-home.js`。修改 Home 时直接编辑脚本，随后：
-
-```bash
-node --check private/clash-verge-home.js
-```
-
-语法通过后在 Clash Verge 中重新载入配置验证效果。脚本只对 `Clash-Compat.yaml` 和 `Clash-Balance.yaml` 两个标题生效；其他 profile 原样返回。不要把脚本内容或其中的节点值写入仓库、文档或终端记录。
-
-## 证书和组件更新
-
-先查看证书，再按需要强制续期；`--domain` 不是改域名入口，会被拒绝：
-
-```bash
-clash-sub cert
-clash-sub cert --renew
-clash-sub status
-```
-
-单独升级 Mihomo 校验器时：
-
-```bash
-clash-sub mihomo-update
-clash-sub sync
-clash-sub status
-```
-
-订阅流量元数据由 `clash-sub-metadata.socket` 按需激活提供；链路、缓存与降级行为见[订阅流量元数据](#订阅流量元数据)。
-
-## 故障检查顺序
-
-按以下顺序停止；前一步异常时先修复，不要直接重装或删除发布目录。
-
-1. 查看发布与健康摘要：
-
-   ```bash
-   clash-sub status
-   clash-sub links
-   ```
-
-   记录公开的错误代码、pending 项与受影响用户 ID，不记录订阅链接或私密值。
-
-2. 检查 Nginx、x-ui 与流量元数据 Socket：
-
-   ```bash
-   nginx -t
-   systemctl status nginx x-ui clash-sub-metadata.socket
-   journalctl -u nginx -u x-ui -u clash-sub-metadata.service -n 100 --no-pager
-   ```
-
-   订阅能下载但没有流量头属于元数据链路降级（服务失败、超时或 5xx）：文件服务不受影响，按上述输出定位 socket 与服务，必要时检查 x-ui 数据库可读性；数据库读取失败时服务会自动回退旧缓存。
-
-3. 若发布过程中断、启动恢复未完成，先运行：
-
-   ```bash
-   clash-sub recover
-   nginx -t
-   clash-sub status
-   ```
-
-   `clash-sub-recover.service` 也会在启动时于 Nginx 之前处理这类激活日志；手动恢复成功后再决定是否重试 `sync`。
-
-4. `airport_provider_required` 表示稳定 provider 缺失或无效：按[机场更新](#机场更新)刷新或重新导入订阅，再 `sync`。机场更新失败会保留原 provider 与来源记录，并给出不含订阅地址的分类错误码：
-
-   - `airport_url_invalid` / `airport_activation_url_invalid`：订阅链接或开关页面不是允许的 HTTPS 地址；
-   - `airport_activation_missing`：尚未设置订阅开关页面（自动刷新先跳过，交互操作提示使用菜单 1）；
-   - `airport_portal_unavailable`：开关页面临时不可用（网络、超时、重定向越界）；
-   - `airport_portal_unsupported`：开关页面结构不兼容（页面改版；自动路径同时旧链接失败时报此码，改用菜单 3 或 4）；
-   - `airport_link_generation_failed`：订阅链接生成接口失败或返回非法结果；
-   - `airport_redirect_invalid`：下载重定向超过三次或转向非 HTTPS 地址；
-   - `airport_download_failed`：网络、TLS 证书、上游响应失败，或响应为空；
-   - `airport_document_too_large`：返回内容超过传输大小限制；
-   - `airport_response_invalid`：响应为明显 HTML 错误页（HTML 响应类型或正文以 HTML 标签开头）；
-   - `airport_provider_invalid`：provider 目录或文件的安全属性不合规（属主、组、类型、权限、硬链数，或目录模式不是 `02750`），或待发布字节为空/超限；
-   - `airport_provider_write_failed`：服务器无法原子写入 provider 文件。
-
-   不要反复粘贴地址或把地址发送到日志；只记录上述错误码。
-
-5. 本地模板变更后失败时，回到开发 Mac 运行模板同步与两种密钥扫描；不要从服务器或日志取回私密内容。
-
-6. 当前发布有效但内容不合预期时，使用[历史与回退](#历史与回退)的用户级回退；仅整合安装本身需要撤销时，按[部署清单](../DEPLOYMENT.md#升级与卸载)执行 `clash-sub rollback --install`。
-
-## 备份
-
-变更前、更新前和迁移前都创建备份：
-
-```bash
-clash-sub backup
-```
-
-备份写入仓库 `backups/`，文件权限为 `0600`。归档只包含五个重建必需文件：3x-ui 数据库、两份 Nginx 配置、运行时 `state.json` 与机场来源记录 `airport-source.json`；证书、机场 provider 文件、流量缓存、发布历史、运行状态与 systemd 文件不进入备份。任何必需文件缺失时备份直接失败。归档含私密数据：立即复制到受保护的离线或加密位置，不上传到仓库、公开网盘、工单或聊天记录。
-
-备份创建后验证文件存在且权限正确；不要解包到仓库或把内容贴进记录：
-
-```bash
-ls -l backups/clash-sub-backup-*.tar.gz
-```
-
-## 全新服务器恢复
-
-恢复以新服务器为目标，保留旧服务器直到验收完成。顺序如下：
-
-1. 从受保护备份恢复 3x-ui 数据库与入站/client 配置；按[部署清单](../DEPLOYMENT.md#3x-ui-关键配置)检查面板、Reality 入站和端口。
-2. 恢复备份中的 `state.json` 与 `airport-source.json` 到新服务器的私密运行时目录。
-3. 克隆仓库到 `/opt/my-clash-config`，按[部署清单](../DEPLOYMENT.md#全新安装)执行 `bash install.sh`；安装时仅在隐藏提示输入新主机所需的域名、Cloudflare token 与 owner email。证书由安装流程重新签发。
-4. 执行 `clash-sub`，主菜单 `1` 进入订阅来源后选择 `2`（自动开启订阅并刷新）：用恢复的开关页面与已保存链接重建 `AmyTelecom.yaml`，无需重新输入地址；页面自动化失效时先用浏览器手动开启订阅再选 `3` 刷新；真实链接也已失效时用 `4` 输入新链接。然后发布并验收：
-
-   ```bash
-   clash-sub sync
-   nginx -t
-   systemctl status nginx x-ui clash-sub-metadata.socket
-   clash-sub status
-   clash-sub links
-   ```
-
-5. 核对并恢复两份 Nginx 配置（stream 与 HTTP 的 `clash-sub.conf`）。
-6. 验证 owner 与普通用户的授权范围、`status` 最近错误为空、链接可访问后，才停止旧服务器。保留原订阅链接要求 x-ui client ID 与数据库一致，且不重新初始化 owner、不轮换令牌。
-
-## 域名或 VPS 迁移
-
-既有安装记录不允许用 `clash-sub cert --domain` 或再次安装直接改域名；新域名或新 VPS 一律按[全新服务器恢复](#全新服务器恢复)建立新环境。
-
-1. 在旧服务器执行 `clash-sub backup`，并保留旧服务继续运行。
-2. 在新主机完成恢复和验收；新域名的 DNS、证书和 Nginx 由安装流程处理。
-3. 用新域名的 `clash-sub links` 验证每个预期链接，并确认 Nginx、x-ui 与流量元数据 Socket 正常。
-4. 仅在新发布物和客户端实际连通后切换 DNS/客户端；保留旧主机作为回退点。
-5. 稳定观察后再人工撤销旧主机的公开入口和访问凭据。不要在切换前执行安装回滚或删除旧备份。
-
-## 人工接管
-
-需要永久停止脚本化维护时，先创建并离线保存完整备份，记录公开的版本号、服务状态和待办事项；不要记录订阅链接、token 或机场地址。将日常变更切换为受控的人工操作前，先冻结 `clash-sub update`、`sync`、`rotate-link` 等写入操作，避免两套流程同时发布。
-
-若仅撤销本项目的整合安装，使用 `clash-sub rollback --install`，并按部署文档恢复 Reality 入站公网 listen。该回滚保留运行时目录、3x-ui 数据库和已签发证书；接管人必须决定这些保留数据的后续备份、权限与删除策略。完成交接前，不删除旧服务器、备份或安装记录。
-
-
-## 订阅订阅页面与 3x-ui 管理面板开关
+## 管理网页与服务
 
 本功能与已有订阅下载分开运行。网页使用 `/run/clash-sub/web.sock`，订阅元数据继续使用原有 socket，网页异常不会改写订阅发布物。
 
@@ -326,7 +378,7 @@ ls -l backups/clash-sub-backup-*.tar.gz
 clash-sub web setup
 ```
 
-交互设置独立的网页管理员账号与 8—256 字符密码，不通过命令行参数传密码，也不使用 3x-ui 的账号密码。账号允许 1—254 个英文字母、数字及 `._@+-`。账号留空时保留已有账号，新安装默认使用 owner 标识（email）。旧部署没有显式账号时，同样使用 owner 标识登录，原密码及网页链接保留。主菜单 **4 → 2「设置网页管理员账号与密码」** 可修改；账号或密码改变后，既有网页会话和排队管理任务授权失效。初始化会启用网页 socket，保留 3x-ui 面板原有公网访问状态；如需关闭，单独选择「关闭公网访问」。x-ui 服务与原始订阅继续运行。已有公网面板在普通代码更新时保持原状态。
+交互设置独立的网页管理员账号与 8—256 字符密码，不通过命令行参数传密码，也可独立于 3x-ui 设置账号密码；桌面实时速度功能需要同一组账号密码，见下方速度查看说明。账号允许 1—254 个英文字母、数字及 `._@+-`。账号留空时保留已有账号，新安装默认使用 owner 标识（email）。旧部署没有显式账号时，同样使用 owner 标识登录，原密码及网页链接保留。主菜单 **4 → 2「设置网页管理员账号与密码」** 可修改；账号或密码改变后，既有网页会话和排队管理任务授权失效。初始化会启用网页 socket，保留 3x-ui 面板原有公网访问状态；如需关闭，单独选择「关闭公网访问」。x-ui 服务与原始订阅继续运行。已有公网面板在普通代码更新时保持原状态。
 
 初始化后终端输出管理员入口和各人的独立页面链接。owner 是唯一管理员，入口为 `https://<订阅域名>/admin/<独立入口令牌>-<owner的email>/`；固定 `/admin/` 和 `/admin/login` 返回 404。只有密码哈希被保存在私有运行时文件中，不保存明文密码。
 
@@ -381,7 +433,7 @@ clash-sub web tunnel
 
 终端菜单 **4 → 9 → 2** 查询一次搬瓦工的下次重置时间，换算为北京时间并显示预览。确认后，systemd 每月同日同一时刻调用本机 3x-ui 清零所有客户端和入站的上传和下载累计。需先通过菜单 4 → 8 设置有客户端和入站重置权限的令牌。启用后把客户端和入站的原有自动重置设为 Never，避免重复清零。重复选择菜单可按新的账期覆盖定时设置。运行 `systemctl list-timers clash-sub-inbound-reset.timer` 可查看下次执行时间，`journalctl -u clash-sub-inbound-reset.service` 可查看执行记录；要停用可运行 `systemctl disable --now clash-sub-inbound-reset.timer`。
 
-管理员服务单元 `clash-sub-web.service` 使用只读系统，HTTP 入口仍仅为 Unix socket；在线查询仅允许连接本机 IPv4 回环，不允许访问外部 IP。更新流程会重启已运行的网页服务，使新代码生效。
+管理员服务单元 `clash-sub-web.service` 使用只读系统，HTTP 入口仍仅为 Unix socket；3x-ui 在线查询连接本机 IPv4 回环，搬瓦工查询访问固定的外部只读接口，网络限制见下方管理员在线状态。更新流程会重启已运行的网页服务，使新代码生效。
 
 ### 按用户管理链接与网页操作
 
@@ -507,41 +559,126 @@ clash-sub web set-api-token
 
 只在电脑端开启且网页可见时续租实时连接；请求需管理员会话、同源 Origin 与 CSRF 校验。多个标签共用一个本机连接，停止查看、后台、离开页面或切到手机布局时释放各自的查看租约，最后一个查看者停止后关闭连接。异常退出没有释放时，租约 8 秒到期，随后在读取超时检查时回收。只有查看期间才启动一个临时读取线程，不新增服务或常驻采样任务。连接失败时不显示过期速度；首次推送前显示「—」，不会恢复其他数据的定时刷新。接口只返回本项目用户 ID 对应的速率，不包含邮箱、令牌或节点信息。
 
+## 故障与恢复细节
 
-## REALITY 自有域名与网站回落
+### 故障检查顺序
 
-2026-11-18 在当前服务器启用，适用于现有 3x-ui、Nginx 1.26.3 和项目订阅服务。
+按以下顺序停止；前一步异常时先修复，不要直接重装或删除发布目录。
 
-| 入口 | 处理路径 |
-|---|---|
-| `node.42io.cc:443` | Nginx SNI 分流 → REALITY `127.0.0.1:10443` |
-| `site.42io.cc:443` | Nginx SNI 分流 → Trojan `127.0.0.1:20443` → HTTP 网站回落 `127.0.0.1:18080` |
-| `cdn.42io.cc:443` | Cloudflare → Nginx TLS `127.0.0.1:31443` → VLESS WebSocket `127.0.0.1:11443` |
-| `sub.42io.cc:443` | Nginx TLS `127.0.0.1:30443` → 订阅和管理入口 |
+1. 查看发布与健康摘要：
 
-REALITY 在 3x-ui 中使用 Target `127.0.0.1:18443`、Server Names `node.42io.cc`、xVer `0`。客户端 SNI 同样为 `node.42io.cc`，已发布订阅携带此值。密钥和 Short ID 沿用原值。普通浏览器连接经 REALITY 转到本机 HTTPS 目标，显示现有静态网站。
+   ```bash
+   clash-sub status
+   clash-sub links
+   ```
 
-服务私有配置 `private/config/service.yaml` 增加 `xui-reality-hostname: node.42io.cc`。该值必须与 `xui-public-endpoint` 的主机名一致，且与其他入口区分。启用后项目模板生成本机 HTTPS 目标以及严格 SNI 分流。未设置时沿用旧版 REALITY 默认分流，便于既有部署继续使用外部目标。
+   记录公开的错误代码、pending 项与受影响用户 ID，不记录订阅链接或私密值。
 
-本机目标 `127.0.0.1:18443` 使用已有的 `*.42io.cc` 通配符证书，启用 TLS 1.3 和 h2，复用 `assets/site-home.html`。模板通过 `listen ... ssl http2` 兼容现有 Nginx 版本，需要 Nginx 编译时包含 HTTP/2 模块。公网空 SNI、未知 SNI 转入本机 `18444` 立即关闭连接。网站检查 HTTP Host，隐藏 Nginx 版本。内部端口均监听回环地址。
+2. 检查 Nginx、x-ui 与流量元数据 Socket：
 
-3x-ui 的 Xray 配置模板保留已有 API、BitTorrent 和私网屏蔽规则，随后依次添加以下规则。
+   ```bash
+   nginx -t
+   systemctl status nginx x-ui clash-sub-metadata.socket
+   journalctl -u nginx -u x-ui -u clash-sub-metadata.service -n 100 --no-pager
+   ```
 
-1. `full:www.gstatic.com` 经 `direct` 出站，供当前健康检查 `https://www.gstatic.com/generate_204` 使用。
-2. `geosite:cn` 经 `blocked` 出站。
-3. `geoip:cn` 经 `blocked` 出站。
+   订阅能下载但没有流量头属于元数据链路降级（服务失败、超时或 5xx）：文件服务不受影响，按上述输出定位 socket 与服务，必要时检查 x-ui 数据库可读性；数据库读取失败时服务会自动回退旧缓存。
 
-路由 `domainStrategy` 设为 `IPOnDemand`，使域名请求也能按解析出的中国 IP 匹配。该策略可能增加 DNS 查询。测速地址变更时先检查是否需要补充精确例外。上述规则作用于代理认证后的出站流量，网站回落由本机目标处理。
+3. 若发布过程中断、启动恢复未完成，先运行：
+
+   ```bash
+   clash-sub recover
+   nginx -t
+   clash-sub status
+   ```
+
+   `clash-sub-recover.service` 也会在启动时于 Nginx 之前处理这类激活日志；手动恢复成功后再决定是否重试 `sync`。
+
+4. `airport_provider_required` 表示稳定 provider 缺失或无效：按[机场更新](#机场更新)刷新或重新导入订阅，再 `sync`。机场更新失败会保留原 provider 与来源记录，并给出不含订阅地址的分类错误码：
+
+   - `airport_url_invalid` / `airport_activation_url_invalid`：订阅链接或开关页面不是允许的 HTTPS 地址；
+   - `airport_activation_missing`：尚未设置订阅开关页面（自动刷新先跳过，交互操作提示使用菜单 1）；
+   - `airport_portal_unavailable`：开关页面临时不可用（网络、超时、重定向越界）；
+   - `airport_portal_unsupported`：开关页面结构不兼容（页面改版；自动路径同时旧链接失败时报此码，改用菜单 3 或 4）；
+   - `airport_link_generation_failed`：订阅链接生成接口失败或返回非法结果；
+   - `airport_redirect_invalid`：下载重定向超过三次或转向非 HTTPS 地址；
+   - `airport_download_failed`：网络、TLS 证书、上游响应失败，或响应为空；
+   - `airport_document_too_large`：返回内容超过传输大小限制；
+   - `airport_response_invalid`：响应为明显 HTML 错误页（HTML 响应类型或正文以 HTML 标签开头）；
+   - `airport_provider_invalid`：provider 目录或文件的安全属性不合规（属主、组、类型、权限、硬链数，或目录模式不是 `02750`），或待发布字节为空/超限；
+   - `airport_provider_write_failed`：服务器无法原子写入 provider 文件。
+
+   不要反复粘贴地址或把地址发送到日志；只记录上述错误码。
+
+5. 本地模板变更后失败时，回到开发 Mac 运行模板同步与两种密钥扫描；不要从服务器或日志取回私密内容。
+
+6. 当前发布有效但内容不合预期时，使用[历史与回退](../README.md#历史与回退)的用户级回退；仅整合安装本身需要撤销时，按[升级与卸载](#升级与卸载)执行 `clash-sub rollback --install`。
+
+### 全新服务器恢复
+
+恢复以新服务器为目标，保留旧服务器直到验收完成。顺序如下：
+
+1. 从受保护备份恢复 3x-ui 数据库与入站/client 配置；按[3x-ui 关键配置](#3x-ui-关键配置)检查面板、Reality 入站和端口。
+2. 恢复备份中的 `state.json` 与 `airport-source.json` 到新服务器的私密运行时目录。
+3. 克隆仓库到 `/opt/my-clash-config`，按[全新安装](#全新安装)执行 `bash install.sh`；安装时仅在隐藏提示输入新主机所需的域名、Cloudflare token 与 owner email。证书由安装流程重新签发。
+4. 执行 `clash-sub`，主菜单 `1` 进入订阅来源后选择 `2`（自动开启订阅并刷新）：用恢复的开关页面与已保存链接重建 `AmyTelecom.yaml`，无需重新输入地址；页面自动化失效时先用浏览器手动开启订阅再选 `3` 刷新；真实链接也已失效时用 `4` 输入新链接。然后发布并验收：
+
+   ```bash
+   clash-sub sync
+   nginx -t
+   systemctl status nginx x-ui clash-sub-metadata.socket
+   clash-sub status
+   clash-sub links
+   ```
+
+5. 核对并恢复两份 Nginx 配置（stream 与 HTTP 的 `clash-sub.conf`）。
+6. 验证 owner 与普通用户的授权范围、`status` 最近错误为空、链接可访问后，才停止旧服务器。保留原订阅链接要求 x-ui client ID 与数据库一致，且不重新初始化 owner、不轮换令牌。
+
+### 域名或 VPS 迁移
+
+既有安装记录不允许用 `clash-sub cert --domain` 或再次安装直接改域名；新域名或新 VPS 一律按[全新服务器恢复](#全新服务器恢复)建立新环境。
+
+1. 在旧服务器执行 `clash-sub backup`，并保留旧服务继续运行。
+2. 在新主机完成恢复和验收；新域名的 DNS、证书和 Nginx 由安装流程处理。
+3. 用新域名的 `clash-sub links` 验证每个预期链接，并确认 Nginx、x-ui 与流量元数据 Socket 正常。
+4. 仅在新发布物和客户端实际连通后切换 DNS/客户端；保留旧主机作为回退点。
+5. 稳定观察后再人工撤销旧主机的公开入口和访问凭据。不要在切换前执行安装回滚或删除旧备份。
+
+### 人工接管
+
+需要永久停止脚本化维护时，先创建并离线保存完整备份，记录公开的版本号、服务状态和待办事项；不要记录订阅链接、token 或机场地址。将日常变更切换为受控的人工操作前，先冻结 `clash-sub update`、`sync`、`rotate-link` 等写入操作，避免两套流程同时发布。
+
+若仅撤销本项目的整合安装，使用 `clash-sub rollback --install`，并按部署文档恢复 Reality 入站公网 listen。该回滚保留运行时目录、3x-ui 数据库和已签发证书；接管人必须决定这些保留数据的后续备份、权限与删除策略。完成交接前，不删除旧服务器、备份或安装记录。
+
+### 备份范围
+
+`clash-sub backup` 归档以下五个重建必需文件；已初始化网页时，额外包含 `private-root/web-settings.json`，用于保留页面链接、管理员密码哈希与面板开关：
+
+```text
+/etc/x-ui/x-ui.db
+/etc/nginx/stream-conf.d/clash-sub.conf
+/etc/nginx/conf.d/clash-sub.conf
+/var/lib/clash-sub/private/state.json
+/var/lib/clash-sub/private/airport-source.json
+```
+
+任何必需文件缺失时备份以稳定错误码失败，而不是产出不完整的归档。证书、机场 provider 文件（`AmyTelecom.yaml`）、流量缓存、发布历史、运行状态与 systemd 文件不进入备份；机场 provider 可在恢复后用备份里的来源记录一键重建。
+
+重建恢复顺序：
+
+1. 恢复 3x-ui 数据库（`/etc/x-ui/x-ui.db`）。
+2. 恢复 `state.json` 与 `airport-source.json` 到私密运行时目录。
+3. 重新安装项目并重新签发证书。
+4. 执行 `clash-sub`，主菜单 `1` 进入机场订阅后选择 `2`（自动开启订阅并刷新）：用恢复的开关页面与已保存链接重新下载并重建 `AmyTelecom.yaml`，无需重新输入地址；页面自动化失效时先用浏览器手动开启订阅再选 `3` 刷新；真实链接也已失效时用 `4` 输入新链接。
+5. 执行 `clash-sub sync`。
+6. 核对并恢复两份 Nginx 配置。
+
+保留原订阅链接要求恢复后的 x-ui client ID 与数据库一致，且不重新初始化 owner、不轮换订阅令牌。
+
+## 验证记录
+
+2026-11-18，自有 REALITY 目标与现有三个节点。
 
 验证记录包含 Linux 配置与 Nginx 测试共 93 项，85 项通过、8 项跳过、Xray 候选配置校验通过、本机目标 TLS 1.3/h2 协商通过。根据已发布订阅启动独立临时 Mihomo，Trojan、CDN、REALITY 各三次健康检查均返回 204；三个节点访问中国测试站均失败。普通访问 `node` 返回 200/HTTP2，`site` 返回 200/HTTP1.1，空 SNI 和未知 SNI 被拒绝。代理测试源位于 VPS，当前 Mac 另已验证公网 IPv6 下 node 网站返回 200/HTTP2。家庭与手机联通网络待独立验证。补充的安装器、订阅和部署测试共 206 项，其中 9 项失败；隔离运行修改前版本也出现同样的 9 项失败，涉及安装预检和机场测试源，属于既有测试问题。
-
-日常维护按以下方式处理。
-
-- 客户端更新订阅后，确认 REALITY 节点的服务器地址和 SNI 都是 `node.42io.cc`，端口为 `443`。旧订阅仍带第三方 SNI 时需要刷新。
-- 浏览器访问 `https://node.42io.cc/` 和 `https://site.42io.cc/` 都应显示工具网站；node 支持 h2，site 当前使用 HTTP/1.1。
-- DNS 中 node 和 site 使用灰云，CDN 使用橙云。node 的 A、AAAA 记录提供两个地址族，CDN 的 CNAME 可继续指向 node。本次沿用已有 DNS。
-- 通配符证书由既有续期流程维护，Nginx 读取 `/etc/ssl/domain/fullchain.pem` 与 `/etc/ssl/domain/privkey.pem`。修改网站只需维护 `assets/site-home.html` 一份文件。
-- 升级使用 `clash-sub update`，随后执行 `nginx -t`、`systemctl is-active nginx x-ui clash-sub-metadata.socket`，并检查浏览器网站和客户端测速。
-- 浏览器网站正常而代理失败时，检查 3x-ui 的 Target、Server Names 和客户端 SNI 是否一致；网站本身无法访问时，再检查 DNS、证书和公网连通性。
 
 服务器私有回滚备份位于 `/opt/my-clash-config/backups/reality-local-20261118/`，包含修改前的项目文件、Nginx 配置、服务配置和 3x-ui 数据库。恢复时需协调还原 REALITY 服务端 SNI、分流与订阅，避免客户端参数不一致。该目录含私有数据，仅在服务器保留。常规升级使用 `clash-sub update` 保留私有配置；重新初始化服务配置后应重新核查这些可选字段。
