@@ -1167,6 +1167,23 @@ class NginxTemplateRenderTests(unittest.TestCase):
         self.assertNotIn("proxy_protocol", rendered)
         self.assertIn("listen 443;", rendered)
 
+    def test_local_reality_uses_explicit_sni_and_loopback_https(self):
+        config = replace(self._config(), xui_reality_hostname="node.example.com")
+        stream = render_stream_config(config, "example.com")
+        self.assertIn("node.example.com    127.0.0.1:10443;", stream)
+        self.assertIn("default             127.0.0.1:18444;", stream)
+        self.assertIn('return "";', stream)
+        http = render_sub_server(
+            config, domain="example.com", panel_port=2053,
+            panel_base_path="/panel", routes_include="/etc/nginx/routes.conf",
+            fullchain="/etc/ssl/fullchain.pem", privkey="/etc/ssl/key.pem",
+        )
+        self.assertIn("listen 127.0.0.1:18443 ssl http2;", http)
+        self.assertIn("ssl_protocols TLSv1.3;", http)
+        self.assertIn('if ($host != "node.example.com") { return 444; }', http)
+        self.assertIn('if ($ssl_server_name != "node.example.com") { return 444; }', http)
+        self.assertIn("try_files /site-home.html =404;", http)
+
     def test_renders_sub_server_with_panel_and_routes(self):
         rendered = render_sub_server(
             self._config(),

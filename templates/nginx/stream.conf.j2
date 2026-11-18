@@ -3,7 +3,12 @@
 # NOTE: no PROXY protocol here on purpose — it is server-scoped and would also
 # prepend the PROXY header to the Reality default route, which Xray rejects.
 map $ssl_preread_server_name $clash_sub_backend {
+{% if reality_hostname %}
+    default             127.0.0.1:18444;
+    {{ reality_hostname }}    127.0.0.1:10443;
+{% else %}
     default             127.0.0.1:10443;
+{% endif %}
     sub.{{ domain }}    127.0.0.1:30443;
 {%- if cdn %}
     {{ cdn.hostname }}    127.0.0.1:{{ cdn_origin_port }};
@@ -20,3 +25,12 @@ server {
     ssl_preread on;
     proxy_connect_timeout 5s;
 }
+
+
+{% if reality_hostname %}
+# Close unrecognised TLS connections without a TLS response.
+server {
+    listen 127.0.0.1:18444;
+    return "";
+}
+{% endif %}

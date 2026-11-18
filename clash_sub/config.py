@@ -29,6 +29,7 @@ _CONFIG_KEYS = {
 }
 _XUI_CDN_KEY = "xui-cdn"
 _XUI_TROJAN_KEY = "xui-trojan-hostname"
+_XUI_REALITY_KEY = "xui-reality-hostname"
 _HOSTNAME_RE = re.compile(
     r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
     r"(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+"
@@ -54,7 +55,7 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
 
     if not isinstance(data, dict):
         raise ConfigError("service configuration must be a mapping")
-    unknown = set(data) - _CONFIG_KEYS - {_XUI_CDN_KEY, _XUI_TROJAN_KEY}
+    unknown = set(data) - _CONFIG_KEYS - {_XUI_CDN_KEY, _XUI_TROJAN_KEY, _XUI_REALITY_KEY}
     if unknown:
         raise ConfigError("unsupported configuration key")
     if data.get("schema-version") != 2 or isinstance(data.get("schema-version"), bool):
@@ -71,6 +72,10 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
         _hostname(data[_XUI_TROJAN_KEY], "xui trojan")
         if _XUI_TROJAN_KEY in data else None
     )
+    xui_reality_hostname = (
+        _hostname(data[_XUI_REALITY_KEY], "xui reality")
+        if _XUI_REALITY_KEY in data else None
+    )
     subscription_host = urlsplit("//" + subscription_authority).hostname
     reality_host = urlsplit("//" + xui_public_endpoint).hostname
     if xui_cdn and xui_cdn.hostname in {
@@ -82,6 +87,11 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
         or (xui_cdn and xui_trojan_hostname == xui_cdn.hostname)
     ):
         raise ConfigError("xui trojan hostname conflicts with an existing endpoint")
+    if xui_reality_hostname and (
+        xui_reality_hostname != reality_host
+        or xui_reality_hostname in {subscription_host, xui_trojan_hostname}
+    ):
+        raise ConfigError("xui reality hostname must match its public endpoint and be unique")
     configured_paths = {
         field: _absolute_path(data[key]) for key, field in _PATH_KEYS.items()
     }
@@ -99,6 +109,7 @@ def load_config(path: Path, repo_root: Path) -> ServiceConfig:
         xui_public_endpoint=xui_public_endpoint,
         xui_cdn=xui_cdn,
         xui_trojan_hostname=xui_trojan_hostname,
+        xui_reality_hostname=xui_reality_hostname,
         template_root=Path(repo_root) / "templates",
         max_source_bytes=max_source_bytes,
         **configured_paths,

@@ -9,6 +9,7 @@ limit_req_zone $binary_remote_addr zone=clash_panel:10m rate=10r/s;
 server {
     listen 127.0.0.1:30443 ssl;
     server_name sub.{{ domain }};
+    if ($host != "sub.{{ domain }}") { return 444; }
     server_tokens off;
 
     ssl_certificate {{ fullchain }};
@@ -107,6 +108,7 @@ server {
 server {
     listen 127.0.0.1:{{ cdn_origin_port }} ssl;
     server_name {{ cdn.hostname }};
+    if ($host != "{{ cdn.hostname }}") { return 444; }
     server_tokens off;
     ssl_certificate {{ fullchain }};
     ssl_certificate_key {{ privkey }};
@@ -135,6 +137,7 @@ server {
 server {
     listen 127.0.0.1:{{ trojan_fallback_port }};
     server_name {{ trojan_hostname }};
+    if ($host != "{{ trojan_hostname }}") { return 444; }
     server_tokens off;
     access_log off;
 
@@ -150,3 +153,31 @@ server {
     }
 }
 {% endif -%}
+
+
+{% if reality_hostname %}
+server {
+    listen 127.0.0.1:{{ reality_target_port }} ssl http2;
+    server_name {{ reality_hostname }};
+    server_tokens off;
+    access_log off;
+
+    ssl_certificate {{ fullchain }};
+    ssl_certificate_key {{ privkey }};
+    ssl_protocols TLSv1.3;
+
+    if ($ssl_server_name != "{{ reality_hostname }}") { return 444; }
+    if ($host != "{{ reality_hostname }}") { return 444; }
+
+    location = / {
+        default_type text/html;
+        charset utf-8;
+        root {{ trojan_assets_path }};
+        try_files /site-home.html =404;
+    }
+
+    location / {
+        return 404;
+    }
+}
+{% endif %}

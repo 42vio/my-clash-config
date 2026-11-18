@@ -53,6 +53,14 @@ class LightweightConfigTests(unittest.TestCase):
         self.path.write_text(content, encoding="utf-8")
         os.chmod(self.path, mode)
 
+    def test_local_reality_hostname_must_match_public_endpoint(self):
+        self.write_config(extra="xui-reality-hostname: example.com\n")
+        self.assertEqual(load_config(self.path, self.root).xui_reality_hostname, "example.com")
+        for hostname in ("sub.example.com", "other.example.com"):
+            self.write_config(extra="xui-reality-hostname: " + hostname + "\n")
+            with self.assertRaises(ConfigError):
+                load_config(self.path, self.root)
+
     def test_loads_minimal_service_config(self):
         config = load_config(self.path, self.root)
 

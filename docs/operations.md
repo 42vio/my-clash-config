@@ -506,3 +506,42 @@ clash-sub web set-api-token
 该版本 `/ws` 要求面板登录会话，API Bearer 令牌会返回 401。复用订阅网页登录时输入的账号密码，在首次查看时通过本机 CSRF 登录流程建立面板会话。账号密码须与 3x-ui 相同；无需新增凭据文件。输入暂存在网页进程的内存中，仅在首次建立面板会话时消费，随后保留会话 Cookie；不写入文件、日志或返回给浏览器。服务重启、登录信息失效或面板会话失效后，需要重新登录订阅网页。若面板启用两步验证，当前自动登录不支持，显示重新登录提示，不绕过验证，也不回退到数据库估算。
 
 只在电脑端开启且网页可见时续租实时连接；请求需管理员会话、同源 Origin 与 CSRF 校验。多个标签共用一个本机连接，停止查看、后台、离开页面或切到手机布局时释放各自的查看租约，最后一个查看者停止后关闭连接。异常退出没有释放时，租约 8 秒到期，随后在读取超时检查时回收。只有查看期间才启动一个临时读取线程，不新增服务或常驻采样任务。连接失败时不显示过期速度；首次推送前显示「—」，不会恢复其他数据的定时刷新。接口只返回本项目用户 ID 对应的速率，不包含邮箱、令牌或节点信息。
+
+
+## REALITY 自有域名与网站回落
+
+2026-11-18 在当前服务器启用，适用于现有 3x-ui、Nginx 1.26.3 和项目订阅服务。
+
+| 入口 | 处理路径 |
+|---|---|
+| `node.42io.cc:443` | Nginx SNI 分流 → REALITY `127.0.0.1:10443` |
+| `site.42io.cc:443` | Nginx SNI 分流 → Trojan `127.0.0.1:20443` → HTTP 网站回落 `127.0.0.1:18080` |
+| `cdn.42io.cc:443` | Cloudflare → Nginx TLS `127.0.0.1:31443` → VLESS WebSocket `127.0.0.1:11443` |
+| `sub.42io.cc:443` | Nginx TLS `127.0.0.1:30443` → 订阅和管理入口 |
+
+REALITY 在 3x-ui 中使用 Target `127.0.0.1:18443`、Server Names `node.42io.cc`、xVer `0`。客户端 SNI 同样为 `node.42io.cc`，已发布订阅携带此值。密钥和 Short ID 沿用原值。普通浏览器连接经 REALITY 转到本机 HTTPS 目标，显示现有静态网站。
+
+服务私有配置 `private/config/service.yaml` 增加 `xui-reality-hostname: node.42io.cc`。该值必须与 `xui-public-endpoint` 的主机名一致，且与其他入口区分。启用后项目模板生成本机 HTTPS 目标以及严格 SNI 分流。未设置时沿用旧版 REALITY 默认分流，便于既有部署继续使用外部目标。
+
+本机目标 `127.0.0.1:18443` 使用已有的 `*.42io.cc` 通配符证书，启用 TLS 1.3 和 h2，复用 `assets/site-home.html`。模板通过 `listen ... ssl http2` 兼容现有 Nginx 版本，需要 Nginx 编译时包含 HTTP/2 模块。公网空 SNI、未知 SNI 转入本机 `18444` 立即关闭连接。网站检查 HTTP Host，隐藏 Nginx 版本。内部端口均监听回环地址。
+
+3x-ui 的 Xray 配置模板保留已有 API、BitTorrent 和私网屏蔽规则，随后依次添加以下规则。
+
+1. `full:www.gstatic.com` 经 `direct` 出站，供当前健康检查 `https://www.gstatic.com/generate_204` 使用。
+2. `geosite:cn` 经 `blocked` 出站。
+3. `geoip:cn` 经 `blocked` 出站。
+
+路由 `domainStrategy` 设为 `IPOnDemand`，使域名请求也能按解析出的中国 IP 匹配。该策略可能增加 DNS 查询。测速地址变更时先检查是否需要补充精确例外。上述规则作用于代理认证后的出站流量，网站回落由本机目标处理。
+
+验证记录包含 Linux 配置与 Nginx 测试共 93 项，85 项通过、8 项跳过、Xray 候选配置校验通过、本机目标 TLS 1.3/h2 协商通过。根据已发布订阅启动独立临时 Mihomo，Trojan、CDN、REALITY 各三次健康检查均返回 204；三个节点访问中国测试站均失败。普通访问 `node` 返回 200/HTTP2，`site` 返回 200/HTTP1.1，空 SNI 和未知 SNI 被拒绝。代理测试源位于 VPS，当前 Mac 另已验证公网 IPv6 下 node 网站返回 200/HTTP2。家庭与手机联通网络待独立验证。补充的安装器、订阅和部署测试共 206 项，其中 9 项失败；隔离运行修改前版本也出现同样的 9 项失败，涉及安装预检和机场测试源，属于既有测试问题。
+
+日常维护按以下方式处理。
+
+- 客户端更新订阅后，确认 REALITY 节点的服务器地址和 SNI 都是 `node.42io.cc`，端口为 `443`。旧订阅仍带第三方 SNI 时需要刷新。
+- 浏览器访问 `https://node.42io.cc/` 和 `https://site.42io.cc/` 都应显示工具网站；node 支持 h2，site 当前使用 HTTP/1.1。
+- DNS 中 node 和 site 使用灰云，CDN 使用橙云。node 的 A、AAAA 记录提供两个地址族，CDN 的 CNAME 可继续指向 node。本次沿用已有 DNS。
+- 通配符证书由既有续期流程维护，Nginx 读取 `/etc/ssl/domain/fullchain.pem` 与 `/etc/ssl/domain/privkey.pem`。修改网站只需维护 `assets/site-home.html` 一份文件。
+- 升级使用 `clash-sub update`，随后执行 `nginx -t`、`systemctl is-active nginx x-ui clash-sub-metadata.socket`，并检查浏览器网站和客户端测速。
+- 浏览器网站正常而代理失败时，检查 3x-ui 的 Target、Server Names 和客户端 SNI 是否一致；网站本身无法访问时，再检查 DNS、证书和公网连通性。
+
+服务器私有回滚备份位于 `/opt/my-clash-config/backups/reality-local-20261118/`，包含修改前的项目文件、Nginx 配置、服务配置和 3x-ui 数据库。恢复时需协调还原 REALITY 服务端 SNI、分流与订阅，避免客户端参数不一致。该目录含私有数据，仅在服务器保留。常规升级使用 `clash-sub update` 保留私有配置；重新初始化服务配置后应重新核查这些可选字段。

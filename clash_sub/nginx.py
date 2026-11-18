@@ -23,6 +23,7 @@ from clash_sub.domain import (
     XUI_CDN_INBOUND_PORT,
     XUI_TROJAN_INBOUND_PORT,
     TROJAN_FALLBACK_PORT,
+    REALITY_TARGET_PORT,
 )
 from clash_sub.state import TOKEN_RE, LEGACY_TOKEN_RE, _state_to_payload, airport_only_token, airport_access_token
 
@@ -64,6 +65,8 @@ def render_stream_config(config, domain):
             "stream.conf.j2"
         ).render(
             domain=domain,
+            reality_hostname=_reality_site(config, domain),
+            reality_target_port=REALITY_TARGET_PORT,
             cdn=_cdn_site(config, domain),
             cdn_origin_port=CDN_ORIGIN_PORT,
             trojan_hostname=_trojan_site(config, domain),
@@ -93,6 +96,7 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
             443, 10443, 30443, XUI_CDN_INBOUND_PORT, CDN_ORIGIN_PORT,
             XUI_TROJAN_INBOUND_PORT,
         )
+        or (config.xui_reality_hostname and panel_port in (REALITY_TARGET_PORT, 18444))
         or (config.xui_trojan_hostname and panel_port == TROJAN_FALLBACK_PORT)
         or not isinstance(panel_base_path, str)
         or not re.fullmatch(r"/[A-Za-z0-9_-]+", panel_base_path)
@@ -114,6 +118,8 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
             "sub-server.conf.j2"
         ).render(
             domain=domain,
+            reality_hostname=_reality_site(config, domain),
+            reality_target_port=REALITY_TARGET_PORT,
             panel_port=panel_port,
             panel_base_path=panel_base_path,
             routes_include=routes_include,
@@ -133,6 +139,17 @@ def render_sub_server(config, *, domain, panel_port, panel_base_path, routes_inc
         raise
     except Exception:
         raise NginxError("sub server rendering failed") from None
+
+
+def _reality_site(config, domain):
+    hostname = config.xui_reality_hostname
+    if hostname is not None and (
+        not _valid_site_hostname(hostname, domain)
+        or hostname == config.xui_trojan_hostname
+        or (config.xui_cdn and hostname == config.xui_cdn.hostname)
+    ):
+        raise NginxError("invalid REALITY hostname")
+    return hostname
 
 
 def _cdn_site(config, domain):
