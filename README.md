@@ -20,6 +20,8 @@ VPS 换地址时，更新 `node` 的 A 和 AAAA。CDN 在 Cloudflare 开启 WebS
 - **CDN** 用 VLESS + WebSocket，路径 `/vless-ws`，Host 可留空。3x-ui 的 Security 和 VLESS Encryption 均为 `none`，客户端 Flow 留空。Nginx 负责公网 TLS，订阅发布时补上 CDN 的 SNI 和 WebSocket Host。
 - **Trojan** 用 TCP（RAW）+ TLS，SNI 为 `site.42io.cc`，TLS ALPN 只选 `http/1.1`，ECH 留空。证书与私钥使用 `/etc/ssl/domain/fullchain.pem` 和 `/etc/ssl/domain/privkey.pem`，保留热加载。在「协议 → 回落」加默认目标 `127.0.0.1:18080`，Xver 为 `0`，子入站、Name、ALPN、Path 留空。Xray 解密后把网页请求交给 Nginx 的 HTTP 首页。页面内容在 [assets/site-home.html](assets/site-home.html)。
 
+回落首页是一个单文件 AI 开发工具箱，提供提示词模板、JSON 格式化、时间戳换算和本地收藏。文字和数据在浏览器中处理，收藏仅存于当前浏览器。
+
 VPS 私有配置文件为 `/opt/my-clash-config/private/config/service.yaml`。CDN 和 Trojan 在当前部署中的配置为：
 
 ```yaml
@@ -31,9 +33,9 @@ xui-trojan-hostname: site.42io.cc
 
 ## 节点排序与网络选择
 
-「🏴‍☠️ 自建节点」是 `fallback` 组，从列表前面优先选可用节点。当前已发布顺序为 **REALITY → CDN → Trojan**。如果 REALITY 不稳定，建议改成 **Trojan → CDN → REALITY**：
+「🏴‍☠️ 自建节点」是 `fallback` 组，从列表前面优先选可用节点。当前已发布顺序为 **Trojan → CDN → REALITY**。要调整顺序，按下面两步操作。
 
-1. 在 **3x-ui → 入站 → 编辑**里设置「订阅排序（Subscription sort index）」。Trojan 填 `1`，CDN 填 `2`，REALITY 填 `3`。数值相同时按入站 ID 排。
+1. 在 **3x-ui → 入站 → 编辑**里设置「订阅排序（Subscription sort index）」。当前 Trojan 为 `1`，CDN 为 `2`，REALITY 为 `3`。数值相同时按入站 ID 排。
 2. 在 VPS 执行 `clash-sub sync`，然后让客户端刷新原订阅。
 
 排序只决定先试哪条节点。线上 Compat 和 Balance 的全局 `ipv6` 为 `true`，三个节点都沿用客户端默认的 `ip-version`。需要绕开源站直连故障时，可以手动选 CDN。 [3x-ui 排序说明](https://github.com/MHSanaei/3x-ui/issues/4835)

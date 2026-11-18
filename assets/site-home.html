@@ -3,17 +3,601 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>站点首页</title>
+  <meta name="description" content="在浏览器里整理提示词、格式化 JSON、转换时间戳和保存常用链接。">
+  <title>AI 开发工具箱</title>
+  <link rel="icon" href="data:,">
   <style>
-    :root { color-scheme: light dark; }
-    body { margin: 0; font: 1rem/1.65 system-ui, sans-serif; }
-    main { max-width: 34rem; margin: 16vh auto; padding: 0 1.5rem; }
+    :root {
+      color-scheme: light;
+      --paper: #faf9f5;
+      --input: #fffefa;
+      --output: #f3f1eb;
+      --ink: #292a27;
+      --muted: #62635b;
+      --line: #d8d6cd;
+      --accent: #304b5f;
+      --error: #963a29;
+      --font: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 1rem/1.55 var(--font); }
+    [hidden] { display: none !important; }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    h1, p { margin: 0; }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { opacity: .55; cursor: default; }
+
+    .shell { width: min(1040px, calc(100% - 64px)); margin-inline: auto; }
+    .header .shell { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; border-bottom: 1px solid var(--line); }
+    .wordmark { font-size: 1.125rem; font-weight: 650; }
+    .local-label { color: var(--muted); font-size: .8rem; white-space: nowrap; }
+
+    .workspace { padding-bottom: 48px; }
+    .tabs { display: flex; gap: 28px; border-bottom: 1px solid var(--line); }
+    .tab { min-height: 48px; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font-size: .875rem; white-space: nowrap; }
+    .tab:hover { color: var(--ink); }
+    .tab[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 650; }
+    .panel-heading { margin: 32px 0 24px; }
+    h1 { font-size: clamp(1.4rem, 4vw, 1.85rem); line-height: 1.25; font-weight: 650; }
+    .panel-heading p { margin-top: 6px; color: var(--muted); font-size: .9rem; }
+
+    .work-area { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px; }
+    .column { min-width: 0; }
+    .column + .column { padding-left: 28px; border-left: 1px solid var(--line); }
+    .column > form + form { padding-top: 16px; border-top: 1px solid var(--line); }
+    .stack { display: grid; align-content: start; gap: 16px; }
+    .field { display: grid; gap: 6px; }
+    .field label, .editor-title { font-size: .875rem; font-weight: 600; }
+    .control { display: block; width: 100%; min-width: 0; min-height: 40px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--ink); }
+    .control::placeholder { color: var(--muted); }
+    textarea.control { resize: vertical; }
+    .toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .toolbar-between { justify-content: space-between; }
+    .button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--ink); font-size: .85rem; font-weight: 550; }
+    .button:hover:not(:disabled) { border-color: #a7a59a; background: #eeece4; }
+    .primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .primary:hover:not(:disabled) { border-color: #243847; background: #243847; }
+    .editor { min-height: 300px; font-family: var(--mono); font-size: .85rem; line-height: 1.65; tab-size: 2; }
+    .preview { padding: 12px; background: var(--output); }
+    .feedback { min-height: 1.4em; color: var(--muted); font-size: .8rem; }
+    .feedback.error { color: var(--error); }
+
+    .inline-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(88px, auto); gap: 12px; }
+    .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+    .result-grid { margin: 0; border-top: 1px solid var(--line); }
+    .result-grid div { display: grid; gap: 4px; padding-block: 12px; border-bottom: 1px solid var(--line); }
+    .result-grid dt { color: var(--muted); font-size: .8rem; }
+    .result-grid dd { margin: 0; font-size: .9rem; overflow-wrap: anywhere; }
+    .bookmark-form { max-width: 720px; }
+    .bookmark-form .inline-fields { grid-template-columns: minmax(0, .65fr) minmax(0, 1.35fr); }
+    .bookmark-results { padding-top: 16px; border-top: 1px solid var(--line); }
+    .full-width { grid-column: 1 / -1; }
+    .bookmark-list { display: grid; margin: 0; padding: 0; list-style: none; }
+    .bookmark-list li { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding-block: 12px; border-bottom: 1px solid var(--line); }
+    .bookmark-list li:first-child { padding-top: 0; }
+    .bookmark-list a { color: var(--accent); overflow-wrap: anywhere; text-underline-offset: 4px; }
+    .bookmark-list small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+    .empty { color: var(--muted); font-size: .9rem; }
+    .no-script { padding-block: 16px; color: var(--error); }
+
+    @media (max-width: 720px) {
+      .shell { width: calc(100% - 32px); }
+      .header .shell { min-height: 56px; }
+      .tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+      .tab { min-height: 44px; padding-inline: 0; font-size: .8rem; }
+      .panel-heading { margin-block: 24px 16px; }
+      .work-area { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+      .column + .column { padding: 16px 0 0; border-left: 0; border-top: 1px solid var(--line); }
+      .editor { min-height: 228px; }
+      .bookmark-form .inline-fields { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>站点首页</h1>
-    <p>你好，欢迎来到我的个人站点。</p>
+  <header class="header">
+    <div class="shell">
+      <div class="wordmark">AI 开发工具箱</div>
+      <span class="local-label">浏览器本地处理</span>
+    </div>
+  </header>
+  <noscript><p class="shell no-script">开启 JavaScript 后即可使用这些工具。</p></noscript>
+  <main class="shell workspace">
+    <nav class="tabs" role="tablist" aria-label="开发工具">
+      <button class="tab" id="tab-prompt" role="tab" aria-controls="prompt" aria-selected="true">提示词模板</button>
+      <button class="tab" id="tab-json" role="tab" aria-controls="json" aria-selected="false" tabindex="-1">JSON 格式化</button>
+      <button class="tab" id="tab-time" role="tab" aria-controls="time" aria-selected="false" tabindex="-1">时间戳转换</button>
+      <button class="tab" id="tab-links" role="tab" aria-controls="links" aria-selected="false" tabindex="-1">AI 收藏夹</button>
+    </nav>
+    <div class="panels">
+      <section id="prompt" role="tabpanel" aria-labelledby="tab-prompt">
+        <header class="panel-heading">
+          <h1>提示词模板</h1>
+          <p>填入任务、背景和限制，复制生成的提示词。</p>
+        </header>
+        <div class="work-area">
+          <div class="column stack">
+            <div class="field">
+              <label for="prompt-template">任务场景</label>
+              <select class="control" id="prompt-template">
+                <option value="requirements">需求细化</option>
+                <option value="review">代码审查</option>
+                <option value="debug">故障排查</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="prompt-task">任务</label>
+              <textarea class="control" id="prompt-task" rows="2" placeholder="需要处理什么"></textarea>
+            </div>
+            <div class="field">
+              <label for="prompt-context">背景</label>
+              <textarea class="control" id="prompt-context" rows="3" placeholder="补充现状、环境或相关证据"></textarea>
+            </div>
+            <div class="field">
+              <label for="prompt-limits">约束</label>
+              <textarea class="control" id="prompt-limits" rows="2" placeholder="例如兼容性要求、改动范围或输出格式"></textarea>
+            </div>
+            <div class="toolbar">
+              <button class="button" id="prompt-example" type="button">填入示例</button>
+              <button class="button" id="prompt-clear" type="button">清空</button>
+            </div>
+          </div>
+          <div class="column stack">
+            <div class="toolbar toolbar-between">
+              <label class="editor-title" for="prompt-output">生成结果</label>
+              <button class="button primary" id="copy-prompt" type="button">复制提示词</button>
+            </div>
+            <textarea class="control editor preview" id="prompt-output" readonly spellcheck="false"></textarea>
+            <p class="feedback" id="prompt-feedback" role="status"></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="json" role="tabpanel" aria-labelledby="tab-json" hidden>
+        <header class="panel-heading">
+          <h1>JSON 格式化</h1>
+          <p>检查模型或 API 的返回值，整理缩进或压成一行。</p>
+        </header>
+        <div class="work-area">
+          <div class="column stack">
+            <div class="toolbar toolbar-between">
+              <label class="editor-title" for="json-input">原始 JSON</label>
+              <button class="button" id="json-example" type="button">填入示例</button>
+            </div>
+            <textarea class="control editor" id="json-input" spellcheck="false" autocomplete="off" placeholder='{"status":"ok","items":[]}'></textarea>
+            <div class="toolbar">
+              <button class="button primary" id="json-pretty" type="button">格式化</button>
+              <button class="button" id="json-compact" type="button">压缩</button>
+            </div>
+          </div>
+          <div class="column stack">
+            <div class="toolbar toolbar-between">
+              <label class="editor-title" for="json-output">处理结果</label>
+              <button class="button" id="copy-json" type="button" disabled>复制结果</button>
+            </div>
+            <textarea class="control editor preview" id="json-output" readonly spellcheck="false" placeholder="处理后的 JSON 会显示在这里"></textarea>
+            <p class="feedback" id="json-feedback" role="status"></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="time" role="tabpanel" aria-labelledby="tab-time" hidden>
+        <header class="panel-heading">
+          <h1>时间戳转换</h1>
+          <p>在 Unix 时间戳和北京时间、UTC、洛杉矶时间之间换算。</p>
+        </header>
+        <div class="work-area">
+          <div class="column stack">
+            <form class="stack" id="epoch-form">
+              <div class="inline-fields">
+                <div class="field">
+                  <label for="epoch">Unix 时间戳</label>
+                  <input class="control mono" id="epoch" type="text" inputmode="numeric" autocomplete="off" placeholder="1767225600" required>
+                </div>
+                <div class="field">
+                  <label for="epoch-unit">单位</label>
+                  <select class="control" id="epoch-unit"><option value="auto">自动</option><option value="seconds">秒</option><option value="milliseconds">毫秒</option></select>
+                </div>
+              </div>
+              <div class="toolbar">
+                <button class="button primary" type="submit">转换时间戳</button>
+                <button class="button" id="use-now" type="button">使用现在</button>
+              </div>
+            </form>
+            <form class="stack" id="wall-form">
+              <div class="field">
+                <label for="wall-time">日期和时间</label>
+                <input class="control" id="wall-time" type="datetime-local" step="1" required>
+              </div>
+              <div class="field">
+                <label for="wall-zone">输入时区</label>
+                <select class="control" id="wall-zone">
+                  <option value="Asia/Shanghai">北京时间</option>
+                  <option value="UTC">UTC</option>
+                  <option value="America/Los_Angeles">洛杉矶时间</option>
+                </select>
+              </div>
+              <div><button class="button" type="submit">转换成时间戳</button></div>
+            </form>
+          </div>
+          <div class="column stack">
+            <dl class="result-grid mono">
+              <div><dt>北京时间</dt><dd id="result-shanghai">—</dd></div>
+              <div><dt>UTC</dt><dd id="result-utc">—</dd></div>
+              <div><dt>洛杉矶时间</dt><dd id="result-la">—</dd></div>
+              <div><dt>Unix 秒</dt><dd id="result-seconds">—</dd></div>
+              <div><dt>Unix 毫秒</dt><dd id="result-milliseconds">—</dd></div>
+            </dl>
+            <div class="toolbar">
+              <button class="button" id="copy-seconds" type="button" disabled>复制秒</button>
+              <button class="button" id="copy-milliseconds" type="button" disabled>复制毫秒</button>
+            </div>
+            <p class="feedback" id="time-feedback" role="status"></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="links" role="tabpanel" aria-labelledby="tab-links" hidden>
+        <header class="panel-heading">
+          <h1>AI 收藏夹</h1>
+          <p>留住常用的 AI 工具和资料。收藏保存在当前浏览器。</p>
+        </header>
+        <div class="work-area">
+          <form class="bookmark-form full-width stack" id="bookmark-form">
+            <div class="inline-fields">
+              <div class="field"><label for="bookmark-label">名称</label><input class="control" id="bookmark-label" maxlength="100" placeholder="例如常用的代码助手" required></div>
+              <div class="field"><label for="bookmark-url">链接</label><input class="control" id="bookmark-url" type="url" placeholder="https://example.com" required></div>
+            </div>
+            <div class="field"><label for="bookmark-note">用途（选填）</label><input class="control" id="bookmark-note" maxlength="240" placeholder="什么时候会用到它"></div>
+            <div class="toolbar"><button class="button primary" type="submit">添加收藏</button><p class="feedback" id="bookmark-feedback" role="status"></p></div>
+          </form>
+          <div class="bookmark-results full-width">
+            <p class="empty" id="bookmark-empty">还没有收藏，添加你的第一个常用链接。</p>
+            <ul class="bookmark-list" id="bookmark-list" aria-label="已收藏的链接"></ul>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
+  <script>
+    const byId = id => document.getElementById(id);
+
+    function feedback(id, message, error = false) {
+      const element = byId(id);
+      element.textContent = message;
+      element.classList.toggle('error', error);
+    }
+
+    async function copyText(text, feedbackId) {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const previous = document.activeElement;
+        const temporary = document.createElement('textarea');
+        temporary.value = text;
+        temporary.readOnly = true;
+        temporary.style.position = 'fixed';
+        temporary.style.opacity = '0';
+        document.body.append(temporary);
+        try {
+          temporary.select();
+          if (!document.execCommand('copy')) throw new Error('Copy unavailable');
+        } catch {
+          feedback(feedbackId, '无法访问剪贴板，请手动复制。', true);
+          return;
+        } finally {
+          temporary.remove();
+          previous?.focus();
+        }
+      }
+      feedback(feedbackId, '已复制');
+    }
+
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+
+    function activateTab(target) {
+      if (!target) return;
+      for (const tab of tabs) {
+        const selected = tab === target;
+        tab.setAttribute('aria-selected', String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        byId(tab.getAttribute('aria-controls')).hidden = !selected;
+      }
+    }
+
+    for (const [index, tab] of tabs.entries()) {
+      tab.addEventListener('click', () => activateTab(tab));
+      tab.addEventListener('keydown', event => {
+        const nextIndex = {
+          ArrowRight: (index + 1) % tabs.length,
+          ArrowDown: (index + 1) % tabs.length,
+          ArrowLeft: (index + tabs.length - 1) % tabs.length,
+          ArrowUp: (index + tabs.length - 1) % tabs.length,
+          Home: 0,
+          End: tabs.length - 1,
+        }[event.key];
+        if (nextIndex === undefined) return;
+        event.preventDefault();
+        activateTab(tabs[nextIndex]);
+        tabs[nextIndex].focus();
+      });
+    }
+
+    const templates = {
+      requirements: {
+        instructions: '请把下面的任务整理成一份可实施的需求说明。列出预期结果、验收条件和待澄清的问题。把已知事实与假设分开。',
+        example: ['增加导出历史记录的入口', '目前只能在页面逐条查看历史记录，用户希望一次下载一个日期范围的数据。', '先定义 CSV 字段、空结果和无权限时的行为。'],
+      },
+      review: {
+        instructions: '请审查这项改动。优先找出能导致错误、数据丢失或回归的问题，给出对应位置、触发条件和影响。',
+        example: ['审查重试逻辑的改动', '现在网络超时后最多重试三次，同一个请求可能同时在服务端执行。', '重点检查重复写入、取消请求和失败提示。'],
+      },
+      debug: {
+        instructions: '请根据现有证据定位故障。按可能性排列原因，每个原因写出一个能确认或排除它的最小验证步骤。',
+        example: ['查明为什么刷新后仍看到旧配置', '服务端已生成新文件，客户端刷新成功，但显示的内容没有变化。', '先做只读检查，区分生成文件、发布文件和客户端缓存。'],
+      },
+    };
+    const promptFields = ['prompt-task', 'prompt-context', 'prompt-limits'].map(byId);
+    const promptTemplate = byId('prompt-template');
+    const selectedTemplate = () => templates[promptTemplate.value];
+
+    function renderPrompt() {
+      const values = promptFields.map(field => field.value.trim());
+      byId('prompt-output').value = [
+        selectedTemplate().instructions,
+        '',
+        '任务：' + (values[0] || '［填写任务］'),
+        '',
+        '背景：' + (values[1] || '［填写背景］'),
+        '',
+        '约束：' + (values[2] || '［填写约束］'),
+      ].join('\n');
+      feedback('prompt-feedback', '');
+    }
+    promptTemplate.addEventListener('change', renderPrompt);
+    for (const field of promptFields) field.addEventListener('input', renderPrompt);
+    byId('prompt-example').addEventListener('click', () => {
+      promptFields.forEach((field, index) => { field.value = selectedTemplate().example[index]; });
+      renderPrompt();
+    });
+    byId('prompt-clear').addEventListener('click', () => {
+      promptFields.forEach(field => { field.value = ''; });
+      renderPrompt();
+      promptFields[0].focus();
+    });
+    byId('copy-prompt').addEventListener('click', () => copyText(byId('prompt-output').value, 'prompt-feedback'));
+    renderPrompt();
+
+    const jsonInput = byId('json-input');
+    const jsonOutput = byId('json-output');
+    const jsonCopy = byId('copy-json');
+
+    function formatJSON(source, compact) {
+      JSON.parse(source);
+      // Keep the original numeric and string tokens, including integers beyond JS precision.
+      const tokens = source.match(/"(?:\\.|[^"\\])*"|[{}\[\]:,]|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g);
+      if (compact) return tokens.join('');
+      const pieces = [];
+      let depth = 0;
+      for (const [index, token] of tokens.entries()) {
+        if (token === '}' || token === ']') {
+          depth -= 1;
+          if (tokens[index - 1] !== '{' && tokens[index - 1] !== '[') pieces.push('\n', '  '.repeat(depth));
+        }
+        pieces.push(token);
+        if (token === '{' || token === '[') {
+          depth += 1;
+          if (tokens[index + 1] !== '}' && tokens[index + 1] !== ']') pieces.push('\n', '  '.repeat(depth));
+        } else if (token === ',') {
+          pieces.push('\n', '  '.repeat(depth));
+        } else if (token === ':') {
+          pieces.push(' ');
+        }
+      }
+      return pieces.join('');
+    }
+
+    function processJSON(compact) {
+      try {
+        jsonOutput.value = formatJSON(jsonInput.value.trim(), compact);
+        jsonCopy.disabled = false;
+        feedback('json-feedback', compact ? 'JSON 已压缩' : 'JSON 已格式化');
+      } catch (error) {
+        jsonOutput.value = '';
+        jsonCopy.disabled = true;
+        feedback('json-feedback', jsonInput.value.trim() ? 'JSON 格式有误：' + error.message : '请输入要处理的 JSON。', true);
+      }
+    }
+    jsonInput.addEventListener('input', () => {
+      jsonOutput.value = '';
+      jsonCopy.disabled = true;
+      feedback('json-feedback', '');
+    });
+    byId('json-example').addEventListener('click', () => {
+      jsonInput.value = '{"status":"ok","requestId":9007199254740993,"result":{"summary":"检查通过","warnings":[]}}';
+      processJSON(false);
+    });
+    byId('json-pretty').addEventListener('click', () => processJSON(false));
+    byId('json-compact').addEventListener('click', () => processJSON(true));
+    jsonCopy.addEventListener('click', () => copyText(jsonOutput.value, 'json-feedback'));
+
+    const zoneFields = {
+      'Asia/Shanghai': 'result-shanghai',
+      UTC: 'result-utc',
+      'America/Los_Angeles': 'result-la',
+    };
+    const formatters = new Map(Object.keys(zoneFields).map(zone => [zone, new Intl.DateTimeFormat('en-CA', {
+      timeZone: zone, year: 'numeric', era: 'short', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    })]));
+    let displayedTime = null;
+
+    function clockAt(timestamp, zone) {
+      const parts = Object.fromEntries(formatters.get(zone).formatToParts(timestamp)
+        .filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+      const year = parts.era === 'BC' ? 1 - Number(parts.year) : Number(parts.year);
+      const isoYear = year >= 0 && year <= 9999
+        ? String(year).padStart(4, '0')
+        : (year < 0 ? '-' : '+') + String(Math.abs(year)).padStart(6, '0');
+      return [isoYear, parts.month, parts.day].join('-') + 'T' +
+        [parts.hour, parts.minute, parts.second].join(':');
+    }
+
+    function showTime(timestamp, message) {
+      if (!Number.isFinite(new Date(timestamp).getTime())) throw new Error('时间超出有效范围。');
+      displayedTime = timestamp;
+      for (const [zone, field] of Object.entries(zoneFields)) {
+        byId(field).textContent = clockAt(timestamp, zone).replace('T', ' ');
+      }
+      byId('result-seconds').textContent = String(timestamp / 1000);
+      byId('result-milliseconds').textContent = String(timestamp);
+      byId('copy-seconds').disabled = false;
+      byId('copy-milliseconds').disabled = false;
+      feedback('time-feedback', message);
+    }
+
+    function timeError(error) {
+      displayedTime = null;
+      for (const field of [...Object.values(zoneFields), 'result-seconds', 'result-milliseconds']) byId(field).textContent = '—';
+      byId('copy-seconds').disabled = true;
+      byId('copy-milliseconds').disabled = true;
+      feedback('time-feedback', error.message, true);
+    }
+
+    byId('epoch-form').addEventListener('submit', event => {
+      event.preventDefault();
+      try {
+        const input = byId('epoch').value.trim();
+        if (!/^[+-]?\d+(?:\.\d+)?$/.test(input)) throw new Error('请输入有效的秒数或毫秒数。');
+        const value = Number(input);
+        const unit = byId('epoch-unit').value;
+        const milliseconds = unit === 'milliseconds' || (unit === 'auto' && Math.abs(value) >= 100_000_000_000);
+        const timestamp = milliseconds ? value : Math.round(value * 1000);
+        if (!Number.isSafeInteger(timestamp)) throw new Error('请输入毫秒精度内的时间戳。');
+        showTime(timestamp, '按 Unix ' + (milliseconds ? '毫秒' : '秒') + '解析。');
+      } catch (error) {
+        timeError(error);
+      }
+    });
+    byId('use-now').addEventListener('click', () => {
+      const now = Date.now();
+      byId('epoch').value = String(now);
+      byId('epoch-unit').value = 'milliseconds';
+      showTime(now, '已填入当前时间。');
+    });
+
+    function datesAtClock(value, zone) {
+      const clock = value.length === 16 ? value + ':00' : value;
+      const base = Date.parse(clock + 'Z');
+      if (!Number.isFinite(base) || clockAt(base, 'UTC') !== clock) throw new Error('请输入有效的日期和时间。');
+      const candidates = new Set();
+      for (const delta of [-86400000, 0, 86400000]) {
+        const sample = base + delta;
+        const offset = Date.parse(clockAt(sample, zone) + 'Z') - sample;
+        const candidate = base - offset;
+        if (clockAt(candidate, zone) === clock) candidates.add(candidate);
+      }
+      return [...candidates].sort((a, b) => a - b);
+    }
+
+    byId('wall-form').addEventListener('submit', event => {
+      event.preventDefault();
+      try {
+        const zone = byId('wall-zone');
+        const candidates = datesAtClock(byId('wall-time').value, zone.value);
+        if (!candidates.length) throw new Error('这个时刻在所选时区不存在，可能遇到夏令时切换。');
+        if (candidates.length > 1) throw new Error('这个时刻在所选时区出现两次。请选择 UTC 并输入对应时间。');
+        showTime(candidates[0], '已按' + zone.selectedOptions[0].textContent + '换算。');
+      } catch (error) {
+        timeError(error);
+      }
+    });
+    byId('copy-seconds').addEventListener('click', () => {
+      if (displayedTime !== null) copyText(String(displayedTime / 1000), 'time-feedback');
+    });
+    byId('copy-milliseconds').addEventListener('click', () => {
+      if (displayedTime !== null) copyText(String(displayedTime), 'time-feedback');
+    });
+
+    const bookmarkKey = 'ai-developer-toolbox:bookmarks';
+    function bookmarkURL(value) {
+      const url = new URL(value);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('请输入 HTTP 或 HTTPS 链接。');
+      return url.href;
+    }
+
+    function loadBookmarks() {
+      try {
+        const items = JSON.parse(localStorage.getItem(bookmarkKey) || '[]');
+        if (!Array.isArray(items)) return [];
+        return items.filter(item => {
+          if (typeof item?.name !== 'string' || typeof item.note !== 'string' || typeof item.url !== 'string') return false;
+          try { return bookmarkURL(item.url) === item.url; } catch { return false; }
+        });
+      } catch {
+        return [];
+      }
+    }
+
+    let bookmarks = loadBookmarks();
+    function renderBookmarks() {
+      const list = byId('bookmark-list');
+      list.replaceChildren();
+      byId('bookmark-empty').hidden = bookmarks.length > 0;
+      bookmarks.forEach((item, index) => {
+        const row = document.createElement('li');
+        const body = document.createElement('div');
+        const link = document.createElement('a');
+        link.href = item.url;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = item.name;
+        body.append(link);
+        if (item.note) {
+          const note = document.createElement('small');
+          note.textContent = item.note;
+          body.append(note);
+        }
+        const remove = document.createElement('button');
+        remove.className = 'button';
+        remove.type = 'button';
+        remove.textContent = '移除';
+        remove.setAttribute('aria-label', '移除收藏 ' + item.name);
+        remove.addEventListener('click', () => saveBookmarks(bookmarks.filter((_, position) => position !== index), '已移除收藏。'));
+        row.append(body, remove);
+        list.append(row);
+      });
+    }
+
+    function saveBookmarks(items, message) {
+      try {
+        localStorage.setItem(bookmarkKey, JSON.stringify(items));
+      } catch {
+        feedback('bookmark-feedback', '当前浏览器无法保存收藏。', true);
+        return false;
+      }
+      bookmarks = items;
+      renderBookmarks();
+      feedback('bookmark-feedback', message);
+      return true;
+    }
+
+    byId('bookmark-form').addEventListener('submit', event => {
+      event.preventDefault();
+      try {
+        const name = byId('bookmark-label').value.trim();
+        if (!name) throw new Error('请输入名称。');
+        const url = bookmarkURL(byId('bookmark-url').value.trim());
+        if (bookmarks.some(item => item.url === url)) throw new Error('这个链接已收藏。');
+        const note = byId('bookmark-note').value.trim();
+        if (saveBookmarks([...bookmarks, { name, url, note }], '已添加收藏。')) event.target.reset();
+      } catch (error) {
+        feedback('bookmark-feedback', error.message, true);
+      }
+    });
+    renderBookmarks();
+  </script>
 </body>
 </html>
