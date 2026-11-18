@@ -166,7 +166,7 @@ rule-providers:
 rules:
 
   # 自建服务器
-- IP-CIDR, 64.64.240.57/32,DIRECT,no-resolve   #BWG服务器
+- IP-CIDR, 69.194.10.14/32,DIRECT,no-resolve   #BWG服务器
 - DOMAIN-SUFFIX,42io.cc,DIRECT
 - DOMAIN-SUFFIX,ibigsea.com,DIRECT
 - DOMAIN-SUFFIX,hitrontech.com,DIRECT
